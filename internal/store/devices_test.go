@@ -89,6 +89,15 @@ func TestDeviceCRUD_ViewsAndFilters(t *testing.T) {
 	assert.Equal(t, "prod", view.Labels["env"])
 	assert.Equal(t, []string{userID}, view.AssignedUserIDs)
 	assert.Empty(t, view.AssignedGroupIDs)
+	assignedToUser, err := st.IsDeviceAssignedToUser(ctx, deviceIDs[0], userID)
+	require.NoError(t, err)
+	assert.True(t, assignedToUser)
+	assignedToUser, err = st.IsDeviceAssignedToUser(ctx, deviceIDs[1], userID)
+	require.NoError(t, err)
+	assert.True(t, assignedToUser, "membership in an assigned live user group confers assignment")
+	assignedToUser, err = st.IsDeviceAssignedToUser(ctx, deviceIDs[2], userID)
+	require.NoError(t, err)
+	assert.False(t, assignedToUser)
 
 	assigned := userID
 	rows, err := st.ListDeviceViews(ctx, store.DeviceListFilter{
@@ -99,6 +108,9 @@ func TestDeviceCRUD_ViewsAndFilters(t *testing.T) {
 	assert.Equal(t, deviceIDs[:2], []string{rows[0].ID, rows[1].ID})
 	_, err = pool.Exec(ctx, `UPDATE user_groups SET is_deleted = TRUE WHERE id = $1`, userGroupID)
 	require.NoError(t, err)
+	assignedToUser, err = st.IsDeviceAssignedToUser(ctx, deviceIDs[1], userID)
+	require.NoError(t, err)
+	assert.False(t, assignedToUser, "a deleted user group must not confer assignment")
 	rows, err = st.ListDeviceViews(ctx, store.DeviceListFilter{
 		Limit: 100, AssignedUserID: &assigned, OnlineSince: now.Add(-5 * time.Minute),
 	})
@@ -136,6 +148,29 @@ func TestDeviceCRUD_ViewsAndFilters(t *testing.T) {
 	assert.Empty(t, rows, "a deleted device group must not keep granting scope visibility")
 	_, err = pool.Exec(ctx, `UPDATE device_groups SET is_deleted = FALSE WHERE id = $1`, deviceGroupID)
 	require.NoError(t, err)
+
+	collectedAt := now.Add(-30 * time.Minute)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO device_inventory (device_id, table_name, rows, collected_at)
+		VALUES ($1, 'system_info', '[]', $2)`, deviceIDs[1], collectedAt)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		UPDATE device_groups SET inventory_interval_minutes = 720 WHERE id = $1`, deviceGroupID)
+	require.NoError(t, err)
+	view, err = st.GetDeviceView(ctx, deviceIDs[1])
+	require.NoError(t, err)
+	require.NotNil(t, view.LastInventoryAt)
+	assert.WithinDuration(t, collectedAt, *view.LastInventoryAt, time.Microsecond)
+	assert.Equal(t, int32(720), view.ResolvedInventoryIntervalMinutes,
+		"a live group's shortest non-zero interval is inherited")
+	viewsWithFreshness, err := st.ListDeviceViews(ctx, store.DeviceListFilter{Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, viewsWithFreshness, 3)
+	assert.Nil(t, viewsWithFreshness[0].LastInventoryAt)
+	require.NotNil(t, viewsWithFreshness[1].LastInventoryAt)
+	assert.Equal(t, int32(720), viewsWithFreshness[1].ResolvedInventoryIntervalMinutes)
+	assert.Equal(t, int32(1440), viewsWithFreshness[2].ResolvedInventoryIntervalMinutes,
+		"the server default applies without a device or group override")
 
 	rows, err = st.ListDeviceViews(ctx, store.DeviceListFilter{
 		AfterID: deviceIDs[0], Limit: 1, OnlineSince: now.Add(-5 * time.Minute),

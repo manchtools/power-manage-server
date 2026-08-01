@@ -137,6 +137,48 @@ SELECT group_id FROM device_assigned_groups WHERE device_id = $1 ORDER BY group_
 SELECT device_id, group_id FROM device_assigned_groups
 WHERE device_id = ANY($1::text[]) ORDER BY device_id, group_id;
 
+-- name: IsDeviceAssignedToUser :one
+SELECT EXISTS (
+    SELECT 1
+    FROM devices d
+    WHERE d.id = sqlc.arg(device_id)
+      AND d.is_deleted = FALSE
+      AND (
+          EXISTS (
+              SELECT 1
+              FROM device_assigned_users dau
+              WHERE dau.device_id = d.id
+                AND dau.user_id = sqlc.arg(user_id)
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM device_assigned_groups dag
+              JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+              JOIN user_group_members ugm ON ugm.group_id = dag.group_id
+              WHERE dag.device_id = d.id
+                AND ugm.user_id = sqlc.arg(user_id)
+          )
+      )
+);
+
+-- name: ListDeviceInventoryFreshness :many
+SELECT
+    d.id AS device_id,
+    MAX(di.collected_at)::timestamptz AS last_inventory_at,
+    COALESCE(
+        NULLIF(d.inventory_interval_minutes, 0),
+        MIN(NULLIF(dg.inventory_interval_minutes, 0)),
+        sqlc.arg(default_interval_minutes)::integer
+    )::integer AS resolved_interval_minutes
+FROM devices d
+LEFT JOIN device_inventory di ON di.device_id = d.id
+LEFT JOIN device_group_members dgm ON dgm.device_id = d.id
+LEFT JOIN device_groups dg ON dg.id = dgm.group_id AND dg.is_deleted = FALSE
+WHERE d.is_deleted = FALSE
+  AND d.id = ANY(sqlc.arg(device_ids)::text[])
+GROUP BY d.id, d.inventory_interval_minutes
+ORDER BY d.id;
+
 -- name: AssignDeviceUser :execrows
 INSERT INTO device_assigned_users (device_id, user_id, assigned_at, assigned_by)
 SELECT $1, $2, $3, $4

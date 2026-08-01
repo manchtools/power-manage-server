@@ -8,6 +8,8 @@ package generated
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const assignDeviceGroup = `-- name: AssignDeviceGroup :execrows
@@ -233,6 +235,43 @@ func (q *Queries) InsertDevice(ctx context.Context, arg InsertDeviceParams) (Dev
 	return i, err
 }
 
+const isDeviceAssignedToUser = `-- name: IsDeviceAssignedToUser :one
+SELECT EXISTS (
+    SELECT 1
+    FROM devices d
+    WHERE d.id = $1
+      AND d.is_deleted = FALSE
+      AND (
+          EXISTS (
+              SELECT 1
+              FROM device_assigned_users dau
+              WHERE dau.device_id = d.id
+                AND dau.user_id = $2
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM device_assigned_groups dag
+              JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+              JOIN user_group_members ugm ON ugm.group_id = dag.group_id
+              WHERE dag.device_id = d.id
+                AND ugm.user_id = $2
+          )
+      )
+)
+`
+
+type IsDeviceAssignedToUserParams struct {
+	DeviceID string `json:"device_id"`
+	UserID   string `json:"user_id"`
+}
+
+func (q *Queries) IsDeviceAssignedToUser(ctx context.Context, arg IsDeviceAssignedToUserParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isDeviceAssignedToUser, arg.DeviceID, arg.UserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listDeviceAssignedGroupIDs = `-- name: ListDeviceAssignedGroupIDs :many
 SELECT group_id FROM device_assigned_groups WHERE device_id = $1 ORDER BY group_id
 `
@@ -362,6 +401,56 @@ func (q *Queries) ListDeviceGroupIDs(ctx context.Context, deviceID string) ([]st
 			return nil, err
 		}
 		items = append(items, group_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceInventoryFreshness = `-- name: ListDeviceInventoryFreshness :many
+SELECT
+    d.id AS device_id,
+    MAX(di.collected_at)::timestamptz AS last_inventory_at,
+    COALESCE(
+        NULLIF(d.inventory_interval_minutes, 0),
+        MIN(NULLIF(dg.inventory_interval_minutes, 0)),
+        $1::integer
+    )::integer AS resolved_interval_minutes
+FROM devices d
+LEFT JOIN device_inventory di ON di.device_id = d.id
+LEFT JOIN device_group_members dgm ON dgm.device_id = d.id
+LEFT JOIN device_groups dg ON dg.id = dgm.group_id AND dg.is_deleted = FALSE
+WHERE d.is_deleted = FALSE
+  AND d.id = ANY($2::text[])
+GROUP BY d.id, d.inventory_interval_minutes
+ORDER BY d.id
+`
+
+type ListDeviceInventoryFreshnessParams struct {
+	DefaultIntervalMinutes int32    `json:"default_interval_minutes"`
+	DeviceIds              []string `json:"device_ids"`
+}
+
+type ListDeviceInventoryFreshnessRow struct {
+	DeviceID                string             `json:"device_id"`
+	LastInventoryAt         pgtype.Timestamptz `json:"last_inventory_at"`
+	ResolvedIntervalMinutes int32              `json:"resolved_interval_minutes"`
+}
+
+func (q *Queries) ListDeviceInventoryFreshness(ctx context.Context, arg ListDeviceInventoryFreshnessParams) ([]ListDeviceInventoryFreshnessRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceInventoryFreshness, arg.DefaultIntervalMinutes, arg.DeviceIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceInventoryFreshnessRow{}
+	for rows.Next() {
+		var i ListDeviceInventoryFreshnessRow
+		if err := rows.Scan(&i.DeviceID, &i.LastInventoryAt, &i.ResolvedIntervalMinutes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

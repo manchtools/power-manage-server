@@ -49,10 +49,16 @@ type DeviceListFilter struct {
 // DeviceView is the complete device read model exposed to handlers.
 type DeviceView struct {
 	DeviceRow
-	Labels           map[string]string
-	AssignedUserIDs  []string
-	AssignedGroupIDs []string
+	Labels                           map[string]string
+	AssignedUserIDs                  []string
+	AssignedGroupIDs                 []string
+	LastInventoryAt                  *time.Time
+	ResolvedInventoryIntervalMinutes int32
 }
+
+// DefaultInventoryIntervalMinutes is the server cadence used when neither a
+// device nor any live device group supplies an inventory interval.
+const DefaultInventoryIntervalMinutes int32 = 1440
 
 // UserRow is one stored user.
 type UserRow = generated.User
@@ -156,6 +162,11 @@ func (s *Store) GetDeviceView(ctx context.Context, id string) (DeviceView, error
 	for _, label := range labels {
 		view.Labels[label.Key] = label.Value
 	}
+	views := []DeviceView{view}
+	if err := s.addDeviceFreshness(ctx, []string{id}, views); err != nil {
+		return DeviceView{}, err
+	}
+	view = views[0]
 	return view, nil
 }
 
@@ -253,7 +264,36 @@ func (s *Store) ListDeviceViews(ctx context.Context, filter DeviceListFilter) ([
 		i := byID[assignment.DeviceID]
 		views[i].AssignedGroupIDs = append(views[i].AssignedGroupIDs, assignment.GroupID)
 	}
+	if err := s.addDeviceFreshness(ctx, ids, views); err != nil {
+		return nil, err
+	}
 	return views, nil
+}
+
+func (s *Store) addDeviceFreshness(ctx context.Context, ids []string, views []DeviceView) error {
+	rows, err := s.queries.ListDeviceInventoryFreshness(ctx, generated.ListDeviceInventoryFreshnessParams{
+		DefaultIntervalMinutes: DefaultInventoryIntervalMinutes,
+		DeviceIds:              ids,
+	})
+	if err != nil {
+		return fmt.Errorf("device: list inventory freshness: %w", err)
+	}
+	byID := make(map[string]int, len(views))
+	for i := range views {
+		byID[views[i].ID] = i
+	}
+	for _, row := range rows {
+		i, ok := byID[row.DeviceID]
+		if !ok {
+			continue
+		}
+		if row.LastInventoryAt.Valid {
+			collectedAt := row.LastInventoryAt.Time
+			views[i].LastInventoryAt = &collectedAt
+		}
+		views[i].ResolvedInventoryIntervalMinutes = row.ResolvedIntervalMinutes
+	}
+	return nil
 }
 
 // CountDeviceViews counts the same filtered set as ListDeviceViews without a
@@ -284,6 +324,19 @@ func (s *Store) ListDeviceGroupIDs(ctx context.Context, deviceID string) ([]stri
 		return nil, fmt.Errorf("device: list group ids: %w", err)
 	}
 	return ids, nil
+}
+
+// IsDeviceAssignedToUser reports whether a live device is assigned directly
+// to a user or through one of the user's live groups.
+func (s *Store) IsDeviceAssignedToUser(ctx context.Context, deviceID, userID string) (bool, error) {
+	assigned, err := s.queries.IsDeviceAssignedToUser(ctx, generated.IsDeviceAssignedToUserParams{
+		DeviceID: deviceID,
+		UserID:   userID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("device: check user assignment: %w", err)
+	}
+	return assigned, nil
 }
 
 // GetUser returns one live user. ErrNotFound when unknown or deleted.
