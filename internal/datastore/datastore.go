@@ -1,87 +1,13 @@
-// Package datastore holds the client-side mTLS/auth plumbing for the control
-// server's connections to Valkey and Postgres (spec 32: datastore auth
-// hardening). It is the CLIENT counterpart to internal/mtls (which builds the
-// SERVER-side TLS configs the gateway presents): these helpers build the client
-// config a datastore connection presents, and fail closed if a connection is
-// configured for cleartext rather than mutual TLS.
-//
-// Spec 32 has NO plaintext fallback — mutual TLS is the only supported posture,
-// reusing the spec-31 CA as the single trust root. These are the reusable
-// primitives; wiring them into the concrete client sites (with the TLS-capable
-// test harness) is the next implementation phase.
+// Package datastore validates the control server's PostgreSQL transport
+// posture. PostgreSQL is the only external datastore in the target runtime.
 package datastore
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 )
-
-// ValkeyClientTLS builds the client mTLS config a Valkey connection presents:
-// the component's CA-signed client certificate, server verification pinned to
-// the internal CA ONLY (RootCAs, never system roots — a public cert with a
-// matching name cannot impersonate the datastore), TLS 1.3 floor. Mirrors the
-// agent's gateway-facing strict-CA trust in both directions.
-func ValkeyClientTLS(certPEM, keyPEM, caPEM []byte) (*tls.Config, error) {
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("datastore: parse client certificate: %w", err)
-	}
-	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM(caPEM) {
-		return nil, errors.New("datastore: failed to parse CA certificate")
-	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      caPool,
-		MinVersion:   tls.VersionTLS13,
-	}, nil
-}
-
-// ValkeyClientTLSFromFiles builds the datastore client mTLS config from cert
-// file paths (the shape every binary's config carries). Returns (nil, nil) when
-// all three paths are empty — mTLS not configured, so the caller decides whether
-// that is allowed (dev) or a fail-closed boot error (production). A partial set
-// (some paths but not all) is always an error: it signals a half-finished mTLS
-// config that must not silently degrade to plaintext. Otherwise it reads the
-// files and delegates to ValkeyClientTLS.
-func ValkeyClientTLSFromFiles(certPath, keyPath, caPath string) (*tls.Config, error) {
-	if certPath == "" && keyPath == "" && caPath == "" {
-		return nil, nil
-	}
-	if certPath == "" || keyPath == "" || caPath == "" {
-		return nil, errors.New("datastore: Valkey TLS cert, key, and CA must all be set for mTLS (spec 32)")
-	}
-	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		return nil, fmt.Errorf("datastore: read valkey client cert: %w", err)
-	}
-	keyPEM, err := os.ReadFile(keyPath)
-	if err != nil {
-		return nil, fmt.Errorf("datastore: read valkey client key: %w", err)
-	}
-	caPEM, err := os.ReadFile(caPath)
-	if err != nil {
-		return nil, fmt.Errorf("datastore: read valkey CA: %w", err)
-	}
-	return ValkeyClientTLS(certPEM, keyPEM, caPEM)
-}
-
-// PostgresTLSPosture reports the DSN's TLS posture for doctor display: the
-// effective sslmode and the client-cert path. Safe fields only — never a
-// credential, never the raw DSN (whose parse errors can embed the password).
-// An unparseable DSN yields ("", ""): posture unknown, reported as such.
-func PostgresTLSPosture(connString string) (sslmode, sslcert string) {
-	params, err := dsnParams(connString)
-	if err != nil {
-		return "", ""
-	}
-	return params["sslmode"], params["sslcert"]
-}
 
 // RequirePostgresTLS returns an error unless connString is configured for mutual
 // TLS: sslmode=verify-full with the client-cert material (sslrootcert/sslcert/
@@ -92,7 +18,7 @@ func PostgresTLSPosture(connString string) (sslmode, sslcert string) {
 func RequirePostgresTLS(connString string) error {
 	params, err := dsnParams(connString)
 	if err != nil {
-		return err
+		return errors.New("datastore: invalid PostgreSQL DSN")
 	}
 	if got := params["sslmode"]; got != "verify-full" {
 		return fmt.Errorf("datastore: Postgres sslmode=%q — spec 32 requires verify-full (mutual TLS, no plaintext fallback)", got)

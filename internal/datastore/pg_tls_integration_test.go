@@ -3,8 +3,7 @@ package datastore_test
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -31,7 +30,7 @@ import (
 // exercise operationally-issued certs rather than a throwaway PKI.
 func buildTestCA(t *testing.T) *ca.CA {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("ca key: %v", err)
 	}
@@ -44,16 +43,16 @@ func buildTestCA(t *testing.T) *ca.CA {
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, key)
 	if err != nil {
 		t.Fatalf("ca cert: %v", err)
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	kder, err := x509.MarshalECPrivateKey(key)
+	kder, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		t.Fatalf("ca key marshal: %v", err)
 	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kder})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: kder})
 	certAuth, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
 	if err != nil {
 		t.Fatalf("ca.NewFromPEM: %v", err)
@@ -61,11 +60,11 @@ func buildTestCA(t *testing.T) *ca.CA {
 	return certAuth
 }
 
-// genKeyCSR generates an EC keypair and a plain CSR (no SANs — the CA
+// genKeyCSR generates an Ed25519 keypair and a plain CSR (no SANs — the CA
 // authoritatively stamps SANs) with the given CN.
 func genKeyCSR(t *testing.T, cn string) (keyPEM, csrPEM []byte) {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("genkey: %v", err)
 	}
@@ -74,11 +73,11 @@ func genKeyCSR(t *testing.T, cn string) (keyPEM, csrPEM []byte) {
 	if err != nil {
 		t.Fatalf("csr: %v", err)
 	}
-	kder, err := x509.MarshalECPrivateKey(key)
+	kder, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		t.Fatalf("marshalkey: %v", err)
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kder}),
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: kder}),
 		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 }
 
