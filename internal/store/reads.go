@@ -26,6 +26,9 @@ type DeviceRow = generated.Device
 // DeliveryRow is one durable manifest delivery.
 type DeliveryRow = generated.Delivery
 
+// JobRow is one durable scheduled job.
+type JobRow = generated.Job
+
 // DeviceStatusFilter selects the server-derived online state for a device
 // listing. Zero keeps both states.
 type DeviceStatusFilter int32
@@ -177,6 +180,15 @@ func (s *Store) ListDeviceDeliveries(ctx context.Context, deviceID string, limit
 		return nil, fmt.Errorf("delivery: list sendable for device: %w", err)
 	}
 	return rows, nil
+}
+
+// GetJob returns one durable scheduled job. ErrNotFound when it is unknown.
+func (s *Store) GetJob(ctx context.Context, id string) (JobRow, error) {
+	row, err := s.queries.GetJob(ctx, id)
+	if err != nil {
+		return JobRow{}, fmt.Errorf("job: get: %w", translateNotFound(err))
+	}
+	return row, nil
 }
 
 // GetDeviceView returns one live device with its labels and assignees.

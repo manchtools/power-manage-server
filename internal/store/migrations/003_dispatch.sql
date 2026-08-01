@@ -173,6 +173,8 @@ CREATE TABLE public.jobs (
 
     CONSTRAINT jobs_id_ulid CHECK (job_id ~ '^[0-9A-HJKMNP-TV-Z]{26}$'),
     CONSTRAINT jobs_kind_token CHECK (kind ~ '^[a-z][a-z0-9_.]{0,63}$'),
+    CONSTRAINT jobs_payload_object CHECK (jsonb_typeof(payload) = 'object'),
+    CONSTRAINT jobs_payload_bounded CHECK (octet_length(payload::text) <= 65536),
     CONSTRAINT jobs_state_valid
         CHECK (state = ANY (ARRAY[
             'PENDING'::text,
@@ -182,14 +184,20 @@ CREATE TABLE public.jobs (
             'CANCELLED'::text])),
     CONSTRAINT jobs_attempt_count_nonneg CHECK (attempt_count >= 0),
     CONSTRAINT jobs_max_attempts_positive CHECK (max_attempts > 0),
+    CONSTRAINT jobs_max_attempts_bounded CHECK (max_attempts <= 100),
     CONSTRAINT jobs_result_code_token CHECK (result_code ~ '^[A-Za-z0-9_.-]{0,64}$'),
+    CONSTRAINT jobs_claimed_by_token CHECK (claimed_by = '' OR claimed_by ~ '^[0-9A-HJKMNP-TV-Z]{26}$'),
+    CONSTRAINT jobs_dedupe_key_token CHECK (dedupe_key IS NULL OR dedupe_key ~ '^[a-z][a-z0-9_.:-]{0,127}$'),
     CONSTRAINT jobs_claim_paired
         CHECK ((claimed_at IS NULL) = (claimed_until IS NULL)),
     CONSTRAINT jobs_state_timestamps CHECK (
         CASE state
-            WHEN 'PENDING'  THEN terminal_at IS NULL
-            WHEN 'CLAIMED'  THEN claimed_at IS NOT NULL AND terminal_at IS NULL
-            ELSE terminal_at IS NOT NULL
+            WHEN 'PENDING'  THEN
+                claimed_at IS NULL AND claimed_until IS NULL AND claimed_by = '' AND terminal_at IS NULL
+            WHEN 'CLAIMED'  THEN
+                claimed_at IS NOT NULL AND claimed_until IS NOT NULL AND claimed_by <> '' AND terminal_at IS NULL
+            ELSE
+                claimed_at IS NULL AND claimed_until IS NULL AND claimed_by = '' AND terminal_at IS NOT NULL
         END
     )
 );

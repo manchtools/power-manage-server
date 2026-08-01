@@ -27,15 +27,13 @@ WHERE job_id = $1
   );
 
 -- name: ListClaimableJobs :many
--- Candidates for the scheduler tick. FOR UPDATE SKIP LOCKED so two
--- ticks in the same process never hand the same candidate to two
--- workers before the conditional claim even runs.
+-- Candidates for the scheduler tick. ClaimJob is the arbiter; concurrent
+-- runners may see the same candidate but only one conditional UPDATE wins.
 SELECT * FROM jobs
 WHERE (state = 'PENDING' AND due_at <= $1)
    OR (state = 'CLAIMED' AND claimed_until <= $1)
 ORDER BY due_at
-LIMIT $2
-FOR UPDATE SKIP LOCKED;
+LIMIT $2;
 
 -- name: ReleaseJobClaim :execrows
 -- Hand a claimed row back for a later retry.
@@ -44,24 +42,26 @@ SET state = 'PENDING',
     claimed_at = NULL,
     claimed_until = NULL,
     claimed_by = '',
-    due_at = $2,
-    result_code = $3,
-    updated_at = $4
+    due_at = $3,
+    result_code = $4,
+    updated_at = $5
 WHERE job_id = $1
-  AND state = 'CLAIMED';
+  AND state = 'CLAIMED'
+  AND claimed_by = $2;
 
 -- name: FinishJob :execrows
 UPDATE jobs
-SET state = $2,
+SET state = $3,
     claimed_at = NULL,
     claimed_until = NULL,
     claimed_by = '',
-    terminal_at = $3,
-    result_code = $4,
-    updated_at = $3
+    terminal_at = $4,
+    result_code = $5,
+    updated_at = $4
 WHERE job_id = $1
   AND state = 'CLAIMED'
-  AND $2 IN ('SUCCEEDED', 'FAILED', 'CANCELLED');
+  AND claimed_by = $2
+  AND $3 IN ('SUCCEEDED', 'FAILED', 'CANCELLED');
 
 -- name: CancelPendingJob :execrows
 UPDATE jobs

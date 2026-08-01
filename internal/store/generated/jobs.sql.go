@@ -90,20 +90,22 @@ func (q *Queries) DeleteTerminalJobsBefore(ctx context.Context, terminalAt *time
 
 const finishJob = `-- name: FinishJob :execrows
 UPDATE jobs
-SET state = $2,
+SET state = $3,
     claimed_at = NULL,
     claimed_until = NULL,
     claimed_by = '',
-    terminal_at = $3,
-    result_code = $4,
-    updated_at = $3
+    terminal_at = $4,
+    result_code = $5,
+    updated_at = $4
 WHERE job_id = $1
   AND state = 'CLAIMED'
-  AND $2 IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+  AND claimed_by = $2
+  AND $3 IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
 `
 
 type FinishJobParams struct {
 	JobID      string     `json:"job_id"`
+	ClaimedBy  string     `json:"claimed_by"`
 	State      string     `json:"state"`
 	TerminalAt *time.Time `json:"terminal_at"`
 	ResultCode string     `json:"result_code"`
@@ -112,6 +114,7 @@ type FinishJobParams struct {
 func (q *Queries) FinishJob(ctx context.Context, arg FinishJobParams) (int64, error) {
 	result, err := q.db.Exec(ctx, finishJob,
 		arg.JobID,
+		arg.ClaimedBy,
 		arg.State,
 		arg.TerminalAt,
 		arg.ResultCode,
@@ -202,7 +205,6 @@ WHERE (state = 'PENDING' AND due_at <= $1)
    OR (state = 'CLAIMED' AND claimed_until <= $1)
 ORDER BY due_at
 LIMIT $2
-FOR UPDATE SKIP LOCKED
 `
 
 type ListClaimableJobsParams struct {
@@ -210,9 +212,8 @@ type ListClaimableJobsParams struct {
 	Limit int32     `json:"limit"`
 }
 
-// Candidates for the scheduler tick. FOR UPDATE SKIP LOCKED so two
-// ticks in the same process never hand the same candidate to two
-// workers before the conditional claim even runs.
+// Candidates for the scheduler tick. ClaimJob is the arbiter; concurrent
+// runners may see the same candidate but only one conditional UPDATE wins.
 func (q *Queries) ListClaimableJobs(ctx context.Context, arg ListClaimableJobsParams) ([]Job, error) {
 	rows, err := q.db.Query(ctx, listClaimableJobs, arg.DueAt, arg.Limit)
 	if err != nil {
@@ -255,15 +256,17 @@ SET state = 'PENDING',
     claimed_at = NULL,
     claimed_until = NULL,
     claimed_by = '',
-    due_at = $2,
-    result_code = $3,
-    updated_at = $4
+    due_at = $3,
+    result_code = $4,
+    updated_at = $5
 WHERE job_id = $1
   AND state = 'CLAIMED'
+  AND claimed_by = $2
 `
 
 type ReleaseJobClaimParams struct {
 	JobID      string    `json:"job_id"`
+	ClaimedBy  string    `json:"claimed_by"`
 	DueAt      time.Time `json:"due_at"`
 	ResultCode string    `json:"result_code"`
 	UpdatedAt  time.Time `json:"updated_at"`
@@ -273,6 +276,7 @@ type ReleaseJobClaimParams struct {
 func (q *Queries) ReleaseJobClaim(ctx context.Context, arg ReleaseJobClaimParams) (int64, error) {
 	result, err := q.db.Exec(ctx, releaseJobClaim,
 		arg.JobID,
+		arg.ClaimedBy,
 		arg.DueAt,
 		arg.ResultCode,
 		arg.UpdatedAt,

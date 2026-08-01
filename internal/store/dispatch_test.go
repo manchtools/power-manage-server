@@ -120,6 +120,7 @@ func TestJobs_ConditionalClaimAdmitsExactlyOneWorker(t *testing.T) {
 	now := time.Now().UTC()
 
 	id := newID()
+	workerA, workerB := newID(), newID()
 	_, err := pool.Exec(ctx, `INSERT INTO public.jobs (job_id, kind, state, due_at)
 		VALUES ($1, 'dynamic_group.evaluate', 'PENDING', $2)`, id, now.Add(-time.Minute))
 	require.NoError(t, err)
@@ -130,18 +131,18 @@ func TestJobs_ConditionalClaimAdmitsExactlyOneWorker(t *testing.T) {
 		WHERE job_id = $1
 		  AND ((state = 'PENDING' AND due_at <= $2) OR (state = 'CLAIMED' AND claimed_until <= $2))`
 
-	tag, err := pool.Exec(ctx, claim, id, now, now.Add(time.Minute), "worker-a")
+	tag, err := pool.Exec(ctx, claim, id, now, now.Add(time.Minute), workerA)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), tag.RowsAffected())
 
-	tag, err = pool.Exec(ctx, claim, id, now, now.Add(time.Minute), "worker-b")
+	tag, err = pool.Exec(ctx, claim, id, now, now.Add(time.Minute), workerB)
 	require.NoError(t, err)
 	assert.Zero(t, tag.RowsAffected(), "a live claim must not be stealable")
 
 	// Once the lease expires the row is reclaimable, which is how a
 	// worker that died holding it does not strand the job.
 	later := now.Add(2 * time.Minute)
-	tag, err = pool.Exec(ctx, claim, id, later, later.Add(time.Minute), "worker-b")
+	tag, err = pool.Exec(ctx, claim, id, later, later.Add(time.Minute), workerB)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), tag.RowsAffected(), "an expired lease must be reclaimable")
 
@@ -150,7 +151,7 @@ func TestJobs_ConditionalClaimAdmitsExactlyOneWorker(t *testing.T) {
 	require.NoError(t, pool.QueryRow(ctx,
 		`SELECT attempt_count, claimed_by FROM public.jobs WHERE job_id = $1`, id).Scan(&attempts, &by))
 	assert.Equal(t, int32(2), attempts)
-	assert.Equal(t, "worker-b", by)
+	assert.Equal(t, workerB, by)
 }
 
 // A scheduled singleton cannot be enqueued twice while one is live,
