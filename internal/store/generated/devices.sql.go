@@ -10,6 +10,132 @@ import (
 	"time"
 )
 
+const assignDeviceGroup = `-- name: AssignDeviceGroup :execrows
+INSERT INTO device_assigned_groups (device_id, group_id, assigned_at, assigned_by)
+SELECT $1, $2, $3, $4
+WHERE EXISTS (SELECT 1 FROM devices WHERE id = $1 AND is_deleted = FALSE)
+  AND EXISTS (SELECT 1 FROM user_groups WHERE id = $2 AND is_deleted = FALSE)
+ON CONFLICT (device_id, group_id) DO NOTHING
+`
+
+type AssignDeviceGroupParams struct {
+	DeviceID   string    `json:"device_id"`
+	GroupID    string    `json:"group_id"`
+	AssignedAt time.Time `json:"assigned_at"`
+	AssignedBy string    `json:"assigned_by"`
+}
+
+func (q *Queries) AssignDeviceGroup(ctx context.Context, arg AssignDeviceGroupParams) (int64, error) {
+	result, err := q.db.Exec(ctx, assignDeviceGroup,
+		arg.DeviceID,
+		arg.GroupID,
+		arg.AssignedAt,
+		arg.AssignedBy,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const assignDeviceUser = `-- name: AssignDeviceUser :execrows
+INSERT INTO device_assigned_users (device_id, user_id, assigned_at, assigned_by)
+SELECT $1, $2, $3, $4
+WHERE EXISTS (SELECT 1 FROM devices WHERE id = $1 AND is_deleted = FALSE)
+  AND EXISTS (SELECT 1 FROM users WHERE id = $2 AND is_deleted = FALSE)
+ON CONFLICT (device_id, user_id) DO NOTHING
+`
+
+type AssignDeviceUserParams struct {
+	DeviceID   string    `json:"device_id"`
+	UserID     string    `json:"user_id"`
+	AssignedAt time.Time `json:"assigned_at"`
+	AssignedBy string    `json:"assigned_by"`
+}
+
+func (q *Queries) AssignDeviceUser(ctx context.Context, arg AssignDeviceUserParams) (int64, error) {
+	result, err := q.db.Exec(ctx, assignDeviceUser,
+		arg.DeviceID,
+		arg.UserID,
+		arg.AssignedAt,
+		arg.AssignedBy,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const countDeviceViews = `-- name: CountDeviceViews :one
+SELECT COUNT(*)
+FROM devices d
+WHERE d.is_deleted = FALSE
+  AND (
+      $1::text IS NULL
+      OR EXISTS (
+          SELECT 1 FROM device_assigned_users dau
+          WHERE dau.device_id = d.id
+            AND dau.user_id = $1::text
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM device_assigned_groups dag
+          JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+          JOIN user_group_members ugm ON ugm.group_id = dag.group_id
+          WHERE dag.device_id = d.id
+            AND ugm.user_id = $1::text
+      )
+  )
+  AND (
+      NOT $2::boolean
+      OR EXISTS (
+          SELECT 1
+          FROM device_group_members dgm
+          JOIN device_groups dg ON dg.id = dgm.group_id AND dg.is_deleted = FALSE
+          WHERE dgm.device_id = d.id
+            AND dgm.group_id = ANY($3::text[])
+      )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_each_text($4::jsonb) wanted
+      WHERE NOT EXISTS (
+          SELECT 1 FROM device_labels dl
+          WHERE dl.device_id = d.id
+            AND dl.key = wanted.key
+            AND dl.value = wanted.value
+      )
+  )
+  AND (
+      $5::integer = 0
+      OR ($5::integer = 1 AND d.last_seen_at > $6)
+      OR ($5::integer = 2 AND (d.last_seen_at IS NULL OR d.last_seen_at <= $6))
+  )
+`
+
+type CountDeviceViewsParams struct {
+	AssignedUserID  *string    `json:"assigned_user_id"`
+	ScopeRestricted bool       `json:"scope_restricted"`
+	ScopeGroupIds   []string   `json:"scope_group_ids"`
+	LabelFilter     []byte     `json:"label_filter"`
+	StatusFilter    int32      `json:"status_filter"`
+	OnlineSince     *time.Time `json:"online_since"`
+}
+
+func (q *Queries) CountDeviceViews(ctx context.Context, arg CountDeviceViewsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDeviceViews,
+		arg.AssignedUserID,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+		arg.LabelFilter,
+		arg.StatusFilter,
+		arg.OnlineSince,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countDevices = `-- name: CountDevices :one
 SELECT COUNT(*) FROM devices WHERE is_deleted = FALSE
 `
@@ -22,7 +148,7 @@ func (q *Queries) CountDevices(ctx context.Context) (int64, error) {
 }
 
 const getDevice = `-- name: GetDevice :one
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, sync_interval_minutes, inventory_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing, search_tsv FROM devices WHERE id = $1 AND is_deleted = FALSE
+SELECT id, hostname, agent_version, agent_sealing_public_key, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, sync_interval_minutes, inventory_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing, search_tsv FROM devices WHERE id = $1 AND is_deleted = FALSE
 `
 
 func (q *Queries) GetDevice(ctx context.Context, id string) (Device, error) {
@@ -32,6 +158,7 @@ func (q *Queries) GetDevice(ctx context.Context, id string) (Device, error) {
 		&i.ID,
 		&i.Hostname,
 		&i.AgentVersion,
+		&i.AgentSealingPublicKey,
 		&i.CertFingerprint,
 		&i.CertNotAfter,
 		&i.RegisteredAt,
@@ -50,16 +177,25 @@ func (q *Queries) GetDevice(ctx context.Context, id string) (Device, error) {
 }
 
 const insertDevice = `-- name: InsertDevice :one
-INSERT INTO devices (id, hostname, agent_version, registered_at, last_seen_at)
-VALUES ($1, $2, $3, $4, $4)
-RETURNING id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, sync_interval_minutes, inventory_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing, search_tsv
+INSERT INTO devices (
+    id, hostname, agent_version, agent_sealing_public_key,
+    cert_fingerprint, cert_not_after, registered_at, last_seen_at,
+    registration_token_id
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, hostname, agent_version, agent_sealing_public_key, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, sync_interval_minutes, inventory_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing, search_tsv
 `
 
 type InsertDeviceParams struct {
-	ID           string     `json:"id"`
-	Hostname     string     `json:"hostname"`
-	AgentVersion string     `json:"agent_version"`
-	RegisteredAt *time.Time `json:"registered_at"`
+	ID                    string     `json:"id"`
+	Hostname              string     `json:"hostname"`
+	AgentVersion          string     `json:"agent_version"`
+	AgentSealingPublicKey []byte     `json:"agent_sealing_public_key"`
+	CertFingerprint       *string    `json:"cert_fingerprint"`
+	CertNotAfter          *time.Time `json:"cert_not_after"`
+	RegisteredAt          *time.Time `json:"registered_at"`
+	LastSeenAt            *time.Time `json:"last_seen_at"`
+	RegistrationTokenID   *string    `json:"registration_token_id"`
 }
 
 func (q *Queries) InsertDevice(ctx context.Context, arg InsertDeviceParams) (Device, error) {
@@ -67,13 +203,19 @@ func (q *Queries) InsertDevice(ctx context.Context, arg InsertDeviceParams) (Dev
 		arg.ID,
 		arg.Hostname,
 		arg.AgentVersion,
+		arg.AgentSealingPublicKey,
+		arg.CertFingerprint,
+		arg.CertNotAfter,
 		arg.RegisteredAt,
+		arg.LastSeenAt,
+		arg.RegistrationTokenID,
 	)
 	var i Device
 	err := row.Scan(
 		&i.ID,
 		&i.Hostname,
 		&i.AgentVersion,
+		&i.AgentSealingPublicKey,
 		&i.CertFingerprint,
 		&i.CertNotAfter,
 		&i.RegisteredAt,
@@ -91,12 +233,412 @@ func (q *Queries) InsertDevice(ctx context.Context, arg InsertDeviceParams) (Dev
 	return i, err
 }
 
+const listDeviceAssignedGroupIDs = `-- name: ListDeviceAssignedGroupIDs :many
+SELECT group_id FROM device_assigned_groups WHERE device_id = $1 ORDER BY group_id
+`
+
+func (q *Queries) ListDeviceAssignedGroupIDs(ctx context.Context, deviceID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeviceAssignedGroupIDs, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var group_id string
+		if err := rows.Scan(&group_id); err != nil {
+			return nil, err
+		}
+		items = append(items, group_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceAssignedGroupIDsBatch = `-- name: ListDeviceAssignedGroupIDsBatch :many
+SELECT device_id, group_id FROM device_assigned_groups
+WHERE device_id = ANY($1::text[]) ORDER BY device_id, group_id
+`
+
+type ListDeviceAssignedGroupIDsBatchRow struct {
+	DeviceID string `json:"device_id"`
+	GroupID  string `json:"group_id"`
+}
+
+func (q *Queries) ListDeviceAssignedGroupIDsBatch(ctx context.Context, dollar_1 []string) ([]ListDeviceAssignedGroupIDsBatchRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceAssignedGroupIDsBatch, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceAssignedGroupIDsBatchRow{}
+	for rows.Next() {
+		var i ListDeviceAssignedGroupIDsBatchRow
+		if err := rows.Scan(&i.DeviceID, &i.GroupID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceAssignedUserIDs = `-- name: ListDeviceAssignedUserIDs :many
+SELECT user_id FROM device_assigned_users WHERE device_id = $1 ORDER BY user_id
+`
+
+func (q *Queries) ListDeviceAssignedUserIDs(ctx context.Context, deviceID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeviceAssignedUserIDs, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var user_id string
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceAssignedUserIDsBatch = `-- name: ListDeviceAssignedUserIDsBatch :many
+SELECT device_id, user_id FROM device_assigned_users
+WHERE device_id = ANY($1::text[]) ORDER BY device_id, user_id
+`
+
+type ListDeviceAssignedUserIDsBatchRow struct {
+	DeviceID string `json:"device_id"`
+	UserID   string `json:"user_id"`
+}
+
+func (q *Queries) ListDeviceAssignedUserIDsBatch(ctx context.Context, dollar_1 []string) ([]ListDeviceAssignedUserIDsBatchRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceAssignedUserIDsBatch, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceAssignedUserIDsBatchRow{}
+	for rows.Next() {
+		var i ListDeviceAssignedUserIDsBatchRow
+		if err := rows.Scan(&i.DeviceID, &i.UserID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceGroupIDs = `-- name: ListDeviceGroupIDs :many
+SELECT dgm.group_id
+FROM device_group_members dgm
+JOIN device_groups dg ON dg.id = dgm.group_id AND dg.is_deleted = FALSE
+WHERE dgm.device_id = $1
+ORDER BY dgm.group_id
+`
+
+func (q *Queries) ListDeviceGroupIDs(ctx context.Context, deviceID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeviceGroupIDs, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var group_id string
+		if err := rows.Scan(&group_id); err != nil {
+			return nil, err
+		}
+		items = append(items, group_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceLabels = `-- name: ListDeviceLabels :many
+SELECT device_id, key, value FROM device_labels WHERE device_id = $1 ORDER BY key
+`
+
+func (q *Queries) ListDeviceLabels(ctx context.Context, deviceID string) ([]DeviceLabel, error) {
+	rows, err := q.db.Query(ctx, listDeviceLabels, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeviceLabel{}
+	for rows.Next() {
+		var i DeviceLabel
+		if err := rows.Scan(&i.DeviceID, &i.Key, &i.Value); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceLabelsBatch = `-- name: ListDeviceLabelsBatch :many
+SELECT device_id, key, value FROM device_labels WHERE device_id = ANY($1::text[]) ORDER BY device_id, key
+`
+
+func (q *Queries) ListDeviceLabelsBatch(ctx context.Context, dollar_1 []string) ([]DeviceLabel, error) {
+	rows, err := q.db.Query(ctx, listDeviceLabelsBatch, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeviceLabel{}
+	for rows.Next() {
+		var i DeviceLabel
+		if err := rows.Scan(&i.DeviceID, &i.Key, &i.Value); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDevices = `-- name: ListDevices :many
+SELECT d.id, d.hostname, d.agent_version, d.agent_sealing_public_key, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.is_deleted, d.sync_interval_minutes, d.inventory_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing, d.search_tsv
+FROM devices d
+WHERE d.is_deleted = FALSE
+  AND d.id > $1
+  AND (
+      $2::text IS NULL
+      OR EXISTS (
+          SELECT 1 FROM device_assigned_users dau
+          WHERE dau.device_id = d.id
+            AND dau.user_id = $2::text
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM device_assigned_groups dag
+          JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+          JOIN user_group_members ugm ON ugm.group_id = dag.group_id
+          WHERE dag.device_id = d.id
+            AND ugm.user_id = $2::text
+      )
+  )
+  AND (
+      NOT $3::boolean
+      OR EXISTS (
+          SELECT 1
+          FROM device_group_members dgm
+          JOIN device_groups dg ON dg.id = dgm.group_id AND dg.is_deleted = FALSE
+          WHERE dgm.device_id = d.id
+            AND dgm.group_id = ANY($4::text[])
+      )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_each_text($5::jsonb) wanted
+      WHERE NOT EXISTS (
+          SELECT 1 FROM device_labels dl
+          WHERE dl.device_id = d.id
+            AND dl.key = wanted.key
+            AND dl.value = wanted.value
+      )
+  )
+  AND (
+      $6::integer = 0
+      OR ($6::integer = 1 AND d.last_seen_at > $7)
+      OR ($6::integer = 2 AND (d.last_seen_at IS NULL OR d.last_seen_at <= $7))
+  )
+ORDER BY d.id
+LIMIT $8
+`
+
+type ListDevicesParams struct {
+	AfterID         string     `json:"after_id"`
+	AssignedUserID  *string    `json:"assigned_user_id"`
+	ScopeRestricted bool       `json:"scope_restricted"`
+	ScopeGroupIds   []string   `json:"scope_group_ids"`
+	LabelFilter     []byte     `json:"label_filter"`
+	StatusFilter    int32      `json:"status_filter"`
+	OnlineSince     *time.Time `json:"online_since"`
+	RowLimit        int32      `json:"row_limit"`
+}
+
+func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Device, error) {
+	rows, err := q.db.Query(ctx, listDevices,
+		arg.AfterID,
+		arg.AssignedUserID,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+		arg.LabelFilter,
+		arg.StatusFilter,
+		arg.OnlineSince,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Device{}
+	for rows.Next() {
+		var i Device
+		if err := rows.Scan(
+			&i.ID,
+			&i.Hostname,
+			&i.AgentVersion,
+			&i.AgentSealingPublicKey,
+			&i.CertFingerprint,
+			&i.CertNotAfter,
+			&i.RegisteredAt,
+			&i.LastSeenAt,
+			&i.RegistrationTokenID,
+			&i.IsDeleted,
+			&i.SyncIntervalMinutes,
+			&i.InventoryIntervalMinutes,
+			&i.ComplianceStatus,
+			&i.ComplianceCheckedAt,
+			&i.ComplianceTotal,
+			&i.CompliancePassing,
+			&i.SearchTsv,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const removeDeviceLabel = `-- name: RemoveDeviceLabel :execrows
+DELETE FROM device_labels WHERE device_id = $1 AND key = $2
+`
+
+type RemoveDeviceLabelParams struct {
+	DeviceID string `json:"device_id"`
+	Key      string `json:"key"`
+}
+
+func (q *Queries) RemoveDeviceLabel(ctx context.Context, arg RemoveDeviceLabelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeDeviceLabel, arg.DeviceID, arg.Key)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setDeviceInventoryInterval = `-- name: SetDeviceInventoryInterval :execrows
+UPDATE devices SET inventory_interval_minutes = $1
+WHERE id = $2 AND is_deleted = FALSE
+`
+
+type SetDeviceInventoryIntervalParams struct {
+	Minutes int32  `json:"minutes"`
+	ID      string `json:"id"`
+}
+
+func (q *Queries) SetDeviceInventoryInterval(ctx context.Context, arg SetDeviceInventoryIntervalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setDeviceInventoryInterval, arg.Minutes, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setDeviceLabel = `-- name: SetDeviceLabel :execrows
+INSERT INTO device_labels (device_id, key, value)
+SELECT $1, $2, $3
+WHERE EXISTS (SELECT 1 FROM devices WHERE id = $1 AND is_deleted = FALSE)
+ON CONFLICT (device_id, key) DO UPDATE SET value = EXCLUDED.value
+`
+
+type SetDeviceLabelParams struct {
+	DeviceID string `json:"device_id"`
+	Key      string `json:"key"`
+	Value    string `json:"value"`
+}
+
+func (q *Queries) SetDeviceLabel(ctx context.Context, arg SetDeviceLabelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setDeviceLabel, arg.DeviceID, arg.Key, arg.Value)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setDeviceSyncInterval = `-- name: SetDeviceSyncInterval :execrows
+UPDATE devices SET sync_interval_minutes = $1
+WHERE id = $2 AND is_deleted = FALSE
+`
+
+type SetDeviceSyncIntervalParams struct {
+	Minutes int32  `json:"minutes"`
+	ID      string `json:"id"`
+}
+
+func (q *Queries) SetDeviceSyncInterval(ctx context.Context, arg SetDeviceSyncIntervalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setDeviceSyncInterval, arg.Minutes, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const softDeleteDevice = `-- name: SoftDeleteDevice :execrows
 UPDATE devices SET is_deleted = TRUE WHERE id = $1 AND is_deleted = FALSE
 `
 
 func (q *Queries) SoftDeleteDevice(ctx context.Context, id string) (int64, error) {
 	result, err := q.db.Exec(ctx, softDeleteDevice, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const unassignDeviceGroup = `-- name: UnassignDeviceGroup :execrows
+DELETE FROM device_assigned_groups WHERE device_id = $1 AND group_id = $2
+`
+
+type UnassignDeviceGroupParams struct {
+	DeviceID string `json:"device_id"`
+	GroupID  string `json:"group_id"`
+}
+
+func (q *Queries) UnassignDeviceGroup(ctx context.Context, arg UnassignDeviceGroupParams) (int64, error) {
+	result, err := q.db.Exec(ctx, unassignDeviceGroup, arg.DeviceID, arg.GroupID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const unassignDeviceUser = `-- name: UnassignDeviceUser :execrows
+DELETE FROM device_assigned_users WHERE device_id = $1 AND user_id = $2
+`
+
+type UnassignDeviceUserParams struct {
+	DeviceID string `json:"device_id"`
+	UserID   string `json:"user_id"`
+}
+
+func (q *Queries) UnassignDeviceUser(ctx context.Context, arg UnassignDeviceUserParams) (int64, error) {
+	result, err := q.db.Exec(ctx, unassignDeviceUser, arg.DeviceID, arg.UserID)
 	if err != nil {
 		return 0, err
 	}

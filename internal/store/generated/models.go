@@ -227,6 +227,7 @@ type Device struct {
 	ID                       string      `json:"id"`
 	Hostname                 string      `json:"hostname"`
 	AgentVersion             string      `json:"agent_version"`
+	AgentSealingPublicKey    []byte      `json:"agent_sealing_public_key"`
 	CertFingerprint          *string     `json:"cert_fingerprint"`
 	CertNotAfter             *time.Time  `json:"cert_not_after"`
 	RegisteredAt             *time.Time  `json:"registered_at"`

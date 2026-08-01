@@ -50,16 +50,17 @@ func mutationOp() store.AuditOperation {
 }
 
 func insertDevice(ctx context.Context, tx *store.Tx, id, hostname string) error {
+	at := time.Now().UTC()
 	_, err := tx.InsertDevice(ctx, generated.InsertDeviceParams{
-		ID:           id,
-		Hostname:     hostname,
-		AgentVersion: "1.0.0",
-		RegisteredAt: ptrTime(time.Now().UTC()),
+		ID:                    id,
+		Hostname:              hostname,
+		AgentVersion:          "1.0.0",
+		AgentSealingPublicKey: make([]byte, 32),
+		RegisteredAt:          &at,
+		LastSeenAt:            &at,
 	})
 	return err
 }
-
-func ptrTime(t time.Time) *time.Time { return &t }
 
 func deviceEffect(id string) store.AuditEffect {
 	return store.AuditEffect{

@@ -24,7 +24,8 @@ func seedDevice(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	id := newID()
 	_, err := pool.Exec(context.Background(),
-		`INSERT INTO public.devices (id, hostname) VALUES ($1, $2)`, id, "dispatch-"+id)
+		`INSERT INTO public.devices (id, hostname, agent_sealing_public_key) VALUES ($1, $2, $3)`,
+		id, "dispatch-"+id, make([]byte, 32))
 	require.NoError(t, err)
 	return id
 }

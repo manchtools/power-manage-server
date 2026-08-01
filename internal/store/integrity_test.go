@@ -260,7 +260,8 @@ func TestForeignKeys_RejectOrphanRows(t *testing.T) {
 	_, pool := setupPostgres(t)
 
 	deviceID := newID()
-	exec(t, pool, `INSERT INTO public.devices (id, hostname) VALUES ($1, 'orphan.example.test')`, deviceID)
+	exec(t, pool, `INSERT INTO public.devices (id, hostname, agent_sealing_public_key)
+		VALUES ($1, 'orphan.example.test', $2)`, deviceID, make([]byte, 32))
 	actionID := newID()
 	exec(t, pool, `INSERT INTO public.actions (id, name, action_type) VALUES ($1, 'rotate', 1)`, actionID)
 	user := seedUser(t, pool)

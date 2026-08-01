@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -20,6 +22,37 @@ type AuditEffectRow = generated.AuditEffect
 
 // DeviceRow is one stored device.
 type DeviceRow = generated.Device
+
+// DeviceStatusFilter selects the server-derived online state for a device
+// listing. Zero keeps both states.
+type DeviceStatusFilter int32
+
+const (
+	DeviceStatusAny     DeviceStatusFilter = 0
+	DeviceStatusOnline  DeviceStatusFilter = 1
+	DeviceStatusOffline DeviceStatusFilter = 2
+)
+
+// DeviceListFilter contains every narrowing rule shared by ListDeviceViews
+// and CountDeviceViews. OnlineSince is normally now minus five minutes.
+type DeviceListFilter struct {
+	AfterID         string
+	Limit           int32
+	Status          DeviceStatusFilter
+	OnlineSince     time.Time
+	Labels          map[string]string
+	AssignedUserID  *string
+	ScopeRestricted bool
+	ScopeGroupIDs   []string
+}
+
+// DeviceView is the complete device read model exposed to handlers.
+type DeviceView struct {
+	DeviceRow
+	Labels           map[string]string
+	AssignedUserIDs  []string
+	AssignedGroupIDs []string
+}
 
 // UserRow is one stored user.
 type UserRow = generated.User
@@ -94,6 +127,163 @@ func (s *Store) CountDevices(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("device: count: %w", err)
 	}
 	return n, nil
+}
+
+// GetDeviceView returns one live device with its labels and assignees.
+func (s *Store) GetDeviceView(ctx context.Context, id string) (DeviceView, error) {
+	row, err := s.GetDevice(ctx, id)
+	if err != nil {
+		return DeviceView{}, err
+	}
+	labels, err := s.queries.ListDeviceLabels(ctx, id)
+	if err != nil {
+		return DeviceView{}, fmt.Errorf("device: list labels: %w", err)
+	}
+	users, err := s.queries.ListDeviceAssignedUserIDs(ctx, id)
+	if err != nil {
+		return DeviceView{}, fmt.Errorf("device: list assigned users: %w", err)
+	}
+	groups, err := s.queries.ListDeviceAssignedGroupIDs(ctx, id)
+	if err != nil {
+		return DeviceView{}, fmt.Errorf("device: list assigned groups: %w", err)
+	}
+	view := DeviceView{
+		DeviceRow:        row,
+		Labels:           make(map[string]string, len(labels)),
+		AssignedUserIDs:  users,
+		AssignedGroupIDs: groups,
+	}
+	for _, label := range labels {
+		view.Labels[label.Key] = label.Value
+	}
+	return view, nil
+}
+
+type normalizedDeviceFilter struct {
+	afterID         string
+	limit           int32
+	status          int32
+	onlineSince     time.Time
+	labels          []byte
+	assignedUserID  *string
+	scopeRestricted bool
+	scopeGroupIDs   []string
+}
+
+func (s *Store) normalizeDeviceFilter(filter DeviceListFilter) (normalizedDeviceFilter, error) {
+	if filter.Limit < 0 || filter.Limit > 100 {
+		return normalizedDeviceFilter{}, fmt.Errorf("device: list limit must be between 0 and 100")
+	}
+	if filter.Status < DeviceStatusAny || filter.Status > DeviceStatusOffline {
+		return normalizedDeviceFilter{}, fmt.Errorf("device: invalid status filter %d", filter.Status)
+	}
+	limit := filter.Limit
+	if limit == 0 {
+		limit = 50
+	}
+	onlineSince := filter.OnlineSince
+	if onlineSince.IsZero() {
+		onlineSince = s.clock().Add(-5 * time.Minute)
+	}
+	labels := filter.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	encodedLabels, err := json.Marshal(labels)
+	if err != nil {
+		return normalizedDeviceFilter{}, fmt.Errorf("device: encode label filter: %w", err)
+	}
+	return normalizedDeviceFilter{
+		afterID: filter.AfterID, limit: limit, status: int32(filter.Status),
+		onlineSince: onlineSince, labels: encodedLabels,
+		assignedUserID:  filter.AssignedUserID,
+		scopeRestricted: filter.ScopeRestricted, scopeGroupIDs: filter.ScopeGroupIDs,
+	}, nil
+}
+
+// ListDeviceViews returns a stable keyset page with labels and assignees
+// loaded in three bounded batch reads.
+func (s *Store) ListDeviceViews(ctx context.Context, filter DeviceListFilter) ([]DeviceView, error) {
+	f, err := s.normalizeDeviceFilter(filter)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListDevices(ctx, generated.ListDevicesParams{
+		AfterID: f.afterID, AssignedUserID: f.assignedUserID,
+		ScopeRestricted: f.scopeRestricted, ScopeGroupIds: f.scopeGroupIDs,
+		LabelFilter: f.labels, StatusFilter: f.status,
+		OnlineSince: &f.onlineSince, RowLimit: f.limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("device: list: %w", err)
+	}
+	if len(rows) == 0 {
+		return []DeviceView{}, nil
+	}
+
+	ids := make([]string, len(rows))
+	views := make([]DeviceView, len(rows))
+	byID := make(map[string]int, len(rows))
+	for i, row := range rows {
+		ids[i] = row.ID
+		byID[row.ID] = i
+		views[i] = DeviceView{DeviceRow: row, Labels: map[string]string{}}
+	}
+	labels, err := s.queries.ListDeviceLabelsBatch(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("device: list labels: %w", err)
+	}
+	for _, label := range labels {
+		i := byID[label.DeviceID]
+		views[i].Labels[label.Key] = label.Value
+	}
+	users, err := s.queries.ListDeviceAssignedUserIDsBatch(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("device: list assigned users: %w", err)
+	}
+	for _, assignment := range users {
+		i := byID[assignment.DeviceID]
+		views[i].AssignedUserIDs = append(views[i].AssignedUserIDs, assignment.UserID)
+	}
+	groups, err := s.queries.ListDeviceAssignedGroupIDsBatch(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("device: list assigned groups: %w", err)
+	}
+	for _, assignment := range groups {
+		i := byID[assignment.DeviceID]
+		views[i].AssignedGroupIDs = append(views[i].AssignedGroupIDs, assignment.GroupID)
+	}
+	return views, nil
+}
+
+// CountDeviceViews counts the same filtered set as ListDeviceViews without a
+// page cursor or limit.
+func (s *Store) CountDeviceViews(ctx context.Context, filter DeviceListFilter) (int64, error) {
+	f, err := s.normalizeDeviceFilter(filter)
+	if err != nil {
+		return 0, err
+	}
+	n, err := s.queries.CountDeviceViews(ctx, generated.CountDeviceViewsParams{
+		AssignedUserID: f.assignedUserID, ScopeRestricted: f.scopeRestricted,
+		ScopeGroupIds: f.scopeGroupIDs, LabelFilter: f.labels,
+		StatusFilter: f.status, OnlineSince: &f.onlineSince,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("device: count filtered: %w", err)
+	}
+	return n, nil
+}
+
+// ListDeviceGroupIDs returns the device groups containing a live device.
+func (s *Store) ListDeviceGroupIDs(ctx context.Context, deviceID string) ([]string, error) {
+	if _, err := s.GetDevice(ctx, deviceID); err != nil {
+		return nil, err
+	}
+	ids, err := s.queries.ListDeviceGroupIDs(ctx, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("device: list group ids: %w", err)
+	}
+	return ids, nil
 }
 
 // GetUser returns one live user. ErrNotFound when unknown or deleted.
