@@ -637,12 +637,13 @@ func TestDeviceHandlers_ExecutionReadsUseDirectKeysetAndScope(t *testing.T) {
 		{directExecutionID, f.directID, "pending", nil, 500, ``},
 		{outsideExecutionID, f.outsideID, "failed", &actionID, 200, `{"exitCode":1,"stderr":"hidden"}`},
 	} {
+		deliveryID := seedDelivery(t, f.raw, row.deviceID, f.now)
 		_, err := f.raw.Exec(context.Background(), `
 			INSERT INTO executions
-				(id, device_id, action_id, action_type, desired_state, status, output,
+				(id, delivery_id, device_id, action_id, action_type, desired_state, status, output,
 				 created_at, created_by_type, created_by_id)
-			VALUES ($1, $2, $3, $4, 0, $5, $6, $7, 'user', $8)`,
-			row.id, row.deviceID, row.actionID, row.actionType, row.status,
+			VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, 'user', $9)`,
+			row.id, deliveryID, row.deviceID, row.actionID, row.actionType, row.status,
 			nullJSON(row.output), f.now, f.actorID)
 		require.NoError(t, err)
 	}
@@ -718,14 +719,15 @@ func nullJSON(value string) any {
 func TestDeviceHandlers_CancelExecutionIsDirectAndIdempotent(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	pendingID, terminalID, rollbackID := newID(), newID(), newID()
+	deliveryID := seedDelivery(t, f.raw, f.directID, f.now)
 	for _, row := range []struct{ id, status string }{
 		{pendingID, "pending"}, {terminalID, "success"}, {rollbackID, "scheduled"},
 	} {
 		_, err := f.raw.Exec(context.Background(), `
 			INSERT INTO executions
-				(id, device_id, action_type, desired_state, status, created_at, created_by_type, created_by_id)
-			VALUES ($1, $2, 200, 0, $3, $4, 'user', $5)`,
-			row.id, f.directID, row.status, f.now, f.actorID)
+				(id, delivery_id, device_id, action_type, desired_state, status, created_at, created_by_type, created_by_id)
+			VALUES ($1, $2, $3, 200, 0, $4, $5, 'user', $6)`,
+			row.id, deliveryID, f.directID, row.status, f.now, f.actorID)
 		require.NoError(t, err)
 	}
 	ctx := f.actor("CancelExecution")
@@ -1500,11 +1502,12 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int32(1440), updated.Msg.Device.InventoryIntervalMinutes)
 	executionID := newID()
+	deliveryID := seedDelivery(t, f.raw, f.directID, f.now)
 	_, err = f.raw.Exec(context.Background(), `
 		INSERT INTO executions
-			(id, device_id, action_type, desired_state, status, created_at, created_by_type, created_by_id)
-		VALUES ($1, $2, 200, 0, 'scheduled', $3, 'user', $4)`,
-		executionID, f.directID, f.now, f.actorID)
+			(id, delivery_id, device_id, action_type, desired_state, status, created_at, created_by_type, created_by_id)
+		VALUES ($1, $2, $3, 200, 0, 'scheduled', $4, 'user', $5)`,
+		executionID, deliveryID, f.directID, f.now, f.actorID)
 	require.NoError(t, err)
 	_, err = f.handlers.CancelExecution(ctx,
 		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: executionID}))

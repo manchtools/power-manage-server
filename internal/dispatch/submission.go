@@ -209,6 +209,7 @@ func (s *Service) SubmitBatch(ctx context.Context, p SubmitBatchParams) (Result,
 				}
 				deliveryIDs = append(deliveryIDs, deliveryID)
 				for _, execution := range compiled.executions {
+					execution.params.DeliveryID = deliveryID
 					if _, err := tx.InsertExecution(ctx, execution.params); err != nil {
 						return fmt.Errorf("insert execution: %w", err)
 					}

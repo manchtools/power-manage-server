@@ -29,6 +29,56 @@ func (q *Queries) CancelPendingExecution(ctx context.Context, arg CancelPendingE
 	return result.RowsAffected(), nil
 }
 
+const completeExecutionFromAgent = `-- name: CompleteExecutionFromAgent :execrows
+UPDATE executions
+SET status = $1,
+    error = $2,
+    output = $3,
+    detection_output = $4,
+    changed = $5,
+    compliant = $6,
+    completed_at = $7,
+    duration_ms = $8
+WHERE id = $9
+  AND delivery_id = $10
+  AND device_id = $11
+  AND status IN ('scheduled', 'pending', 'running')
+`
+
+type CompleteExecutionFromAgentParams struct {
+	Status          string     `json:"status"`
+	Error           *string    `json:"error"`
+	Output          []byte     `json:"output"`
+	DetectionOutput []byte     `json:"detection_output"`
+	Changed         bool       `json:"changed"`
+	Compliant       bool       `json:"compliant"`
+	CompletedAt     *time.Time `json:"completed_at"`
+	DurationMs      *int64     `json:"duration_ms"`
+	ID              string     `json:"id"`
+	DeliveryID      string     `json:"delivery_id"`
+	DeviceID        string     `json:"device_id"`
+}
+
+func (q *Queries) CompleteExecutionFromAgent(ctx context.Context, arg CompleteExecutionFromAgentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeExecutionFromAgent,
+		arg.Status,
+		arg.Error,
+		arg.Output,
+		arg.DetectionOutput,
+		arg.Changed,
+		arg.Compliant,
+		arg.CompletedAt,
+		arg.DurationMs,
+		arg.ID,
+		arg.DeliveryID,
+		arg.DeviceID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const completeLogQueryResult = `-- name: CompleteLogQueryResult :execrows
 UPDATE log_query_results
 SET completed = TRUE, success = $1, error = $2,
@@ -248,8 +298,34 @@ func (q *Queries) GetDeviceLogResult(ctx context.Context, queryID string) (GetDe
 	return i, err
 }
 
+const getExecutionOutputChunk = `-- name: GetExecutionOutputChunk :one
+SELECT execution_id, stream, sequence, data, received_at FROM execution_output_chunks
+WHERE execution_id = $1
+  AND stream = $2
+  AND sequence = $3
+`
+
+type GetExecutionOutputChunkParams struct {
+	ExecutionID string `json:"execution_id"`
+	Stream      string `json:"stream"`
+	Sequence    int64  `json:"sequence"`
+}
+
+func (q *Queries) GetExecutionOutputChunk(ctx context.Context, arg GetExecutionOutputChunkParams) (ExecutionOutputChunk, error) {
+	row := q.db.QueryRow(ctx, getExecutionOutputChunk, arg.ExecutionID, arg.Stream, arg.Sequence)
+	var i ExecutionOutputChunk
+	err := row.Scan(
+		&i.ExecutionID,
+		&i.Stream,
+		&i.Sequence,
+		&i.Data,
+		&i.ReceivedAt,
+	)
+	return i, err
+}
+
 const getExecutionView = `-- name: GetExecutionView :one
-SELECT e.id, e.device_id, e.action_id, e.action_type, e.desired_state, e.params, e.timeout_seconds, e.status, e.error, e.output, e.detection_output, e.changed, e.compliant, e.created_at, e.scheduled_for, e.dispatched_at, e.started_at, e.completed_at, e.duration_ms, e.created_by_type, e.created_by_id, e.search_tsv, COALESCE(a.name, '')::text AS action_name
+SELECT e.id, e.device_id, e.action_id, e.action_type, e.desired_state, e.params, e.timeout_seconds, e.status, e.error, e.output, e.detection_output, e.changed, e.compliant, e.created_at, e.scheduled_for, e.dispatched_at, e.started_at, e.completed_at, e.duration_ms, e.created_by_type, e.created_by_id, e.search_tsv, e.delivery_id, COALESCE(a.name, '')::text AS action_name
 FROM executions e
 JOIN devices d ON d.id = e.device_id AND d.is_deleted = FALSE
 LEFT JOIN actions a ON a.id = e.action_id AND a.is_deleted = FALSE
@@ -279,6 +355,7 @@ type GetExecutionViewRow struct {
 	CreatedByType   string      `json:"created_by_type"`
 	CreatedByID     string      `json:"created_by_id"`
 	SearchTsv       interface{} `json:"search_tsv"`
+	DeliveryID      string      `json:"delivery_id"`
 	ActionName      string      `json:"action_name"`
 }
 
@@ -308,6 +385,7 @@ func (q *Queries) GetExecutionView(ctx context.Context, id string) (GetExecution
 		&i.CreatedByType,
 		&i.CreatedByID,
 		&i.SearchTsv,
+		&i.DeliveryID,
 		&i.ActionName,
 	)
 	return i, err
@@ -346,20 +424,21 @@ func (q *Queries) GetOSQueryResult(ctx context.Context, queryID string) (GetOSQu
 
 const insertExecution = `-- name: InsertExecution :one
 INSERT INTO executions (
-    id, device_id, action_id, action_type, desired_state, params,
+    id, delivery_id, device_id, action_id, action_type, desired_state, params,
     timeout_seconds, status, created_at, scheduled_for,
     created_by_type, created_by_id
 ) VALUES (
-    $1, $2, $3,
-    $4, $5, $6,
-    $7, $8, $9,
-    $10, $11, $12
+    $1, $2, $3, $4,
+    $5, $6, $7,
+    $8, $9, $10,
+    $11, $12, $13
 )
-RETURNING id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, detection_output, changed, compliant, created_at, scheduled_for, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, search_tsv
+RETURNING id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, detection_output, changed, compliant, created_at, scheduled_for, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, search_tsv, delivery_id
 `
 
 type InsertExecutionParams struct {
 	ID             string     `json:"id"`
+	DeliveryID     string     `json:"delivery_id"`
 	DeviceID       string     `json:"device_id"`
 	ActionID       *string    `json:"action_id"`
 	ActionType     int32      `json:"action_type"`
@@ -376,6 +455,7 @@ type InsertExecutionParams struct {
 func (q *Queries) InsertExecution(ctx context.Context, arg InsertExecutionParams) (Execution, error) {
 	row := q.db.QueryRow(ctx, insertExecution,
 		arg.ID,
+		arg.DeliveryID,
 		arg.DeviceID,
 		arg.ActionID,
 		arg.ActionType,
@@ -412,8 +492,41 @@ func (q *Queries) InsertExecution(ctx context.Context, arg InsertExecutionParams
 		&i.CreatedByType,
 		&i.CreatedByID,
 		&i.SearchTsv,
+		&i.DeliveryID,
 	)
 	return i, err
+}
+
+const insertExecutionOutputChunk = `-- name: InsertExecutionOutputChunk :one
+INSERT INTO execution_output_chunks (
+    execution_id, stream, sequence, data, received_at
+) VALUES (
+    $1, $2, $3,
+    $4, $5
+)
+ON CONFLICT (execution_id, stream, sequence) DO NOTHING
+RETURNING execution_id
+`
+
+type InsertExecutionOutputChunkParams struct {
+	ExecutionID string    `json:"execution_id"`
+	Stream      string    `json:"stream"`
+	Sequence    int64     `json:"sequence"`
+	Data        []byte    `json:"data"`
+	ReceivedAt  time.Time `json:"received_at"`
+}
+
+func (q *Queries) InsertExecutionOutputChunk(ctx context.Context, arg InsertExecutionOutputChunkParams) (string, error) {
+	row := q.db.QueryRow(ctx, insertExecutionOutputChunk,
+		arg.ExecutionID,
+		arg.Stream,
+		arg.Sequence,
+		arg.Data,
+		arg.ReceivedAt,
+	)
+	var execution_id string
+	err := row.Scan(&execution_id)
+	return execution_id, err
 }
 
 const insertPendingLogQueryResult = `-- name: InsertPendingLogQueryResult :exec
@@ -563,7 +676,7 @@ func (q *Queries) ListDeviceComplianceResults(ctx context.Context, deviceID stri
 }
 
 const listExecutionViews = `-- name: ListExecutionViews :many
-SELECT e.id, e.device_id, e.action_id, e.action_type, e.desired_state, e.params, e.timeout_seconds, e.status, e.error, e.output, e.detection_output, e.changed, e.compliant, e.created_at, e.scheduled_for, e.dispatched_at, e.started_at, e.completed_at, e.duration_ms, e.created_by_type, e.created_by_id, e.search_tsv, COALESCE(a.name, '')::text AS action_name
+SELECT e.id, e.device_id, e.action_id, e.action_type, e.desired_state, e.params, e.timeout_seconds, e.status, e.error, e.output, e.detection_output, e.changed, e.compliant, e.created_at, e.scheduled_for, e.dispatched_at, e.started_at, e.completed_at, e.duration_ms, e.created_by_type, e.created_by_id, e.search_tsv, e.delivery_id, COALESCE(a.name, '')::text AS action_name
 FROM executions e
 JOIN devices d ON d.id = e.device_id AND d.is_deleted = FALSE
 LEFT JOIN actions a ON a.id = e.action_id AND a.is_deleted = FALSE
@@ -639,6 +752,7 @@ type ListExecutionViewsRow struct {
 	CreatedByType   string      `json:"created_by_type"`
 	CreatedByID     string      `json:"created_by_id"`
 	SearchTsv       interface{} `json:"search_tsv"`
+	DeliveryID      string      `json:"delivery_id"`
 	ActionName      string      `json:"action_name"`
 }
 
@@ -684,6 +798,7 @@ func (q *Queries) ListExecutionViews(ctx context.Context, arg ListExecutionViews
 			&i.CreatedByType,
 			&i.CreatedByID,
 			&i.SearchTsv,
+			&i.DeliveryID,
 			&i.ActionName,
 		); err != nil {
 			return nil, err
@@ -694,6 +809,35 @@ func (q *Queries) ListExecutionViews(ctx context.Context, arg ListExecutionViews
 		return nil, err
 	}
 	return items, nil
+}
+
+const markExecutionRunning = `-- name: MarkExecutionRunning :execrows
+UPDATE executions
+SET status = 'running', started_at = COALESCE(started_at, $1)
+WHERE id = $2
+  AND delivery_id = $3
+  AND device_id = $4
+  AND status IN ('scheduled', 'pending')
+`
+
+type MarkExecutionRunningParams struct {
+	StartedAt  *time.Time `json:"started_at"`
+	ID         string     `json:"id"`
+	DeliveryID string     `json:"delivery_id"`
+	DeviceID   string     `json:"device_id"`
+}
+
+func (q *Queries) MarkExecutionRunning(ctx context.Context, arg MarkExecutionRunningParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markExecutionRunning,
+		arg.StartedAt,
+		arg.ID,
+		arg.DeliveryID,
+		arg.DeviceID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const upsertDeviceInventoryTable = `-- name: UpsertDeviceInventoryTable :exec

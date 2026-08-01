@@ -315,6 +315,15 @@ type Execution struct {
 	CreatedByType   string      `json:"created_by_type"`
 	CreatedByID     string      `json:"created_by_id"`
 	SearchTsv       interface{} `json:"search_tsv"`
+	DeliveryID      string      `json:"delivery_id"`
+}
+
+type ExecutionOutputChunk struct {
+	ExecutionID string    `json:"execution_id"`
+	Stream      string    `json:"stream"`
+	Sequence    int64     `json:"sequence"`
+	Data        []byte    `json:"data"`
+	ReceivedAt  time.Time `json:"received_at"`
 }
 
 type IdentityLink struct {

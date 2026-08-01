@@ -336,6 +336,7 @@ type DeviceComplianceEvaluation = generated.ListDeviceComplianceEvaluationsRow
 // catalogue action still exists.
 type ExecutionView struct {
 	ID              string
+	DeliveryID      string
 	DeviceID        string
 	ActionID        *string
 	ActionType      int32
@@ -1324,7 +1325,7 @@ func (s *Store) CountExecutions(ctx context.Context, filter ExecutionListFilter)
 
 func executionView(row generated.GetExecutionViewRow) ExecutionView {
 	return ExecutionView{
-		ID: row.ID, DeviceID: row.DeviceID, ActionID: row.ActionID,
+		ID: row.ID, DeliveryID: row.DeliveryID, DeviceID: row.DeviceID, ActionID: row.ActionID,
 		ActionType: row.ActionType, DesiredState: row.DesiredState,
 		Status: row.Status, Error: row.Error, Output: row.Output,
 		DetectionOutput: row.DetectionOutput, Changed: row.Changed,

@@ -96,16 +96,55 @@ WHERE id = $1 AND status IN ('scheduled', 'pending');
 
 -- name: InsertExecution :one
 INSERT INTO executions (
-    id, device_id, action_id, action_type, desired_state, params,
+    id, delivery_id, device_id, action_id, action_type, desired_state, params,
     timeout_seconds, status, created_at, scheduled_for,
     created_by_type, created_by_id
 ) VALUES (
-    sqlc.arg(id), sqlc.arg(device_id), sqlc.narg(action_id),
+    sqlc.arg(id), sqlc.arg(delivery_id), sqlc.arg(device_id), sqlc.narg(action_id),
     sqlc.arg(action_type), sqlc.arg(desired_state), sqlc.arg(params),
     sqlc.arg(timeout_seconds), sqlc.arg(status), sqlc.arg(created_at),
     sqlc.narg(scheduled_for), sqlc.arg(created_by_type), sqlc.arg(created_by_id)
 )
 RETURNING *;
+
+-- name: MarkExecutionRunning :execrows
+UPDATE executions
+SET status = 'running', started_at = COALESCE(started_at, sqlc.arg(started_at))
+WHERE id = sqlc.arg(id)
+  AND delivery_id = sqlc.arg(delivery_id)
+  AND device_id = sqlc.arg(device_id)
+  AND status IN ('scheduled', 'pending');
+
+-- name: CompleteExecutionFromAgent :execrows
+UPDATE executions
+SET status = sqlc.arg(status),
+    error = sqlc.narg(error),
+    output = sqlc.narg(output),
+    detection_output = sqlc.narg(detection_output),
+    changed = sqlc.arg(changed),
+    compliant = sqlc.arg(compliant),
+    completed_at = sqlc.arg(completed_at),
+    duration_ms = sqlc.arg(duration_ms)
+WHERE id = sqlc.arg(id)
+  AND delivery_id = sqlc.arg(delivery_id)
+  AND device_id = sqlc.arg(device_id)
+  AND status IN ('scheduled', 'pending', 'running');
+
+-- name: InsertExecutionOutputChunk :one
+INSERT INTO execution_output_chunks (
+    execution_id, stream, sequence, data, received_at
+) VALUES (
+    sqlc.arg(execution_id), sqlc.arg(stream), sqlc.arg(sequence),
+    sqlc.arg(data), sqlc.arg(received_at)
+)
+ON CONFLICT (execution_id, stream, sequence) DO NOTHING
+RETURNING execution_id;
+
+-- name: GetExecutionOutputChunk :one
+SELECT * FROM execution_output_chunks
+WHERE execution_id = sqlc.arg(execution_id)
+  AND stream = sqlc.arg(stream)
+  AND sequence = sqlc.arg(sequence);
 
 -- name: ListExecutionViews :many
 SELECT e.*, COALESCE(a.name, '')::text AS action_name

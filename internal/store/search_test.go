@@ -19,6 +19,7 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 	deviceID, deviceGroupID := newID(), newID()
 	userID, roleID, grantID, userGroupID := newID(), newID(), newID(), newID()
 	executionID := newID()
+	deliveryID := newID()
 
 	statements := []struct {
 		query string
@@ -39,6 +40,9 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 			VALUES ($1, $2, 'Straßenprüfung München', $3)`, []any{policyID, actionID, now}},
 		{`INSERT INTO devices (id, hostname, agent_version, agent_sealing_public_key, registered_at, last_seen_at)
 			VALUES ($1, 'db-01.eu.example', '2.4.0', decode(repeat('01', 32), 'hex'), $2, $2)`, []any{deviceID, now}},
+		{`INSERT INTO deliveries
+			(delivery_id, device_id, manifest_id, manifest, state, created_at, available_at)
+			VALUES ($1, $2, $3, '{}'::jsonb, 'PENDING', $4, $4)`, []any{deliveryID, deviceID, newID(), now}},
 		{`INSERT INTO device_labels (device_id, key, value) VALUES ($1, 'environment', 'production')`, []any{deviceID}},
 		{`INSERT INTO device_inventory (device_id, table_name, rows, collected_at)
 			VALUES ($1, 'os_version', '[{"name":"Ubuntu","version":"26.04","arch":"amd64"}]'::jsonb, $2)`, []any{deviceID, now}},
@@ -50,8 +54,8 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 		{`INSERT INTO user_roles (grant_id, user_id, role_id, assigned_at) VALUES ($1, $2, $3, $4)`, []any{grantID, userID, roleID, now}},
 		{`INSERT INTO user_groups (id, name, description, created_at, updated_at) VALUES ($1, 'München operators', 'night shift', $2, $2)`, []any{userGroupID, now}},
 		{`INSERT INTO user_group_members (group_id, user_id, added_at) VALUES ($1, $2, $3)`, []any{userGroupID, userID, now}},
-		{`INSERT INTO executions (id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, created_at)
-			VALUES ($1, $2, $3, 100, 1, '{}'::jsonb, 90, 'pending', $4)`, []any{executionID, deviceID, actionID, now}},
+		{`INSERT INTO executions (id, delivery_id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, created_at)
+			VALUES ($1, $2, $3, $4, 100, 1, '{}'::jsonb, 90, 'pending', $5)`, []any{executionID, deliveryID, deviceID, actionID, now}},
 	}
 	for _, statement := range statements {
 		_, err := raw.Exec(ctx, statement.query, statement.args...)
