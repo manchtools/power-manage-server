@@ -49,6 +49,45 @@ func (q *Queries) AddAuthoringActionSetMember(ctx context.Context, arg AddAuthor
 	return i, err
 }
 
+const addAuthoringDefinitionMember = `-- name: AddAuthoringDefinitionMember :one
+INSERT INTO definition_members (definition_id, action_set_id, sort_order, added_at)
+SELECT $1, $2, $3, $4
+WHERE EXISTS (
+    SELECT 1 FROM definitions
+    WHERE id = $1 AND is_deleted = FALSE
+)
+AND EXISTS (
+    SELECT 1 FROM action_sets
+    WHERE id = $2 AND is_deleted = FALSE
+)
+ON CONFLICT (definition_id, action_set_id) DO NOTHING
+RETURNING definition_id, action_set_id, sort_order, added_at
+`
+
+type AddAuthoringDefinitionMemberParams struct {
+	DefinitionID string     `json:"definition_id"`
+	ActionSetID  string     `json:"action_set_id"`
+	SortOrder    int32      `json:"sort_order"`
+	AddedAt      *time.Time `json:"added_at"`
+}
+
+func (q *Queries) AddAuthoringDefinitionMember(ctx context.Context, arg AddAuthoringDefinitionMemberParams) (DefinitionMember, error) {
+	row := q.db.QueryRow(ctx, addAuthoringDefinitionMember,
+		arg.DefinitionID,
+		arg.ActionSetID,
+		arg.SortOrder,
+		arg.AddedAt,
+	)
+	var i DefinitionMember
+	err := row.Scan(
+		&i.DefinitionID,
+		&i.ActionSetID,
+		&i.SortOrder,
+		&i.AddedAt,
+	)
+	return i, err
+}
+
 const countAuthoringActionSets = `-- name: CountAuthoringActionSets :one
 WITH assignment_groups AS (
     SELECT a.source_type, a.source_id, a.target_id AS group_id
@@ -193,6 +232,56 @@ func (q *Queries) CountAuthoringActions(ctx context.Context, arg CountAuthoringA
 	return count, err
 }
 
+const countAuthoringDefinitions = `-- name: CountAuthoringDefinitions :one
+WITH assignment_groups AS (
+    SELECT a.source_type, a.source_id, a.target_id AS group_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, a.target_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN devices d ON d.id = a.target_id AND d.is_deleted = FALSE
+    JOIN device_group_members m ON m.device_id = d.id
+    JOIN device_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN users u ON u.id = a.target_id AND u.is_deleted = FALSE
+    JOIN user_group_members m ON m.user_id = u.id
+    JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user'
+)
+SELECT COUNT(*)
+FROM definitions d
+WHERE d.is_deleted = FALSE
+  AND (
+      NOT $1::boolean
+      OR EXISTS (
+          SELECT 1 FROM assignment_groups ag
+          WHERE ag.source_type = 'definition'
+            AND ag.source_id = d.id
+            AND ag.group_id = ANY($2::text[])
+      )
+  )
+`
+
+type CountAuthoringDefinitionsParams struct {
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+func (q *Queries) CountAuthoringDefinitions(ctx context.Context, arg CountAuthoringDefinitionsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAuthoringDefinitions, arg.ScopeRestricted, arg.ScopeGroupIds)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteActionMemberships = `-- name: DeleteActionMemberships :many
 DELETE FROM action_set_members
 WHERE action_id = $1
@@ -238,6 +327,32 @@ func (q *Queries) DeleteAuthoringActionSetMembers(ctx context.Context, setID str
 			return nil, err
 		}
 		items = append(items, action_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const deleteAuthoringDefinitionMembers = `-- name: DeleteAuthoringDefinitionMembers :many
+DELETE FROM definition_members
+WHERE definition_id = $1
+RETURNING action_set_id
+`
+
+func (q *Queries) DeleteAuthoringDefinitionMembers(ctx context.Context, definitionID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, deleteAuthoringDefinitionMembers, definitionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var action_set_id string
+		if err := rows.Scan(&action_set_id); err != nil {
+			return nil, err
+		}
+		items = append(items, action_set_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -450,6 +565,50 @@ func (q *Queries) InsertAuthoringActionSet(ctx context.Context, arg InsertAuthor
 		&i.Description,
 		&i.Schedule,
 		&i.OnFailure,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const insertAuthoringDefinition = `-- name: InsertAuthoringDefinition :one
+INSERT INTO definitions (
+    id, name, description, schedule, created_at, created_by
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6
+)
+RETURNING id, name, description, member_count, schedule, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type InsertAuthoringDefinitionParams struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Schedule    []byte     `json:"schedule"`
+	CreatedAt   *time.Time `json:"created_at"`
+	CreatedBy   string     `json:"created_by"`
+}
+
+func (q *Queries) InsertAuthoringDefinition(ctx context.Context, arg InsertAuthoringDefinitionParams) (Definition, error) {
+	row := q.db.QueryRow(ctx, insertAuthoringDefinition,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.Schedule,
+		arg.CreatedAt,
+		arg.CreatedBy,
+	)
+	var i Definition
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.MemberCount,
+		&i.Schedule,
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.UpdatedAt,
@@ -774,6 +933,110 @@ func (q *Queries) ListAuthoringAssignmentsForSource(ctx context.Context, arg Lis
 	return items, nil
 }
 
+const listAuthoringDefinitions = `-- name: ListAuthoringDefinitions :many
+WITH assignment_groups AS (
+    SELECT a.source_type, a.source_id, a.target_id AS group_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, a.target_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN devices d ON d.id = a.target_id AND d.is_deleted = FALSE
+    JOIN device_group_members m ON m.device_id = d.id
+    JOIN device_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN users u ON u.id = a.target_id AND u.is_deleted = FALSE
+    JOIN user_group_members m ON m.user_id = u.id
+    JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user'
+)
+SELECT d.id, d.name, d.description, d.schedule, d.created_at, d.created_by,
+       d.updated_at, d.is_deleted, d.search_tsv,
+       (
+           SELECT COUNT(*)
+           FROM definition_members m
+           JOIN action_sets s ON s.id = m.action_set_id AND s.is_deleted = FALSE
+           WHERE m.definition_id = d.id
+       ) AS member_count
+FROM definitions d
+WHERE d.is_deleted = FALSE
+  AND d.id > $1
+  AND (
+      NOT $2::boolean
+      OR EXISTS (
+          SELECT 1 FROM assignment_groups ag
+          WHERE ag.source_type = 'definition'
+            AND ag.source_id = d.id
+            AND ag.group_id = ANY($3::text[])
+      )
+  )
+ORDER BY d.id
+LIMIT $4
+`
+
+type ListAuthoringDefinitionsParams struct {
+	AfterID         string   `json:"after_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+	RowLimit        int32    `json:"row_limit"`
+}
+
+type ListAuthoringDefinitionsRow struct {
+	ID          string      `json:"id"`
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Schedule    []byte      `json:"schedule"`
+	CreatedAt   *time.Time  `json:"created_at"`
+	CreatedBy   string      `json:"created_by"`
+	UpdatedAt   *time.Time  `json:"updated_at"`
+	IsDeleted   bool        `json:"is_deleted"`
+	SearchTsv   interface{} `json:"search_tsv"`
+	MemberCount int64       `json:"member_count"`
+}
+
+func (q *Queries) ListAuthoringDefinitions(ctx context.Context, arg ListAuthoringDefinitionsParams) ([]ListAuthoringDefinitionsRow, error) {
+	rows, err := q.db.Query(ctx, listAuthoringDefinitions,
+		arg.AfterID,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAuthoringDefinitionsRow{}
+	for rows.Next() {
+		var i ListAuthoringDefinitionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Schedule,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.UpdatedAt,
+			&i.IsDeleted,
+			&i.SearchTsv,
+			&i.MemberCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listContainingActionSetIDs = `-- name: ListContainingActionSetIDs :many
 SELECT m.set_id
 FROM action_set_members m
@@ -823,6 +1086,40 @@ func (q *Queries) ListContainingDefinitionIDs(ctx context.Context, actionSetID s
 			return nil, err
 		}
 		items = append(items, definition_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDefinitionMembers = `-- name: ListDefinitionMembers :many
+SELECT m.action_set_id, m.sort_order, s.name AS action_set_name
+FROM definition_members m
+JOIN action_sets s ON s.id = m.action_set_id AND s.is_deleted = FALSE
+WHERE m.definition_id = $1
+ORDER BY m.sort_order, m.action_set_id
+`
+
+type ListDefinitionMembersRow struct {
+	ActionSetID   string `json:"action_set_id"`
+	SortOrder     int32  `json:"sort_order"`
+	ActionSetName string `json:"action_set_name"`
+}
+
+func (q *Queries) ListDefinitionMembers(ctx context.Context, definitionID string) ([]ListDefinitionMembersRow, error) {
+	rows, err := q.db.Query(ctx, listDefinitionMembers, definitionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDefinitionMembersRow{}
+	for rows.Next() {
+		var i ListDefinitionMembersRow
+		if err := rows.Scan(&i.ActionSetID, &i.SortOrder, &i.ActionSetName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1002,6 +1299,29 @@ func (q *Queries) RemoveAuthoringActionSetMember(ctx context.Context, arg Remove
 	return i, err
 }
 
+const removeAuthoringDefinitionMember = `-- name: RemoveAuthoringDefinitionMember :one
+DELETE FROM definition_members
+WHERE definition_id = $1 AND action_set_id = $2
+RETURNING definition_id, action_set_id, sort_order, added_at
+`
+
+type RemoveAuthoringDefinitionMemberParams struct {
+	DefinitionID string `json:"definition_id"`
+	ActionSetID  string `json:"action_set_id"`
+}
+
+func (q *Queries) RemoveAuthoringDefinitionMember(ctx context.Context, arg RemoveAuthoringDefinitionMemberParams) (DefinitionMember, error) {
+	row := q.db.QueryRow(ctx, removeAuthoringDefinitionMember, arg.DefinitionID, arg.ActionSetID)
+	var i DefinitionMember
+	err := row.Scan(
+		&i.DefinitionID,
+		&i.ActionSetID,
+		&i.SortOrder,
+		&i.AddedAt,
+	)
+	return i, err
+}
+
 const renameAuthoringAction = `-- name: RenameAuthoringAction :one
 UPDATE actions
 SET name = $1, updated_at = $2
@@ -1077,6 +1397,37 @@ func (q *Queries) RenameAuthoringActionSet(ctx context.Context, arg RenameAuthor
 	return i, err
 }
 
+const renameAuthoringDefinition = `-- name: RenameAuthoringDefinition :one
+UPDATE definitions
+SET name = $1, updated_at = $2
+WHERE id = $3 AND is_deleted = FALSE
+RETURNING id, name, description, member_count, schedule, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type RenameAuthoringDefinitionParams struct {
+	Name      string     `json:"name"`
+	UpdatedAt *time.Time `json:"updated_at"`
+	ID        string     `json:"id"`
+}
+
+func (q *Queries) RenameAuthoringDefinition(ctx context.Context, arg RenameAuthoringDefinitionParams) (Definition, error) {
+	row := q.db.QueryRow(ctx, renameAuthoringDefinition, arg.Name, arg.UpdatedAt, arg.ID)
+	var i Definition
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.MemberCount,
+		&i.Schedule,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
 const reorderAuthoringActionSetMember = `-- name: ReorderAuthoringActionSetMember :one
 UPDATE action_set_members
 SET sort_order = $1
@@ -1096,6 +1447,31 @@ func (q *Queries) ReorderAuthoringActionSetMember(ctx context.Context, arg Reord
 	err := row.Scan(
 		&i.SetID,
 		&i.ActionID,
+		&i.SortOrder,
+		&i.AddedAt,
+	)
+	return i, err
+}
+
+const reorderAuthoringDefinitionMember = `-- name: ReorderAuthoringDefinitionMember :one
+UPDATE definition_members
+SET sort_order = $1
+WHERE definition_id = $2 AND action_set_id = $3
+RETURNING definition_id, action_set_id, sort_order, added_at
+`
+
+type ReorderAuthoringDefinitionMemberParams struct {
+	SortOrder    int32  `json:"sort_order"`
+	DefinitionID string `json:"definition_id"`
+	ActionSetID  string `json:"action_set_id"`
+}
+
+func (q *Queries) ReorderAuthoringDefinitionMember(ctx context.Context, arg ReorderAuthoringDefinitionMemberParams) (DefinitionMember, error) {
+	row := q.db.QueryRow(ctx, reorderAuthoringDefinitionMember, arg.SortOrder, arg.DefinitionID, arg.ActionSetID)
+	var i DefinitionMember
+	err := row.Scan(
+		&i.DefinitionID,
+		&i.ActionSetID,
 		&i.SortOrder,
 		&i.AddedAt,
 	)
@@ -1161,6 +1537,36 @@ func (q *Queries) SoftDeleteAuthoringActionSet(ctx context.Context, arg SoftDele
 		&i.Description,
 		&i.Schedule,
 		&i.OnFailure,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const softDeleteAuthoringDefinition = `-- name: SoftDeleteAuthoringDefinition :one
+UPDATE definitions
+SET is_deleted = TRUE, updated_at = $1
+WHERE id = $2 AND is_deleted = FALSE
+RETURNING id, name, description, member_count, schedule, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type SoftDeleteAuthoringDefinitionParams struct {
+	UpdatedAt *time.Time `json:"updated_at"`
+	ID        string     `json:"id"`
+}
+
+func (q *Queries) SoftDeleteAuthoringDefinition(ctx context.Context, arg SoftDeleteAuthoringDefinitionParams) (Definition, error) {
+	row := q.db.QueryRow(ctx, softDeleteAuthoringDefinition, arg.UpdatedAt, arg.ID)
+	var i Definition
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.MemberCount,
+		&i.Schedule,
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.UpdatedAt,
@@ -1343,6 +1749,68 @@ func (q *Queries) UpdateAuthoringActionSetPolicy(ctx context.Context, arg Update
 		&i.Description,
 		&i.Schedule,
 		&i.OnFailure,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const updateAuthoringDefinitionDescription = `-- name: UpdateAuthoringDefinitionDescription :one
+UPDATE definitions
+SET description = $1, updated_at = $2
+WHERE id = $3 AND is_deleted = FALSE
+RETURNING id, name, description, member_count, schedule, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type UpdateAuthoringDefinitionDescriptionParams struct {
+	Description string     `json:"description"`
+	UpdatedAt   *time.Time `json:"updated_at"`
+	ID          string     `json:"id"`
+}
+
+func (q *Queries) UpdateAuthoringDefinitionDescription(ctx context.Context, arg UpdateAuthoringDefinitionDescriptionParams) (Definition, error) {
+	row := q.db.QueryRow(ctx, updateAuthoringDefinitionDescription, arg.Description, arg.UpdatedAt, arg.ID)
+	var i Definition
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.MemberCount,
+		&i.Schedule,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const updateAuthoringDefinitionSchedule = `-- name: UpdateAuthoringDefinitionSchedule :one
+UPDATE definitions
+SET schedule = $1, updated_at = $2
+WHERE id = $3 AND is_deleted = FALSE
+RETURNING id, name, description, member_count, schedule, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type UpdateAuthoringDefinitionScheduleParams struct {
+	Schedule  []byte     `json:"schedule"`
+	UpdatedAt *time.Time `json:"updated_at"`
+	ID        string     `json:"id"`
+}
+
+func (q *Queries) UpdateAuthoringDefinitionSchedule(ctx context.Context, arg UpdateAuthoringDefinitionScheduleParams) (Definition, error) {
+	row := q.db.QueryRow(ctx, updateAuthoringDefinitionSchedule, arg.Schedule, arg.UpdatedAt, arg.ID)
+	var i Definition
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.MemberCount,
+		&i.Schedule,
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.UpdatedAt,

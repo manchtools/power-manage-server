@@ -72,6 +72,25 @@ type ActionSetMemberView = generated.ListActionSetMembersRow
 // DefinitionRow is one live authored definition used to compile agent manifests.
 type DefinitionRow = generated.Definition
 
+// DefinitionListFilter contains the keyset and object-scope narrowing shared
+// by the Definition list and count reads.
+type DefinitionListFilter struct {
+	AfterID         string
+	Limit           int32
+	ScopeRestricted bool
+	ScopeGroupIDs   []string
+}
+
+// DefinitionView is one authored definition with its member count derived
+// from live ActionSets rather than the legacy stored counter.
+type DefinitionView struct {
+	DefinitionRow
+	LiveMemberCount int64
+}
+
+// DefinitionMemberView is one live ActionSet edge in authored order.
+type DefinitionMemberView = generated.ListDefinitionMembersRow
+
 // DefinitionManifestAction pairs one authored action with the set through
 // which the containing definition reaches it.
 type DefinitionManifestAction struct {
@@ -308,6 +327,53 @@ func (s *Store) ListActionSetMembers(ctx context.Context, id string) ([]ActionSe
 	rows, err := s.queries.ListActionSetMembers(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("action set: list members: %w", err)
+	}
+	return rows, nil
+}
+
+// CountDefinitions returns the number of live authored definitions.
+func (s *Store) CountDefinitions(ctx context.Context) (int64, error) {
+	return s.CountAuthoringDefinitions(ctx, DefinitionListFilter{})
+}
+
+// ListAuthoringDefinitions returns a deterministic keyset page of live
+// definitions with member counts derived from live ActionSets.
+func (s *Store) ListAuthoringDefinitions(ctx context.Context, filter DefinitionListFilter) ([]DefinitionView, error) {
+	rows, err := s.queries.ListAuthoringDefinitions(ctx, generated.ListAuthoringDefinitionsParams{
+		AfterID: filter.AfterID, ScopeRestricted: filter.ScopeRestricted,
+		ScopeGroupIds: filter.ScopeGroupIDs, RowLimit: filter.Limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("definition: list: %w", err)
+	}
+	views := make([]DefinitionView, len(rows))
+	for i, row := range rows {
+		views[i] = DefinitionView{DefinitionRow: DefinitionRow{
+			ID: row.ID, Name: row.Name, Description: row.Description,
+			Schedule: row.Schedule, CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
+			UpdatedAt: row.UpdatedAt, IsDeleted: row.IsDeleted, SearchTsv: row.SearchTsv,
+		}, LiveMemberCount: row.MemberCount}
+	}
+	return views, nil
+}
+
+// CountAuthoringDefinitions counts the same Definition population selected by
+// the list filter, ignoring its keyset and limit.
+func (s *Store) CountAuthoringDefinitions(ctx context.Context, filter DefinitionListFilter) (int64, error) {
+	n, err := s.queries.CountAuthoringDefinitions(ctx, generated.CountAuthoringDefinitionsParams{
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("definition: count: %w", err)
+	}
+	return n, nil
+}
+
+// ListDefinitionMembers returns live ActionSet members in authored order.
+func (s *Store) ListDefinitionMembers(ctx context.Context, id string) ([]DefinitionMemberView, error) {
+	rows, err := s.queries.ListDefinitionMembers(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("definition: list members: %w", err)
 	}
 	return rows, nil
 }

@@ -20,6 +20,9 @@ const (
 	errActionSetNotFound        = "action_set_not_found"
 	errActionAlreadyInSet       = "action_already_in_set"
 	errActionSetMemberNotFound  = "action_set_member_not_found"
+	errDefinitionNotFound       = "definition_not_found"
+	errActionSetAlreadyInDef    = "action_set_already_in_definition"
+	errDefinitionMemberNotFound = "definition_member_not_found"
 	errCannotModifySystemAction = "cannot_modify_system_action"
 )
 

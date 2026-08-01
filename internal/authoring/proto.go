@@ -71,3 +71,34 @@ func actionSetMembersToProto(rows []store.ActionSetMemberView) []*pmv1.ActionSet
 	}
 	return members
 }
+
+func definitionToProto(row store.DefinitionRow, memberCount int64) (*pmv1.Definition, error) {
+	schedule, err := actionparams.ParseSchedule(row.Schedule)
+	if err != nil {
+		return nil, fmt.Errorf("authoring: decode stored definition schedule: %w", err)
+	}
+	if schedule == nil {
+		return nil, fmt.Errorf("authoring: stored definition schedule is empty")
+	}
+	definition := &pmv1.Definition{
+		Id: row.ID, Name: row.Name, Description: row.Description,
+		MemberCount: boundedCount(memberCount), CreatedBy: row.CreatedBy, Schedule: schedule,
+	}
+	if row.CreatedAt != nil {
+		definition.CreatedAt = timestamppb.New(*row.CreatedAt)
+	}
+	if row.UpdatedAt != nil {
+		definition.UpdatedAt = timestamppb.New(*row.UpdatedAt)
+	}
+	return definition, nil
+}
+
+func definitionMembersToProto(rows []store.DefinitionMemberView) []*pmv1.DefinitionMember {
+	members := make([]*pmv1.DefinitionMember, len(rows))
+	for i, row := range rows {
+		members[i] = &pmv1.DefinitionMember{
+			ActionSetId: row.ActionSetID, SortOrder: row.SortOrder, ActionSetName: row.ActionSetName,
+		}
+	}
+	return members
+}

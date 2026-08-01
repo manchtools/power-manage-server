@@ -29,7 +29,8 @@ type HandlersConfig struct {
 	Now    func() time.Time
 }
 
-// Handlers implements the explicit Action and ActionSet authoring RPCs.
+// Handlers implements the explicit Action, ActionSet and Definition authoring
+// RPCs.
 type Handlers struct {
 	store     *store.Store
 	state     *Service

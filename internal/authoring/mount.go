@@ -108,3 +108,59 @@ func ActionSetReadProcedures() []string {
 		powermanagev1connect.ControlServiceListActionSetsProcedure,
 	}
 }
+
+// MountDefinitions registers exactly the explicit Definition CRUD procedures.
+func (h *Handlers) MountDefinitions(mux *http.ServeMux, opts ...connect.HandlerOption) []string {
+	if mux == nil {
+		panic("authoring: mux is required")
+	}
+	mounted := make([]string, 0, 10)
+	register := func(procedure string, handler http.Handler) {
+		mux.Handle(procedure, handler)
+		mounted = append(mounted, procedure)
+	}
+	register(powermanagev1connect.ControlServiceCreateDefinitionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceCreateDefinitionProcedure, h.CreateDefinition, opts...))
+	register(powermanagev1connect.ControlServiceGetDefinitionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDefinitionProcedure, h.GetDefinition, opts...))
+	register(powermanagev1connect.ControlServiceListDefinitionsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListDefinitionsProcedure, h.ListDefinitions, opts...))
+	register(powermanagev1connect.ControlServiceRenameDefinitionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRenameDefinitionProcedure, h.RenameDefinition, opts...))
+	register(powermanagev1connect.ControlServiceUpdateDefinitionDescriptionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceUpdateDefinitionDescriptionProcedure, h.UpdateDefinitionDescription, opts...))
+	register(powermanagev1connect.ControlServiceUpdateDefinitionScheduleProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceUpdateDefinitionScheduleProcedure, h.UpdateDefinitionSchedule, opts...))
+	register(powermanagev1connect.ControlServiceDeleteDefinitionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceDeleteDefinitionProcedure, h.DeleteDefinition, opts...))
+	register(powermanagev1connect.ControlServiceAddActionSetToDefinitionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceAddActionSetToDefinitionProcedure, h.AddActionSetToDefinition, opts...))
+	register(powermanagev1connect.ControlServiceRemoveActionSetFromDefinitionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRemoveActionSetFromDefinitionProcedure, h.RemoveActionSetFromDefinition, opts...))
+	register(powermanagev1connect.ControlServiceReorderActionSetInDefinitionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceReorderActionSetInDefinitionProcedure, h.ReorderActionSetInDefinition, opts...))
+	return mounted
+}
+
+// DefinitionMutationProcedures is the exact audited Definition mutation
+// surface.
+func DefinitionMutationProcedures() []string {
+	return []string{
+		powermanagev1connect.ControlServiceCreateDefinitionProcedure,
+		powermanagev1connect.ControlServiceRenameDefinitionProcedure,
+		powermanagev1connect.ControlServiceUpdateDefinitionDescriptionProcedure,
+		powermanagev1connect.ControlServiceUpdateDefinitionScheduleProcedure,
+		powermanagev1connect.ControlServiceDeleteDefinitionProcedure,
+		powermanagev1connect.ControlServiceAddActionSetToDefinitionProcedure,
+		powermanagev1connect.ControlServiceRemoveActionSetFromDefinitionProcedure,
+		powermanagev1connect.ControlServiceReorderActionSetInDefinitionProcedure,
+	}
+}
+
+// DefinitionReadProcedures is the exact non-mutating Definition surface.
+func DefinitionReadProcedures() []string {
+	return []string{
+		powermanagev1connect.ControlServiceGetDefinitionProcedure,
+		powermanagev1connect.ControlServiceListDefinitionsProcedure,
+	}
+}
