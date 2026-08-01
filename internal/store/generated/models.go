@@ -32,6 +32,7 @@ type ActionSet struct {
 	Description string      `json:"description"`
 	MemberCount int32       `json:"member_count"`
 	Schedule    []byte      `json:"schedule"`
+	OnFailure   int32       `json:"on_failure"`
 	CreatedAt   *time.Time  `json:"created_at"`
 	CreatedBy   string      `json:"created_by"`
 	UpdatedAt   *time.Time  `json:"updated_at"`

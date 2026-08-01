@@ -42,7 +42,7 @@ func (q *Queries) GetManifestAction(ctx context.Context, id string) (Action, err
 }
 
 const getManifestActionSet = `-- name: GetManifestActionSet :one
-SELECT id, name, description, member_count, schedule, created_at, created_by, updated_at, is_deleted, search_tsv FROM action_sets
+SELECT id, name, description, member_count, schedule, on_failure, created_at, created_by, updated_at, is_deleted, search_tsv FROM action_sets
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -55,6 +55,7 @@ func (q *Queries) GetManifestActionSet(ctx context.Context, id string) (ActionSe
 		&i.Description,
 		&i.MemberCount,
 		&i.Schedule,
+		&i.OnFailure,
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.UpdatedAt,
@@ -132,7 +133,7 @@ func (q *Queries) ListManifestActionSetActions(ctx context.Context, setID string
 }
 
 const listManifestDefinitionActionSets = `-- name: ListManifestDefinitionActionSets :many
-SELECT s.id, s.name, s.description, s.member_count, s.schedule, s.created_at, s.created_by, s.updated_at, s.is_deleted, s.search_tsv
+SELECT s.id, s.name, s.description, s.member_count, s.schedule, s.on_failure, s.created_at, s.created_by, s.updated_at, s.is_deleted, s.search_tsv
 FROM definition_members m
 JOIN action_sets s ON s.id = m.action_set_id AND s.is_deleted = FALSE
 WHERE m.definition_id = $1
@@ -154,6 +155,7 @@ func (q *Queries) ListManifestDefinitionActionSets(ctx context.Context, definiti
 			&i.Description,
 			&i.MemberCount,
 			&i.Schedule,
+			&i.OnFailure,
 			&i.CreatedAt,
 			&i.CreatedBy,
 			&i.UpdatedAt,

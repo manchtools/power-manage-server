@@ -63,7 +63,7 @@ func (c *Compiler) Action(ctx context.Context, id string) (*pmv1.Manifest, error
 		Provenance:       &pmv1.ManifestProvenance{ActionId: id},
 		Schedule:         schedule,
 		DefaultOnFailure: pmv1.OnFailure_ON_FAILURE_CONTINUE,
-		Occurrences:      []*pmv1.ManifestOccurrence{occurrence(action)},
+		Occurrences:      []*pmv1.ManifestOccurrence{occurrence(action, pmv1.OnFailure_ON_FAILURE_CONTINUE)},
 	})
 }
 
@@ -132,11 +132,15 @@ func compileSet(set store.ActionSetRow, rows []store.ActionRow, provenance *pmv1
 	if err != nil {
 		return nil, fmt.Errorf("action set %s schedule: %w", set.ID, err)
 	}
+	policy := pmv1.OnFailure(set.OnFailure)
+	if policy != pmv1.OnFailure_ON_FAILURE_CONTINUE && policy != pmv1.OnFailure_ON_FAILURE_STOP {
+		return nil, fmt.Errorf("action set %s has invalid failure policy %d", set.ID, set.OnFailure)
+	}
 	manifest := &pmv1.Manifest{
 		ManifestId:       ulid.Make().String(),
 		Provenance:       provenance,
 		Schedule:         schedule,
-		DefaultOnFailure: pmv1.OnFailure_ON_FAILURE_CONTINUE,
+		DefaultOnFailure: policy,
 		Occurrences:      make([]*pmv1.ManifestOccurrence, 0, len(rows)),
 	}
 	for _, row := range rows {
@@ -144,7 +148,7 @@ func compileSet(set store.ActionSetRow, rows []store.ActionRow, provenance *pmv1
 		if err != nil {
 			return nil, err
 		}
-		manifest.Occurrences = append(manifest.Occurrences, occurrence(action))
+		manifest.Occurrences = append(manifest.Occurrences, occurrence(action, policy))
 	}
 	return finish(manifest)
 }
@@ -181,11 +185,11 @@ func requiredSchedule(raw []byte) (*pmv1.ActionSchedule, error) {
 	return schedule, nil
 }
 
-func occurrence(action *pmv1.Action) *pmv1.ManifestOccurrence {
+func occurrence(action *pmv1.Action, policy pmv1.OnFailure) *pmv1.ManifestOccurrence {
 	return &pmv1.ManifestOccurrence{
 		OccurrenceId: ulid.Make().String(),
 		Action:       action,
-		OnFailure:    pmv1.OnFailure_ON_FAILURE_CONTINUE,
+		OnFailure:    policy,
 	}
 }
 

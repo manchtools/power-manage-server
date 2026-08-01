@@ -35,10 +35,10 @@ func newManifestFixture(t *testing.T) *manifestFixture {
 	require.NoError(t, err)
 	set1, set2 := newID(), newID()
 	_, err = raw.Exec(ctx, `
-		INSERT INTO action_sets (id, name, schedule, created_at) VALUES
-			($1, 'daily', '{"cron":"0 4 * * *"}'::jsonb, now()),
-			($2, 'on assign', '{"runOnAssign":true}'::jsonb, now())
-	`, set1, set2)
+		INSERT INTO action_sets (id, name, schedule, on_failure, created_at) VALUES
+			($1, 'daily', '{"cron":"0 4 * * *"}'::jsonb, $3, now()),
+			($2, 'on assign', '{"runOnAssign":true}'::jsonb, $4, now())
+	`, set1, set2, int32(pmv1.OnFailure_ON_FAILURE_STOP), int32(pmv1.OnFailure_ON_FAILURE_CONTINUE))
 	require.NoError(t, err)
 	_, err = raw.Exec(ctx, `
 		INSERT INTO action_set_members (set_id, action_id, sort_order, added_at) VALUES
@@ -80,9 +80,12 @@ func TestManifestCompiler_ActionSetFlattensInAuthoredOrder(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, f.set1, got.Provenance.ActionSetId)
 	assert.Equal(t, "0 4 * * *", got.Schedule.Cron)
+	assert.Equal(t, pmv1.OnFailure_ON_FAILURE_STOP, got.DefaultOnFailure)
 	require.Len(t, got.Occurrences, 2)
 	assert.Equal(t, f.action1, got.Occurrences[0].Action.Id.Value)
 	assert.Equal(t, f.action2, got.Occurrences[1].Action.Id.Value)
+	assert.Equal(t, pmv1.OnFailure_ON_FAILURE_STOP, got.Occurrences[0].OnFailure)
+	assert.Equal(t, pmv1.OnFailure_ON_FAILURE_STOP, got.Occurrences[1].OnFailure)
 	assert.NotEqual(t, got.Occurrences[0].OccurrenceId, got.Occurrences[1].OccurrenceId)
 }
 
