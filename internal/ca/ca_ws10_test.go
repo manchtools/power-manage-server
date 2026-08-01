@@ -2,10 +2,13 @@ package ca_test
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"log/slog"
 	"os"
@@ -25,32 +28,45 @@ func pkcs8PEM(t *testing.T, key any) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 }
 
-// TestNewFromPEM_RejectsSignerIncompatibleCAKey pins WS10 #7: the CA key
-// signs both issued certs AND dispatched actions (the action signer
-// supports only ECDSA/RSA). A signer-incompatible key (Ed25519 — valid
-// PKCS8, implements crypto.Signer, accepted by parsePrivateKey) must be
-// rejected at boot rather than load and silently break action dispatch.
-func TestNewFromPEM_RejectsSignerIncompatibleCAKey(t *testing.T) {
-	certPEM, ecdsaKeyPEM := generateTestCA(t)
-
+func TestNewFromPEM_RequiresMatchingEd25519Key(t *testing.T) {
+	certPEM, ed25519KeyPEM := generateTestCA(t)
+	ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
-	_, ed25519Key, err := ed25519.GenerateKey(rand.Reader)
+	_, otherEd25519Key, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	t.Run("ECDSA accepted", func(t *testing.T) {
-		_, err := ca.NewFromPEM(certPEM, ecdsaKeyPEM, time.Hour)
+	t.Run("matching Ed25519 accepted", func(t *testing.T) {
+		_, err := ca.NewFromPEM(certPEM, ed25519KeyPEM, time.Hour)
 		require.NoError(t, err)
 	})
-	t.Run("RSA accepted", func(t *testing.T) {
+	t.Run("ECDSA rejected", func(t *testing.T) {
+		_, err := ca.NewFromPEM(certPEM, pkcs8PEM(t, ecdsaKey), time.Hour)
+		require.ErrorContains(t, err, "Ed25519 is required")
+	})
+	t.Run("RSA rejected", func(t *testing.T) {
 		_, err := ca.NewFromPEM(certPEM, pkcs8PEM(t, rsaKey), time.Hour)
-		require.NoError(t, err)
+		require.ErrorContains(t, err, "Ed25519 is required")
 	})
-	t.Run("Ed25519 rejected", func(t *testing.T) {
-		_, err := ca.NewFromPEM(certPEM, pkcs8PEM(t, ed25519Key), time.Hour)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "unsupported CA signing key type")
+	t.Run("mismatched Ed25519 rejected", func(t *testing.T) {
+		_, err := ca.NewFromPEM(certPEM, pkcs8PEM(t, otherEd25519Key), time.Hour)
+		require.ErrorContains(t, err, "do not match")
 	})
+}
+
+func TestIssueCertificateFromCSR_RejectsNonEd25519Identity(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	c, err := ca.NewFromPEM(certPEM, keyPEM, time.Hour)
+	require.NoError(t, err)
+	ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "device-1"},
+	}, ecdsaKey)
+	require.NoError(t, err)
+	_, err = c.IssueCertificateFromCSR("device-1", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}))
+	require.ErrorContains(t, err, "Ed25519 is required")
 }
 
 // TestNew_WarnsOnGroupOrWorldReadableKeyFile pins WS10 #11: New warns

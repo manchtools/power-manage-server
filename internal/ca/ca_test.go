@@ -1,8 +1,7 @@
 package ca_test
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -24,7 +23,7 @@ import (
 func generateTestCA(t *testing.T) (certPEM, keyPEM []byte) {
 	t.Helper()
 
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caPublic, caKey, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
 	template := &x509.Certificate{
@@ -40,23 +39,23 @@ func generateTestCA(t *testing.T) (certPEM, keyPEM []byte) {
 		IsCA:                  true,
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &caKey.PublicKey, caKey)
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, caPublic, caKey)
 	require.NoError(t, err)
 
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
-	keyDER, err := x509.MarshalECPrivateKey(caKey)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(caKey)
 	require.NoError(t, err)
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 
 	return certPEM, keyPEM
 }
 
 // generateCSR creates a CSR PEM for a given device ID.
-func generateCSR(t *testing.T, deviceID string) (csrPEM []byte, key *ecdsa.PrivateKey) {
+func generateCSR(t *testing.T, deviceID string) (csrPEM []byte, key ed25519.PrivateKey) {
 	t.Helper()
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	_, key, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
 	csrTemplate := &x509.CertificateRequest{
@@ -74,7 +73,7 @@ func generateCSR(t *testing.T, deviceID string) (csrPEM []byte, key *ecdsa.Priva
 
 // csrForKey builds a CSR PEM for deviceID signed by the given key. Unlike
 // generateCSR it lets the caller reuse a key, which is what renewal does.
-func csrForKey(t *testing.T, deviceID string, key *ecdsa.PrivateKey) []byte {
+func csrForKey(t *testing.T, deviceID string, key ed25519.PrivateKey) []byte {
 	t.Helper()
 	der, err := x509.CreateCertificateRequest(rand.Reader,
 		&x509.CertificateRequest{Subject: pkix.Name{CommonName: deviceID}}, key)
@@ -90,7 +89,7 @@ func TestAssertCSRMatchesCertKey(t *testing.T) {
 	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
 	require.NoError(t, err)
 
-	deviceKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	_, deviceKey, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	issued, err := c.IssueCertificateFromCSR("device-001", csrForKey(t, "device-001", deviceKey))
 	require.NoError(t, err)
@@ -99,7 +98,7 @@ func TestAssertCSRMatchesCertKey(t *testing.T) {
 		require.NoError(t, ca.AssertCSRMatchesCertKey(issued.CertPEM, csrForKey(t, "device-001", deviceKey)))
 	})
 	t.Run("mismatched key rejected", func(t *testing.T) {
-		other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		_, other, err := ed25519.GenerateKey(rand.Reader)
 		require.NoError(t, err)
 		err = ca.AssertCSRMatchesCertKey(issued.CertPEM, csrForKey(t, "device-001", other))
 		require.Error(t, err)
@@ -195,7 +194,7 @@ func TestIssueCertificateFromCSR_IdentityComesFromServerNotCSR(t *testing.T) {
 // non-agent peer-class identity).
 func generateCSRWithSAN(t *testing.T, deviceID string, modify func(*x509.CertificateRequest)) []byte {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	_, key, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	tmpl := &x509.CertificateRequest{Subject: pkix.Name{CommonName: deviceID}}
 	modify(tmpl)
@@ -569,16 +568,6 @@ func TestSetTrustBundle_InvalidPEM(t *testing.T) {
 
 	err = c.SetTrustBundle([]byte("not a certificate"))
 	assert.Error(t, err)
-}
-
-func TestSigner(t *testing.T) {
-	certPEM, keyPEM := generateTestCA(t)
-	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
-	require.NoError(t, err)
-
-	signer := c.Signer()
-	assert.NotNil(t, signer)
-	assert.NotNil(t, signer.Public())
 }
 
 func TestTrustPool(t *testing.T) {

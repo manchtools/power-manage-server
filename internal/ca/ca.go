@@ -2,10 +2,10 @@
 package ca
 
 import (
+	"bytes"
 	"crypto"
-	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -90,16 +90,19 @@ func NewFromPEM(certPEM, keyPEM []byte, validity time.Duration, opts ...Option) 
 		return nil, fmt.Errorf("parse CA key: %w", err)
 	}
 
-	// WS10 #7: the CA key signs BOTH issued certificates and dispatched
-	// actions (verify.ActionSigner), which supports only ECDSA and RSA.
-	// parsePrivateKey accepts any crypto.Signer (e.g. an Ed25519 PKCS8
-	// key) — reject a signer-incompatible key at boot rather than load it
-	// and silently break action dispatch later.
-	switch key.(type) {
-	case *ecdsa.PrivateKey, *rsa.PrivateKey:
-		// supported
-	default:
-		return nil, fmt.Errorf("unsupported CA signing key type %T (the action signer requires ECDSA or RSA)", key)
+	if _, ok := key.(ed25519.PrivateKey); !ok {
+		return nil, fmt.Errorf("unsupported CA signing key type %T: Ed25519 is required", key)
+	}
+	certPublic, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshal CA certificate public key: %w", err)
+	}
+	keyPublic, err := x509.MarshalPKIXPublicKey(key.Public())
+	if err != nil {
+		return nil, fmt.Errorf("marshal CA private-key public key: %w", err)
+	}
+	if !bytes.Equal(certPublic, keyPublic) {
+		return nil, fmt.Errorf("CA certificate and private key do not match")
 	}
 
 	pool := x509.NewCertPool()
@@ -176,6 +179,9 @@ func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass,
 	if err := csr.CheckSignature(); err != nil {
 		return nil, fmt.Errorf("invalid CSR signature: %w", err)
 	}
+	if _, ok := csr.PublicKey.(ed25519.PublicKey); !ok {
+		return nil, fmt.Errorf("unsupported CSR public key type %T: Ed25519 is required", csr.PublicKey)
+	}
 
 	// Reject CSRs that request Subject Alternative Names. Agent
 	// certificates are client certs identified by the deviceID in the
@@ -223,7 +229,7 @@ func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass,
 		},
 		NotBefore:             now.Add(-1 * time.Minute), // Allow for clock skew
 		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           extKeyUsage,
 		BasicConstraintsValid: true,
 		URIs:                  []*url.URL{peerURI},
@@ -298,11 +304,6 @@ func (ca *CA) VerifyCertificate(certPEM []byte) (string, error) {
 // This includes additional CAs added via SetTrustBundle for rotation support.
 func (ca *CA) TrustPool() *x509.CertPool {
 	return ca.trustPool
-}
-
-// Signer returns the CA's private key for action signing.
-func (ca *CA) Signer() crypto.Signer {
-	return ca.key
 }
 
 // CACertPEM returns the PEM-encoded CA certificate.
