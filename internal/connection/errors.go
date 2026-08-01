@@ -5,6 +5,9 @@ import "errors"
 var (
 	// ErrAgentNotConnected is returned when trying to send to a disconnected agent.
 	ErrAgentNotConnected = errors.New("agent not connected")
+	// ErrStaleConnection means a sender named an epoch superseded by a newer
+	// connection for the same device.
+	ErrStaleConnection = errors.New("stale agent connection")
 
 	// ErrSendTimeout is returned when a frame could not be written to the device
 	// within SendTimeout. Distinct from ErrAgentNotConnected because the

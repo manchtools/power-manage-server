@@ -4,11 +4,11 @@ import (
 	"sync"
 	"time"
 
-	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 )
 
 // TerminalSession represents a live WebSocket terminal bridge session
-// registered by the gateway. The bridge goroutine reads from OutputCh;
+// registered by control. The bridge goroutine reads from OutputCh;
 // the agent bidi stream handler writes to it via RouteAgentMessage.
 type TerminalSession struct {
 	SessionID string
@@ -147,8 +147,7 @@ func (r *TerminalSessionRegistry) Count() int {
 	return len(r.sessions)
 }
 
-// List returns a snapshot of all active sessions for the admin
-// GatewayService.ListGatewayTerminalSessions RPC.
+// List returns a snapshot of all active terminal sessions.
 func (r *TerminalSessionRegistry) List() []*TerminalSession {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

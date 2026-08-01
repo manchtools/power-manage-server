@@ -7,10 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
-	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 )
 
 // Agent represents a connected agent.
@@ -20,10 +21,13 @@ type Agent struct {
 	Version     string
 	ConnectedAt time.Time
 	LastSeen    time.Time
-	Stream      *connect.BidiStream[pm.AgentMessage, pm.ServerMessage]
-	sendMu      sync.Mutex
-	ctx         context.Context
-	cancel      context.CancelFunc
+	// Epoch increases for every accepted connection. Delivery sends name the
+	// epoch they were prepared for so a replaced stream cannot receive new work.
+	Epoch  int64
+	Stream *connect.BidiStream[pm.AgentMessage, pm.ServerMessage]
+	sendMu sync.Mutex
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	// write puts one frame on the wire. Production wires it to Stream.Send in
 	// Register; it is a seam because connect.BidiStream is a concrete type with
@@ -170,9 +174,10 @@ func (a *Agent) Terminated() bool {
 
 // Manager manages connected agents.
 type Manager struct {
-	now    func() time.Time // clock seam; defaults to time.Now, overridden in tests
-	mu     sync.RWMutex
-	agents map[string]*Agent // deviceID -> agent
+	now       func() time.Time // clock seam; defaults to time.Now, overridden in tests
+	nextEpoch atomic.Int64
+	mu        sync.RWMutex
+	agents    map[string]*Agent // deviceID -> agent
 }
 
 // NewManager creates a new connection manager.
@@ -196,6 +201,7 @@ func (m *Manager) Register(parentCtx context.Context, deviceID, hostname, versio
 		Version:     version,
 		ConnectedAt: m.now(),
 		LastSeen:    m.now(),
+		Epoch:       m.nextEpoch.Add(1),
 		Stream:      stream,
 		ctx:         ctx,
 		cancel:      cancel,
@@ -274,13 +280,29 @@ func (m *Manager) UpdateLastSeen(deviceID string) {
 // Send sends a message to a specific agent.
 func (m *Manager) Send(deviceID string, msg *pm.ServerMessage) error {
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	agent, ok := m.agents[deviceID]
-	m.mu.RUnlock()
 
 	if !ok {
 		return ErrAgentNotConnected
 	}
 
+	return agent.Send(msg)
+}
+
+// SendAtEpoch sends only when epoch still names the device's current
+// connection. The manager read lock remains held through the bounded write, so
+// Register cannot replace the connection between the epoch check and the send.
+func (m *Manager) SendAtEpoch(deviceID string, epoch int64, msg *pm.ServerMessage) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	agent, ok := m.agents[deviceID]
+	if !ok {
+		return ErrAgentNotConnected
+	}
+	if agent.Epoch != epoch {
+		return ErrStaleConnection
+	}
 	return agent.Send(msg)
 }
 

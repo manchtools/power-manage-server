@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 )
 
 func TestManager_RegisterGet(t *testing.T) {
@@ -24,6 +24,7 @@ func TestManager_RegisterGet(t *testing.T) {
 	assert.Equal(t, "1.0.0", agent.Version)
 	assert.False(t, agent.ConnectedAt.IsZero())
 	assert.False(t, agent.LastSeen.IsZero())
+	assert.Positive(t, agent.Epoch)
 
 	got, ok := m.Get("device-1")
 	require.True(t, ok)
@@ -47,6 +48,7 @@ func TestManager_ReplaceExisting(t *testing.T) {
 	got, ok := m.Get("device-1")
 	require.True(t, ok)
 	assert.Equal(t, "2.0.0", got.Version)
+	assert.Greater(t, agent2.Epoch, agent1.Epoch)
 
 	// Old agent's context should be cancelled
 	select {
@@ -54,6 +56,56 @@ func TestManager_ReplaceExisting(t *testing.T) {
 		// Expected
 	default:
 		t.Error("old agent context should be cancelled")
+	}
+}
+
+func TestManager_SendAtEpochRejectsReplacedConnection(t *testing.T) {
+	m := NewManager()
+	old := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
+	fresh := m.Register(context.Background(), "device-1", "host1", "1.0.1", nil)
+
+	var writes atomic.Int32
+	fresh.write = func(*pm.ServerMessage) error {
+		writes.Add(1)
+		return nil
+	}
+	assert.ErrorIs(t, m.SendAtEpoch("device-1", old.Epoch, &pm.ServerMessage{}), ErrStaleConnection)
+	assert.Zero(t, writes.Load(), "a stale epoch must not write to the replacement stream")
+	require.NoError(t, m.SendAtEpoch("device-1", fresh.Epoch, &pm.ServerMessage{}))
+	assert.Equal(t, int32(1), writes.Load())
+}
+
+func TestManager_SendAtEpochCannotRaceAReplacement(t *testing.T) {
+	m := NewManager()
+	current := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
+	entered, release := make(chan struct{}), make(chan struct{})
+	current.write = func(*pm.ServerMessage) error {
+		close(entered)
+		<-release
+		return nil
+	}
+
+	sent := make(chan error, 1)
+	go func() { sent <- m.SendAtEpoch("device-1", current.Epoch, &pm.ServerMessage{}) }()
+	<-entered
+	attempted, replaced := make(chan struct{}), make(chan struct{})
+	go func() {
+		close(attempted)
+		m.Register(context.Background(), "device-1", "host1", "1.0.1", nil)
+		close(replaced)
+	}()
+	<-attempted
+	select {
+	case <-replaced:
+		t.Fatal("Register replaced the connection while an epoch-checked send was in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	require.NoError(t, <-sent)
+	select {
+	case <-replaced:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Register did not proceed after the epoch-checked send completed")
 	}
 }
 
