@@ -316,6 +316,9 @@ type DeviceAssigneeView struct {
 	Name string
 }
 
+// DeviceInventoryTable is one latest collected osquery table for a device.
+type DeviceInventoryTable = generated.ListDeviceInventoryRow
+
 // DefaultInventoryIntervalMinutes is the server cadence used when neither a
 // device nor any live device group supplies an inventory interval.
 const DefaultInventoryIntervalMinutes int32 = 1440
@@ -1134,6 +1137,18 @@ func (s *Store) ListDeviceAssignees(ctx context.Context, deviceID string) ([]Dev
 		out[i] = DeviceAssigneeView{ID: row.AssigneeID, Kind: row.AssigneeKind, Name: row.AssigneeName}
 	}
 	return out, nil
+}
+
+// ListDeviceInventory returns the requested latest tables in stable name
+// order. An empty name list selects every table for the device.
+func (s *Store) ListDeviceInventory(ctx context.Context, deviceID string, tableNames []string) ([]DeviceInventoryTable, error) {
+	rows, err := s.queries.ListDeviceInventory(ctx, generated.ListDeviceInventoryParams{
+		DeviceID: deviceID, TableNames: tableNames,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("device: list inventory: %w", err)
+	}
+	return rows, nil
 }
 
 // GetUser returns one live user. ErrNotFound when unknown or deleted.

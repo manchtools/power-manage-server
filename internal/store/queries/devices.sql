@@ -196,6 +196,16 @@ WHERE d.is_deleted = FALSE
 GROUP BY d.id, d.inventory_interval_minutes
 ORDER BY d.id;
 
+-- name: ListDeviceInventory :many
+SELECT table_name, rows, collected_at
+FROM device_inventory
+WHERE device_id = sqlc.arg(device_id)
+  AND (
+      COALESCE(cardinality(sqlc.arg(table_names)::text[]), 0) = 0
+      OR table_name = ANY(sqlc.arg(table_names)::text[])
+  )
+ORDER BY table_name;
+
 -- name: AssignDeviceUser :execrows
 INSERT INTO device_assigned_users (device_id, user_id, assigned_at, assigned_by)
 SELECT $1, $2, $3, $4

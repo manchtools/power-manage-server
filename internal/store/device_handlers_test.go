@@ -116,7 +116,9 @@ func newDeviceHandlerFixture(t *testing.T) *deviceHandlerFixture {
 	require.NoError(t, err)
 	_, err = raw.Exec(context.Background(), `
 		INSERT INTO device_inventory (device_id, table_name, rows, collected_at)
-		VALUES ($1, 'system_info', '[]', $2)`, f.groupID, now.Add(-time.Hour))
+		VALUES
+			($1, 'os_version', '[{"name":"Debian"}]', $2),
+			($1, 'system_info', '[{"hostname":"group"}]', $2)`, f.groupID, now.Add(-time.Hour))
 	require.NoError(t, err)
 
 	f.handlers = device.New(device.Config{
@@ -141,8 +143,14 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	_, err := f.handlers.GetDevice(context.Background(), connect.NewRequest(&pmv1.GetDeviceRequest{Id: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceInventory(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceInventoryRequest{DeviceId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	_, err = f.handlers.GetDevice(context.Background(), connect.NewRequest(&pmv1.GetDeviceRequest{Id: f.directID}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceInventory(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceInventoryRequest{DeviceId: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
@@ -196,6 +204,56 @@ func TestDeviceHandlers_AssignedAndScopedReads(t *testing.T) {
 	assert.Equal(t, f.groupID, list.Msg.Devices[0].Id)
 	assert.NotNil(t, list.Msg.Devices[0].LastInventoryAt)
 	assert.False(t, list.Msg.Devices[0].InventoryOverdue)
+}
+
+func TestDeviceHandlers_GetDeviceInventoryReadsDirectTables(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	ctx := auth.WithUser(context.Background(), &auth.UserContext{
+		ID: f.actorID, Kind: auth.PrincipalUser,
+		Permissions: []string{"GetDeviceInventory"},
+		ScopedGrants: []auth.ScopedGrant{{
+			Permission: "GetDeviceInventory", ScopeKind: auth.ScopeKindDeviceGroup, ScopeID: f.scopeGroup,
+		}},
+	})
+
+	response, err := f.handlers.GetDeviceInventory(ctx,
+		connect.NewRequest(&pmv1.GetDeviceInventoryRequest{DeviceId: f.groupID}))
+	require.NoError(t, err)
+	require.Len(t, response.Msg.Tables, 2)
+	assert.Equal(t, "os_version", response.Msg.Tables[0].TableName)
+	require.Len(t, response.Msg.Tables[0].Rows, 1)
+	assert.Equal(t, "Debian", response.Msg.Tables[0].Rows[0].Data["name"])
+	assert.True(t, response.Msg.Tables[0].CollectedAt.AsTime().Equal(f.now.Add(-time.Hour)))
+	assert.Equal(t, "system_info", response.Msg.Tables[1].TableName)
+
+	filtered, err := f.handlers.GetDeviceInventory(ctx,
+		connect.NewRequest(&pmv1.GetDeviceInventoryRequest{
+			DeviceId: f.groupID, TableNames: []string{"system_info"},
+		}))
+	require.NoError(t, err)
+	require.Len(t, filtered.Msg.Tables, 1)
+	assert.Equal(t, "group", filtered.Msg.Tables[0].Rows[0].Data["hostname"])
+
+	_, err = f.handlers.GetDeviceInventory(ctx,
+		connect.NewRequest(&pmv1.GetDeviceInventoryRequest{DeviceId: f.outsideID}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "scope must not disclose the device")
+
+	_, err = f.handlers.GetDeviceInventory(ctx,
+		connect.NewRequest(&pmv1.GetDeviceInventoryRequest{
+			DeviceId: f.groupID, TableNames: make([]string, 129),
+		}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestDeviceHandlers_GetDeviceInventoryRejectsInvalidStoredShape(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	_, err := f.raw.Exec(context.Background(),
+		`UPDATE device_inventory SET rows = '{"not":"rows"}' WHERE device_id = $1`, f.groupID)
+	require.NoError(t, err)
+
+	_, err = f.handlers.GetDeviceInventory(f.actor("GetDeviceInventory"),
+		connect.NewRequest(&pmv1.GetDeviceInventoryRequest{DeviceId: f.groupID}))
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "corrupt inventory must not look like an empty table")
 }
 
 func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
@@ -300,6 +358,7 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 	want := []string{
 		powermanagev1connect.ControlServiceListDevicesProcedure,
 		powermanagev1connect.ControlServiceGetDeviceProcedure,
+		powermanagev1connect.ControlServiceGetDeviceInventoryProcedure,
 		powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceAssignDeviceProcedure,

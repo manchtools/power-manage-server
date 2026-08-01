@@ -2,6 +2,7 @@ package device
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -10,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/go-playground/validator/v10"
 	"github.com/oklog/ulid/v2"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
@@ -18,8 +20,9 @@ import (
 )
 
 const (
-	defaultPageSize = int32(50)
-	maxLabelFilters = 64
+	defaultPageSize          = int32(50)
+	maxLabelFilters          = 64
+	maxInventoryTableFilters = 128
 )
 
 // Config supplies the direct PostgreSQL store and process-local seams used by
@@ -254,6 +257,43 @@ func (h *Handlers) GetDevice(ctx context.Context, req *connect.Request[pmv1.GetD
 		return nil, err
 	}
 	return connect.NewResponse(&pmv1.GetDeviceResponse{Device: h.toProto(view)}), nil
+}
+
+// GetDeviceInventory returns the latest directly stored osquery tables for a
+// visible device.
+func (h *Handlers) GetDeviceInventory(ctx context.Context, req *connect.Request[pmv1.GetDeviceInventoryRequest]) (*connect.Response[pmv1.GetDeviceInventoryResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	if _, err := h.actor(ctx); err != nil {
+		return nil, err
+	}
+	if len(req.Msg.TableNames) > maxInventoryTableFilters {
+		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "too many inventory table filters")
+	}
+	if _, err := h.readDevice(ctx, "GetDeviceInventory", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	rows, err := h.store.ListDeviceInventory(ctx, req.Msg.DeviceId, req.Msg.TableNames)
+	if err != nil {
+		return nil, h.internal(ctx, "list device inventory", err)
+	}
+	tables := make([]*pmv1.InventoryTableResult, len(rows))
+	for i, row := range rows {
+		var values []map[string]string
+		if err := json.Unmarshal(row.Rows, &values); err != nil {
+			return nil, h.internal(ctx, "decode device inventory", err)
+		}
+		protoRows := make([]*pmv1.OSQueryRow, len(values))
+		for j, value := range values {
+			protoRows[j] = &pmv1.OSQueryRow{Data: value}
+		}
+		tables[i] = &pmv1.InventoryTableResult{
+			TableName: row.TableName, Rows: protoRows,
+			CollectedAt: timestamppb.New(row.CollectedAt),
+		}
+	}
+	return connect.NewResponse(&pmv1.GetDeviceInventoryResponse{Tables: tables}), nil
 }
 
 // ListDeviceAssignees returns the live users and groups assigned to a device.

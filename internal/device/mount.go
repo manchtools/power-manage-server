@@ -13,7 +13,7 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	if mux == nil {
 		panic("device: mux is required")
 	}
-	mounted := make([]string, 0, 10)
+	mounted := make([]string, 0, 11)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -22,6 +22,8 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListDevicesProcedure, h.ListDevices, opts...))
 	register(powermanagev1connect.ControlServiceGetDeviceProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDeviceProcedure, h.GetDevice, opts...))
+	register(powermanagev1connect.ControlServiceGetDeviceInventoryProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDeviceInventoryProcedure, h.GetDeviceInventory, opts...))
 	register(powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetDeviceLabelProcedure, h.SetDeviceLabel, opts...))
 	register(powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
@@ -59,6 +61,7 @@ func ReadProcedures() []string {
 	return []string{
 		powermanagev1connect.ControlServiceListDevicesProcedure,
 		powermanagev1connect.ControlServiceGetDeviceProcedure,
+		powermanagev1connect.ControlServiceGetDeviceInventoryProcedure,
 		powermanagev1connect.ControlServiceListDeviceAssigneesProcedure,
 	}
 }

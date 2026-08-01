@@ -452,6 +452,48 @@ func (q *Queries) ListDeviceGroupIDs(ctx context.Context, deviceID string) ([]st
 	return items, nil
 }
 
+const listDeviceInventory = `-- name: ListDeviceInventory :many
+SELECT table_name, rows, collected_at
+FROM device_inventory
+WHERE device_id = $1
+  AND (
+      COALESCE(cardinality($2::text[]), 0) = 0
+      OR table_name = ANY($2::text[])
+  )
+ORDER BY table_name
+`
+
+type ListDeviceInventoryParams struct {
+	DeviceID   string   `json:"device_id"`
+	TableNames []string `json:"table_names"`
+}
+
+type ListDeviceInventoryRow struct {
+	TableName   string    `json:"table_name"`
+	Rows        []byte    `json:"rows"`
+	CollectedAt time.Time `json:"collected_at"`
+}
+
+func (q *Queries) ListDeviceInventory(ctx context.Context, arg ListDeviceInventoryParams) ([]ListDeviceInventoryRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceInventory, arg.DeviceID, arg.TableNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceInventoryRow{}
+	for rows.Next() {
+		var i ListDeviceInventoryRow
+		if err := rows.Scan(&i.TableName, &i.Rows, &i.CollectedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeviceInventoryFreshness = `-- name: ListDeviceInventoryFreshness :many
 SELECT
     d.id AS device_id,
