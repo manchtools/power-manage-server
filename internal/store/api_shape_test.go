@@ -65,6 +65,7 @@ var nonMutatingExports = map[string]string{
 	"ListDueDeliveries":      "read",
 	"ListDeviceDeliveries":   "read",
 	"GetJob":                 "read",
+	"ListClaimableJobs":      "read",
 	"CountDevices":           "read",
 	"GetDeviceView":          "read",
 	"ListDeviceViews":        "read",

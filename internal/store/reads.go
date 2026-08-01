@@ -191,6 +191,15 @@ func (s *Store) GetJob(ctx context.Context, id string) (JobRow, error) {
 	return row, nil
 }
 
+// ListClaimableJobs returns due pending jobs and expired leases, oldest first.
+func (s *Store) ListClaimableJobs(ctx context.Context, at time.Time, limit int32) ([]JobRow, error) {
+	rows, err := s.queries.ListClaimableJobs(ctx, generated.ListClaimableJobsParams{DueAt: at, Limit: limit})
+	if err != nil {
+		return nil, fmt.Errorf("job: list claimable: %w", err)
+	}
+	return rows, nil
+}
+
 // GetDeviceView returns one live device with its labels and assignees.
 func (s *Store) GetDeviceView(ctx context.Context, id string) (DeviceView, error) {
 	row, err := s.GetDevice(ctx, id)
