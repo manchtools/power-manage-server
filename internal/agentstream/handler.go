@@ -1,0 +1,454 @@
+// Package agentstream terminates the authenticated device connection directly
+// in control. Frames are applied to PostgreSQL-backed services without a relay,
+// broker, or application-signature layer.
+package agentstream
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"strings"
+	"time"
+
+	"connectrpc.com/connect"
+	"github.com/oklog/ulid/v2"
+	"google.golang.org/protobuf/types/known/durationpb"
+
+	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
+	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
+	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
+	"github.com/manchtools/power-manage/server/internal/connection"
+	"github.com/manchtools/power-manage/server/internal/delivery"
+	"github.com/manchtools/power-manage/server/internal/store"
+	db "github.com/manchtools/power-manage/server/internal/store/generated"
+)
+
+// DeviceResults is the direct sink for device-owned result frames.
+type DeviceResults interface {
+	CompleteOSQueryResult(context.Context, string, *pmv1.OSQueryResult) error
+	CompleteLogQueryResult(context.Context, string, *pmv1.LogQueryResult) error
+	StoreDeviceInventory(context.Context, string, *pmv1.DeviceInventory) error
+	CompleteLuksKeyRevocation(context.Context, string, *pmv1.RevokeLuksDeviceKeyResult) error
+}
+
+// DeliveryState advances the durable delivery state machine.
+type DeliveryState interface {
+	AcknowledgeReceipt(context.Context, string, string) (bool, error)
+	Complete(context.Context, string, string, string, string, string) (bool, error)
+}
+
+// ExecutionResults commits per-occurrence results and streamed output.
+type ExecutionResults interface {
+	ApplyActionResult(context.Context, string, *pmv1.ActionResult) error
+	AppendOutputChunk(context.Context, string, *pmv1.OutputChunk) error
+}
+
+// Secrets owns the narrow feature sinks for sealed LUKS and LPS fields.
+type Secrets interface {
+	ValidateLuksToken(context.Context, string, *pmv1.ValidateLuksTokenRequest) (*pmv1.ValidateLuksTokenResponse, error)
+	GetLuksKey(context.Context, string, *pmv1.GetLuksKeyRequest) (*pmv1.GetLuksKeyResponse, error)
+	StoreLuksKey(context.Context, string, *pmv1.StoreLuksKeyRequest) (*pmv1.StoreLuksKeyResponse, error)
+	StoreLpsPasswords(context.Context, string, *pmv1.StoreLpsPasswordsRequest) (*pmv1.StoreLpsPasswordsResponse, error)
+}
+
+// SyncSource returns the durable delivery backlog and current scheduling policy
+// for the authenticated device.
+type SyncSource interface {
+	SyncActions(context.Context, string) (*pmv1.SyncActionsResponse, error)
+}
+
+// DeviceWaker queues a reconnect's durable delivery backlog. The database
+// sweep remains the correctness path when this best-effort wake is missed.
+type DeviceWaker interface {
+	WakeDevice(context.Context, string) error
+}
+
+// Config supplies the direct services used by AgentService.
+type Config struct {
+	Store             *store.Store
+	Manager           *connection.Manager
+	Deliveries        DeliveryState
+	Executions        ExecutionResults
+	DeviceResults     DeviceResults
+	Secrets           Secrets
+	Sync              SyncSource
+	Waker             DeviceWaker
+	TerminalSessions  *connection.TerminalSessionRegistry
+	Logger            *slog.Logger
+	ServerVersion     string
+	DeviceLoginURL    string
+	HeartbeatInterval time.Duration
+	Now               func() time.Time
+}
+
+// Handler implements the target AgentService without legacy transport paths.
+type Handler struct {
+	powermanagev1connect.UnimplementedAgentServiceHandler
+
+	store             *store.Store
+	manager           *connection.Manager
+	deliveries        DeliveryState
+	executions        ExecutionResults
+	deviceResults     DeviceResults
+	secrets           Secrets
+	sync              SyncSource
+	waker             DeviceWaker
+	terminalSessions  *connection.TerminalSessionRegistry
+	logger            *slog.Logger
+	serverVersion     string
+	deviceLoginURL    string
+	heartbeatInterval time.Duration
+	now               func() time.Time
+	validator         interface{ Struct(any) error }
+}
+
+// New constructs the direct AgentService handler.
+func New(cfg Config) *Handler {
+	if cfg.Store == nil || cfg.Manager == nil || cfg.Deliveries == nil || cfg.Executions == nil ||
+		cfg.DeviceResults == nil || cfg.Secrets == nil || cfg.Sync == nil || cfg.Waker == nil || cfg.TerminalSessions == nil {
+		panic("agentstream: complete direct service wiring is required")
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	return &Handler{
+		store: cfg.Store, manager: cfg.Manager, deliveries: cfg.Deliveries, executions: cfg.Executions,
+		deviceResults: cfg.DeviceResults, secrets: cfg.Secrets, sync: cfg.Sync, waker: cfg.Waker,
+		terminalSessions: cfg.TerminalSessions, logger: cfg.Logger,
+		serverVersion: cfg.ServerVersion, deviceLoginURL: cfg.DeviceLoginURL,
+		heartbeatInterval: cfg.HeartbeatInterval, now: cfg.Now,
+		validator: sdkvalidate.NewValidator(),
+	}
+}
+
+// Stream owns one authenticated device connection.
+// docref: begin direct-agent-stream
+func (h *Handler) Stream(ctx context.Context, stream *connect.BidiStream[pmv1.AgentMessage, pmv1.ServerMessage]) error {
+	deviceID, ok := DeviceIDFromContext(ctx)
+	if !ok || !validID(deviceID) {
+		return connect.NewError(connect.CodeUnauthenticated, errors.New("authenticated device identity required"))
+	}
+	first, err := stream.Receive()
+	if err != nil {
+		return normalizeStreamClose(err)
+	}
+	if err := h.validator.Struct(first); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("invalid hello frame"))
+	}
+	hello := first.GetHello()
+	if hello == nil {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("first frame must be hello"))
+	}
+	if hello.GetDeviceId().GetValue() != deviceID {
+		return connect.NewError(connect.CodePermissionDenied, errors.New("device identity mismatch"))
+	}
+	if err := h.recordHello(ctx, deviceID, hello); err != nil {
+		if store.IsNotFound(err) {
+			return connect.NewError(connect.CodePermissionDenied, errors.New("device is not registered"))
+		}
+		h.logger.Error("record agent hello", "device_id", deviceID, "error", err)
+		return connect.NewError(connect.CodeInternal, errors.New("could not establish device session"))
+	}
+
+	agent := h.manager.Register(ctx, deviceID, hello.Hostname, hello.AgentVersion, stream)
+	if deadliner := writeDeadlinerFrom(ctx); deadliner != nil {
+		agent.SetWriteDeadlineFunc(deadliner.SetWriteDeadline)
+	}
+	defer func() {
+		h.manager.UnregisterIfCurrent(deviceID, agent)
+		agent.Close()
+		agent.WaitForInFlightSend()
+	}()
+
+	welcome := &pmv1.Welcome{
+		ServerVersion: h.serverVersion, DeviceLoginUrl: h.deviceLoginURL,
+	}
+	if h.heartbeatInterval > 0 {
+		welcome.HeartbeatInterval = durationpb.New(h.heartbeatInterval)
+	}
+	if err := agent.Send(&pmv1.ServerMessage{
+		Id: ulid.Make().String(), Payload: &pmv1.ServerMessage_Welcome{Welcome: welcome},
+	}); err != nil {
+		return fmt.Errorf("send welcome: %w", err)
+	}
+	if err := h.waker.WakeDevice(ctx, deviceID); err != nil {
+		h.logger.Warn("wake device delivery backlog", "device_id", deviceID, "error", err)
+	}
+
+	type received struct {
+		message *pmv1.AgentMessage
+		err     error
+	}
+	receivedCh := make(chan received, 1)
+	go func() {
+		for {
+			message, err := stream.Receive()
+			select {
+			case receivedCh <- received{message: message, err: err}:
+			case <-agent.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-agent.Done():
+			return nil
+		case received := <-receivedCh:
+			if received.err != nil {
+				return normalizeStreamClose(received.err)
+			}
+			if agent.Terminated() {
+				return nil
+			}
+			if err := h.validator.Struct(received.message); err != nil {
+				return connect.NewError(connect.CodeInvalidArgument, errors.New("invalid agent frame"))
+			}
+			h.manager.UpdateLastSeen(deviceID)
+			if err := h.handleAgentMessage(ctx, agent, received.message); err != nil {
+				h.logger.Warn("apply agent frame", "device_id", deviceID,
+					"frame", fmt.Sprintf("%T", received.message.Payload), "error", err)
+				return connect.NewError(connect.CodeFailedPrecondition, errors.New("agent frame was not accepted"))
+			}
+		}
+	}
+}
+
+// docref: end direct-agent-stream
+
+func (h *Handler) handleAgentMessage(ctx context.Context, agent *connection.Agent, message *pmv1.AgentMessage) error {
+	deviceID := agent.DeviceID
+	switch payload := message.Payload.(type) {
+	case *pmv1.AgentMessage_Heartbeat:
+		return h.recordHeartbeat(ctx, deviceID)
+	case *pmv1.AgentMessage_DeliveryReceipt:
+		_, err := h.deliveries.AcknowledgeReceipt(ctx, payload.DeliveryReceipt.DeliveryId, deviceID)
+		return err
+	case *pmv1.AgentMessage_ManifestResult:
+		state, code, err := manifestResultState(payload.ManifestResult)
+		if err != nil {
+			return err
+		}
+		_, err = h.deliveries.Complete(ctx, payload.ManifestResult.DeliveryId, deviceID,
+			payload.ManifestResult.ManifestId, state, code)
+		return err
+	case *pmv1.AgentMessage_ActionResult:
+		return h.executions.ApplyActionResult(ctx, deviceID, payload.ActionResult)
+	case *pmv1.AgentMessage_OutputChunk:
+		return h.executions.AppendOutputChunk(ctx, deviceID, payload.OutputChunk)
+	case *pmv1.AgentMessage_QueryResult:
+		return h.deviceResults.CompleteOSQueryResult(ctx, deviceID, payload.QueryResult)
+	case *pmv1.AgentMessage_LogQueryResult:
+		return h.deviceResults.CompleteLogQueryResult(ctx, deviceID, payload.LogQueryResult)
+	case *pmv1.AgentMessage_Inventory:
+		return h.deviceResults.StoreDeviceInventory(ctx, deviceID, payload.Inventory)
+	case *pmv1.AgentMessage_RevokeLuksDeviceKeyResult:
+		return h.deviceResults.CompleteLuksKeyRevocation(ctx, deviceID, payload.RevokeLuksDeviceKeyResult)
+	case *pmv1.AgentMessage_SecurityAlert:
+		return h.recordSecurityAlert(ctx, deviceID, payload.SecurityAlert)
+	case *pmv1.AgentMessage_GetLuksKey:
+		response, err := h.secrets.GetLuksKey(ctx, deviceID, payload.GetLuksKey)
+		return h.sendResponse(agent, message.Id, response, err)
+	case *pmv1.AgentMessage_StoreLuksKey:
+		response, err := h.secrets.StoreLuksKey(ctx, deviceID, payload.StoreLuksKey)
+		return h.sendResponse(agent, message.Id, response, err)
+	case *pmv1.AgentMessage_StoreLpsPasswords:
+		response, err := h.secrets.StoreLpsPasswords(ctx, deviceID, payload.StoreLpsPasswords)
+		return h.sendResponse(agent, message.Id, response, err)
+	case *pmv1.AgentMessage_TerminalOutput:
+		return h.routeTerminal(deviceID, payload.TerminalOutput.SessionId, message)
+	case *pmv1.AgentMessage_TerminalStateChange:
+		return h.routeTerminal(deviceID, payload.TerminalStateChange.SessionId, message)
+	case *pmv1.AgentMessage_Hello:
+		return errors.New("hello is only valid as the first frame")
+	default:
+		return errors.New("unsupported agent frame")
+	}
+}
+
+func (h *Handler) sendResponse(agent *connection.Agent, messageID string, response any, operationErr error) error {
+	if operationErr != nil {
+		h.logger.Warn("agent secret operation failed", "device_id", agent.DeviceID, "error", operationErr)
+		return agent.Send(&pmv1.ServerMessage{
+			Id: messageID,
+			Payload: &pmv1.ServerMessage_Error{Error: &pmv1.Error{
+				Code: connect.CodeFailedPrecondition.String(), Message: "secret operation failed",
+			}},
+		})
+	}
+	message := &pmv1.ServerMessage{Id: messageID}
+	switch response := response.(type) {
+	case *pmv1.GetLuksKeyResponse:
+		message.Payload = &pmv1.ServerMessage_GetLuksKey{GetLuksKey: response}
+	case *pmv1.StoreLuksKeyResponse:
+		message.Payload = &pmv1.ServerMessage_StoreLuksKey{StoreLuksKey: response}
+	case *pmv1.StoreLpsPasswordsResponse:
+		message.Payload = &pmv1.ServerMessage_StoreLpsPasswords{StoreLpsPasswords: response}
+	default:
+		return errors.New("unsupported agent response")
+	}
+	return agent.Send(message)
+}
+
+func (h *Handler) routeTerminal(deviceID, sessionID string, message *pmv1.AgentMessage) error {
+	session := h.terminalSessions.Get(sessionID)
+	if session == nil {
+		return nil
+	}
+	if session.DeviceID != deviceID {
+		return errors.New("terminal session belongs to another device")
+	}
+	h.terminalSessions.RouteAgentMessage(sessionID, message)
+	return nil
+}
+
+func (h *Handler) recordHello(ctx context.Context, deviceID string, hello *pmv1.Hello) error {
+	if _, err := h.store.GetDevice(ctx, deviceID); err != nil {
+		return err
+	}
+	now := h.now().UTC().Truncate(time.Microsecond)
+	_, err := h.store.WithAudit(ctx, agentOperation(deviceID, "Hello"),
+		func(ctx context.Context, tx *store.Tx, recorder *store.AuditRecorder) error {
+			rows, err := tx.RecordDeviceHello(ctx, db.RecordDeviceHelloParams{
+				Hostname: hello.Hostname, AgentVersion: hello.AgentVersion, LastSeenAt: &now, ID: deviceID,
+			})
+			if err != nil {
+				return err
+			}
+			if rows != 1 {
+				return store.ErrNotFound
+			}
+			recorder.Effect(store.AuditEffect{
+				ResourceType: "device", ResourceID: deviceID, Action: "CONNECT", Outcome: store.EffectApplied,
+				ChangedFields: []string{"agent_version", "hostname", "last_seen_at"},
+			})
+			return nil
+		})
+	return err
+}
+
+func (h *Handler) recordHeartbeat(ctx context.Context, deviceID string) error {
+	now := h.now().UTC().Truncate(time.Microsecond)
+	_, err := h.store.WithAudit(ctx, agentOperation(deviceID, "Heartbeat"),
+		func(ctx context.Context, tx *store.Tx, recorder *store.AuditRecorder) error {
+			rows, err := tx.RecordDeviceHeartbeat(ctx, db.RecordDeviceHeartbeatParams{LastSeenAt: &now, ID: deviceID})
+			if err != nil {
+				return err
+			}
+			if rows != 1 {
+				return store.ErrNotFound
+			}
+			recorder.Effect(store.AuditEffect{
+				ResourceType: "device", ResourceID: deviceID, Action: "HEARTBEAT",
+				Outcome: store.EffectApplied, ChangedFields: []string{"last_seen_at"},
+			})
+			return nil
+		})
+	return err
+}
+
+func (h *Handler) recordSecurityAlert(ctx context.Context, deviceID string, alert *pmv1.SecurityAlert) error {
+	if alert == nil || alert.Type == pmv1.SecurityAlertType_SECURITY_ALERT_TYPE_UNSPECIFIED {
+		return errors.New("invalid security alert")
+	}
+	alertType := alert.Type.String()
+	_, err := h.store.RecordOperation(ctx, agentOperation(deviceID, "SecurityAlert"), store.AuditEffect{
+		ResourceType: "device", ResourceID: deviceID, Action: "SECURITY_ALERT",
+		Outcome: store.EffectApplied, AfterRef: &alertType,
+	})
+	return err
+}
+
+func manifestResultState(result *pmv1.ManifestResult) (state, code string, err error) {
+	if result == nil {
+		return "", "", errors.New("manifest result is required")
+	}
+	switch result.Status {
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_SUCCESS:
+		return delivery.StateSucceeded, "SUCCESS", nil
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_FAILED:
+		return delivery.StateFailed, "FAILED", nil
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_INDETERMINATE:
+		return delivery.StatePartial, "INDETERMINATE", nil
+	default:
+		return "", "", errors.New("invalid manifest result status")
+	}
+}
+
+// SyncActions returns the same durable delivery units used by Stream.
+func (h *Handler) SyncActions(ctx context.Context, request *connect.Request[pmv1.SyncActionsRequest]) (*connect.Response[pmv1.SyncActionsResponse], error) {
+	if request == nil || request.Msg == nil || request.Msg.DeviceId == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device identity required"))
+	}
+	deviceID := request.Msg.DeviceId.Value
+	if err := h.assertDeviceIdentity(ctx, deviceID); err != nil {
+		return nil, err
+	}
+	response, err := h.sync.SyncActions(ctx, deviceID)
+	if err != nil {
+		h.logger.Error("sync device deliveries", "device_id", deviceID, "error", err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("could not sync deliveries"))
+	}
+	return connect.NewResponse(response), nil
+}
+
+// ValidateLuksToken consumes an owner-issued token for the authenticated device.
+func (h *Handler) ValidateLuksToken(ctx context.Context, request *connect.Request[pmv1.ValidateLuksTokenRequest]) (*connect.Response[pmv1.ValidateLuksTokenResponse], error) {
+	if request == nil || request.Msg == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("request required"))
+	}
+	if err := h.assertDeviceIdentity(ctx, request.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	response, err := h.secrets.ValidateLuksToken(ctx, request.Msg.DeviceId, request.Msg)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("token is invalid or expired"))
+	}
+	return connect.NewResponse(response), nil
+}
+
+func (h *Handler) assertDeviceIdentity(ctx context.Context, claimed string) error {
+	authenticated, ok := DeviceIDFromContext(ctx)
+	if !ok || !validID(authenticated) {
+		return connect.NewError(connect.CodeUnauthenticated, errors.New("authenticated device identity required"))
+	}
+	if authenticated != claimed {
+		return connect.NewError(connect.CodePermissionDenied, errors.New("device identity mismatch"))
+	}
+	return nil
+}
+
+func validID(value string) bool {
+	_, err := ulid.ParseStrict(value)
+	return err == nil
+}
+
+func agentOperation(deviceID, descriptor string) store.AuditOperation {
+	return store.AuditOperation{
+		Class: store.ClassMutation, ActorType: "agent", ActorID: deviceID, Origin: "agent_stream",
+		RequestDescriptor:    "powermanage.v1.AgentService.Stream/" + descriptor,
+		AuthorizationOutcome: store.AuthorizationAllowed, AuthorizationDetail: "device_mtls",
+		Result: store.ResultSuccess, ResultCode: "OK",
+	}
+}
+
+func normalizeStreamClose(err error) error {
+	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+		return nil
+	}
+	var connectErr *connect.Error
+	if errors.As(err, &connectErr) && (connectErr.Code() == connect.CodeCanceled ||
+		(connectErr.Code() == connect.CodeUnknown && strings.Contains(connectErr.Message(), "EOF"))) {
+		return nil
+	}
+	return err
+}

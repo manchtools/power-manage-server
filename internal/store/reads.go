@@ -47,6 +47,9 @@ type DeliveryRow = generated.Delivery
 // JobRow is one durable scheduled job.
 type JobRow = generated.Job
 
+// LuksKeyRow is one encrypted-at-rest device passphrase row.
+type LuksKeyRow = generated.LuksKey
+
 // ActionRow is one live authored action used to compile agent manifests.
 type ActionRow = generated.Action
 
@@ -901,6 +904,28 @@ func (s *Store) ListDeviceDeliveries(ctx context.Context, deviceID string, limit
 		return nil, fmt.Errorf("delivery: list sendable for device: %w", err)
 	}
 	return rows, nil
+}
+
+// ListDeviceMaintenanceWindows returns every non-empty device- and user-group
+// window that constrains one device.
+func (s *Store) ListDeviceMaintenanceWindows(ctx context.Context, deviceID string) ([][]byte, error) {
+	rows, err := s.queries.ListDeviceMaintenanceWindows(ctx, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("device: list maintenance windows: %w", err)
+	}
+	return rows, nil
+}
+
+// GetCurrentLuksKeyForAgent returns the current device-scoped key for one
+// action. The stored passphrase remains ciphertext.
+func (s *Store) GetCurrentLuksKeyForAgent(ctx context.Context, deviceID, actionID string) (LuksKeyRow, error) {
+	row, err := s.queries.GetCurrentLuksKeyForAgent(ctx, generated.GetCurrentLuksKeyForAgentParams{
+		DeviceID: deviceID, ActionID: actionID,
+	})
+	if err != nil {
+		return LuksKeyRow{}, fmt.Errorf("LUKS key: get current for agent: %w", translateNotFound(err))
+	}
+	return row, nil
 }
 
 // GetJob returns one durable scheduled job. ErrNotFound when it is unknown.

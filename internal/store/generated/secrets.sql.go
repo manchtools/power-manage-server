@@ -43,6 +43,73 @@ func (q *Queries) CompleteLuksKeyRevocation(ctx context.Context, arg CompleteLuk
 	return result.RowsAffected(), nil
 }
 
+const consumeLuksToken = `-- name: ConsumeLuksToken :one
+UPDATE luks_tokens
+SET used = TRUE
+WHERE token = $1
+  AND device_id = $2
+  AND used = FALSE
+  AND expires_at > $3
+RETURNING id, device_id, action_id, token, min_length, complexity, created_at, expires_at, used
+`
+
+type ConsumeLuksTokenParams struct {
+	Token    string    `json:"token"`
+	DeviceID string    `json:"device_id"`
+	Now      time.Time `json:"now"`
+}
+
+func (q *Queries) ConsumeLuksToken(ctx context.Context, arg ConsumeLuksTokenParams) (LuksToken, error) {
+	row := q.db.QueryRow(ctx, consumeLuksToken, arg.Token, arg.DeviceID, arg.Now)
+	var i LuksToken
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.ActionID,
+		&i.Token,
+		&i.MinLength,
+		&i.Complexity,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.Used,
+	)
+	return i, err
+}
+
+const getCurrentLuksKeyForAgent = `-- name: GetCurrentLuksKeyForAgent :one
+SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at, revocation_status, revocation_error, revocation_at FROM luks_keys
+WHERE device_id = $1
+  AND action_id = $2
+  AND is_current = TRUE
+ORDER BY rotated_at DESC, id DESC
+LIMIT 1
+`
+
+type GetCurrentLuksKeyForAgentParams struct {
+	DeviceID string `json:"device_id"`
+	ActionID string `json:"action_id"`
+}
+
+func (q *Queries) GetCurrentLuksKeyForAgent(ctx context.Context, arg GetCurrentLuksKeyForAgentParams) (LuksKey, error) {
+	row := q.db.QueryRow(ctx, getCurrentLuksKeyForAgent, arg.DeviceID, arg.ActionID)
+	var i LuksKey
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.ActionID,
+		&i.DevicePath,
+		&i.Passphrase,
+		&i.RotatedAt,
+		&i.RotationReason,
+		&i.IsCurrent,
+		&i.CreatedAt,
+		&i.RevocationStatus,
+		&i.RevocationError,
+		&i.RevocationAt,
+	)
+	return i, err
+}
+
 const getLuksRevocationTarget = `-- name: GetLuksRevocationTarget :one
 SELECT count(*)::bigint AS key_count,
        COALESCE(bool_or(revocation_status = 'dispatched'), FALSE)::boolean AS dispatch_pending,
@@ -68,6 +135,107 @@ func (q *Queries) GetLuksRevocationTarget(ctx context.Context, arg GetLuksRevoca
 	row := q.db.QueryRow(ctx, getLuksRevocationTarget, arg.DeviceID, arg.ActionID)
 	var i GetLuksRevocationTargetRow
 	err := row.Scan(&i.KeyCount, &i.DispatchPending, &i.AlreadyRevoked)
+	return i, err
+}
+
+const insertLpsPassword = `-- name: InsertLpsPassword :one
+INSERT INTO lps_passwords (
+    id, device_id, action_id, username, password,
+    rotated_at, rotation_reason, created_at
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6,
+    $7, $8
+)
+RETURNING id, device_id, action_id, username, password, rotated_at, rotation_reason, is_current, created_at
+`
+
+type InsertLpsPasswordParams struct {
+	ID             string    `json:"id"`
+	DeviceID       string    `json:"device_id"`
+	ActionID       string    `json:"action_id"`
+	Username       string    `json:"username"`
+	Password       string    `json:"password"`
+	RotatedAt      time.Time `json:"rotated_at"`
+	RotationReason string    `json:"rotation_reason"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (q *Queries) InsertLpsPassword(ctx context.Context, arg InsertLpsPasswordParams) (LpsPassword, error) {
+	row := q.db.QueryRow(ctx, insertLpsPassword,
+		arg.ID,
+		arg.DeviceID,
+		arg.ActionID,
+		arg.Username,
+		arg.Password,
+		arg.RotatedAt,
+		arg.RotationReason,
+		arg.CreatedAt,
+	)
+	var i LpsPassword
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.ActionID,
+		&i.Username,
+		&i.Password,
+		&i.RotatedAt,
+		&i.RotationReason,
+		&i.IsCurrent,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertLuksKey = `-- name: InsertLuksKey :one
+INSERT INTO luks_keys (
+    id, device_id, action_id, device_path, passphrase,
+    rotated_at, rotation_reason, created_at
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6,
+    $7, $8
+)
+RETURNING id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at, revocation_status, revocation_error, revocation_at
+`
+
+type InsertLuksKeyParams struct {
+	ID             string    `json:"id"`
+	DeviceID       string    `json:"device_id"`
+	ActionID       string    `json:"action_id"`
+	DevicePath     string    `json:"device_path"`
+	Passphrase     string    `json:"passphrase"`
+	RotatedAt      time.Time `json:"rotated_at"`
+	RotationReason string    `json:"rotation_reason"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (q *Queries) InsertLuksKey(ctx context.Context, arg InsertLuksKeyParams) (LuksKey, error) {
+	row := q.db.QueryRow(ctx, insertLuksKey,
+		arg.ID,
+		arg.DeviceID,
+		arg.ActionID,
+		arg.DevicePath,
+		arg.Passphrase,
+		arg.RotatedAt,
+		arg.RotationReason,
+		arg.CreatedAt,
+	)
+	var i LuksKey
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.ActionID,
+		&i.DevicePath,
+		&i.Passphrase,
+		&i.RotatedAt,
+		&i.RotationReason,
+		&i.IsCurrent,
+		&i.CreatedAt,
+		&i.RevocationStatus,
+		&i.RevocationError,
+		&i.RevocationAt,
+	)
 	return i, err
 }
 
@@ -410,6 +578,48 @@ type MarkLuksKeyRevocationDispatchedParams struct {
 
 func (q *Queries) MarkLuksKeyRevocationDispatched(ctx context.Context, arg MarkLuksKeyRevocationDispatchedParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markLuksKeyRevocationDispatched, arg.RevocationAt, arg.DeviceID, arg.ActionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const retireCurrentLpsPassword = `-- name: RetireCurrentLpsPassword :execrows
+UPDATE lps_passwords SET is_current = FALSE
+WHERE device_id = $1
+  AND action_id = $2
+  AND username = $3
+  AND is_current = TRUE
+`
+
+type RetireCurrentLpsPasswordParams struct {
+	DeviceID string `json:"device_id"`
+	ActionID string `json:"action_id"`
+	Username string `json:"username"`
+}
+
+func (q *Queries) RetireCurrentLpsPassword(ctx context.Context, arg RetireCurrentLpsPasswordParams) (int64, error) {
+	result, err := q.db.Exec(ctx, retireCurrentLpsPassword, arg.DeviceID, arg.ActionID, arg.Username)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const retireCurrentLuksKeys = `-- name: RetireCurrentLuksKeys :execrows
+UPDATE luks_keys SET is_current = FALSE
+WHERE device_id = $1
+  AND action_id = $2
+  AND is_current = TRUE
+`
+
+type RetireCurrentLuksKeysParams struct {
+	DeviceID string `json:"device_id"`
+	ActionID string `json:"action_id"`
+}
+
+func (q *Queries) RetireCurrentLuksKeys(ctx context.Context, arg RetireCurrentLuksKeysParams) (int64, error) {
+	result, err := q.db.Exec(ctx, retireCurrentLuksKeys, arg.DeviceID, arg.ActionID)
 	if err != nil {
 		return 0, err
 	}

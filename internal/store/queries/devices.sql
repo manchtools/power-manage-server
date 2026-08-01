@@ -13,6 +13,17 @@ SELECT * FROM devices WHERE id = $1 AND is_deleted = FALSE;
 -- name: UpdateDeviceHostname :execrows
 UPDATE devices SET hostname = $2 WHERE id = $1 AND is_deleted = FALSE;
 
+-- name: RecordDeviceHello :execrows
+UPDATE devices
+SET hostname = sqlc.arg(hostname),
+    agent_version = sqlc.arg(agent_version),
+    last_seen_at = sqlc.arg(last_seen_at)
+WHERE id = sqlc.arg(id) AND is_deleted = FALSE;
+
+-- name: RecordDeviceHeartbeat :execrows
+UPDATE devices SET last_seen_at = sqlc.arg(last_seen_at)
+WHERE id = sqlc.arg(id) AND is_deleted = FALSE;
+
 -- Advance the tracked certificate only when the presented fingerprint is
 -- still current. This is the concurrency boundary for renewal: exactly one
 -- caller can replace a given certificate.
@@ -262,6 +273,23 @@ FROM device_group_members dgm
 JOIN device_groups dg ON dg.id = dgm.group_id AND dg.is_deleted = FALSE
 WHERE dgm.device_id = $1
 ORDER BY dgm.group_id;
+
+-- name: ListDeviceMaintenanceWindows :many
+SELECT maintenance_window
+FROM (
+    SELECT dg.id AS group_id, dg.maintenance_window
+    FROM device_group_members dgm
+    JOIN device_groups dg ON dg.id = dgm.group_id AND dg.is_deleted = FALSE
+    WHERE dgm.device_id = sqlc.arg(device_id)
+      AND dg.maintenance_window <> '{}'::jsonb
+    UNION ALL
+    SELECT ug.id AS group_id, ug.maintenance_window
+    FROM device_assigned_groups dag
+    JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+    WHERE dag.device_id = sqlc.arg(device_id)
+      AND ug.maintenance_window <> '{}'::jsonb
+) windows
+ORDER BY group_id;
 
 -- name: SoftDeleteDevice :execrows
 UPDATE devices SET is_deleted = TRUE WHERE id = $1 AND is_deleted = FALSE;

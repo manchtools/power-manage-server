@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
+	"github.com/manchtools/power-manage/server/internal/agentsync"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/delivery"
 )
@@ -73,6 +74,48 @@ func newDispatcher(f *deliveryFixture, router *deliveryRouter, sweep time.Durati
 		Now: func() time.Time { return f.now }, SweepInterval: sweep,
 		Workers: 1, QueueSize: 8, BatchSize: 32,
 	})
+}
+
+func TestAgentSync_UsesDurableDeliveriesAndLiveEpoch(t *testing.T) {
+	f := newDeliveryFixture(t)
+	ctx := context.Background()
+	groupID := newID()
+	_, err := f.raw.Exec(ctx, `UPDATE devices SET sync_interval_minutes = 17 WHERE id = $1`, f.deviceID)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(ctx, `
+		INSERT INTO device_groups (id, name, maintenance_window)
+		VALUES ($1, 'maintenance', '{"schedule":[{"days":["mon"],"allow":"09:00-10:00"}]}'::jsonb)`, groupID)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(ctx, `
+		INSERT INTO device_group_members (group_id, device_id, added_at)
+		VALUES ($1, $2, $3)`, groupID, f.deviceID, f.now)
+	require.NoError(t, err)
+
+	manager := connection.NewManager()
+	agent := manager.Register(ctx, f.deviceID, "device", "v1", nil)
+	t.Cleanup(agent.Close)
+	syncer := agentsync.New(agentsync.Config{Store: f.store, Manager: manager, Deliveries: f.service})
+
+	response, err := syncer.SyncActions(ctx, f.deviceID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(17), response.SyncIntervalMinutes)
+	require.Len(t, response.Deliveries, 1)
+	assert.Equal(t, f.deliveryID, response.Deliveries[0].DeliveryId)
+	assert.True(t, proto.Equal(f.manifest, response.Deliveries[0].Manifest))
+	require.NotNil(t, response.MaintenanceWindow)
+	require.Len(t, response.MaintenanceWindow.Schedule, 1)
+	assert.Equal(t, []string{"mon"}, response.MaintenanceWindow.Schedule[0].Days)
+
+	row, err := f.store.GetDelivery(ctx, f.deliveryID)
+	require.NoError(t, err)
+	assert.Equal(t, delivery.StatePushed, row.State)
+	assert.Equal(t, agent.Epoch, row.PushEpoch)
+
+	_, err = f.service.AcknowledgeReceipt(ctx, f.deliveryID, f.deviceID)
+	require.NoError(t, err)
+	response, err = syncer.SyncActions(ctx, f.deviceID)
+	require.NoError(t, err)
+	assert.Empty(t, response.Deliveries, "durably received work is not offered again")
 }
 
 func TestDispatcher_OfflineDeliveryArrivesAfterReconnect(t *testing.T) {

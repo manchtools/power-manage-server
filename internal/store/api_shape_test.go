@@ -66,6 +66,8 @@ var nonMutatingExports = map[string]string{
 	"AuditChainTipOf":                  "read",
 	"CountAuditOperations":             "read",
 	"GetDevice":                        "read",
+	"GetCurrentLuksKeyForAgent":        "read",
+	"ListDeviceMaintenanceWindows":     "read",
 	"GetDelivery":                      "read",
 	"ListDueDeliveries":                "read",
 	"ListDeviceDeliveries":             "read",

@@ -615,6 +615,44 @@ func (q *Queries) ListDeviceLabelsBatch(ctx context.Context, dollar_1 []string) 
 	return items, nil
 }
 
+const listDeviceMaintenanceWindows = `-- name: ListDeviceMaintenanceWindows :many
+SELECT maintenance_window
+FROM (
+    SELECT dg.id AS group_id, dg.maintenance_window
+    FROM device_group_members dgm
+    JOIN device_groups dg ON dg.id = dgm.group_id AND dg.is_deleted = FALSE
+    WHERE dgm.device_id = $1
+      AND dg.maintenance_window <> '{}'::jsonb
+    UNION ALL
+    SELECT ug.id AS group_id, ug.maintenance_window
+    FROM device_assigned_groups dag
+    JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+    WHERE dag.device_id = $1
+      AND ug.maintenance_window <> '{}'::jsonb
+) windows
+ORDER BY group_id
+`
+
+func (q *Queries) ListDeviceMaintenanceWindows(ctx context.Context, deviceID string) ([][]byte, error) {
+	rows, err := q.db.Query(ctx, listDeviceMaintenanceWindows, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := [][]byte{}
+	for rows.Next() {
+		var maintenance_window []byte
+		if err := rows.Scan(&maintenance_window); err != nil {
+			return nil, err
+		}
+		items = append(items, maintenance_window)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDevices = `-- name: ListDevices :many
 SELECT d.id, d.hostname, d.agent_version, d.agent_sealing_public_key, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.is_deleted, d.sync_interval_minutes, d.inventory_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing, d.search_tsv
 FROM devices d
@@ -721,6 +759,52 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordDeviceHeartbeat = `-- name: RecordDeviceHeartbeat :execrows
+UPDATE devices SET last_seen_at = $1
+WHERE id = $2 AND is_deleted = FALSE
+`
+
+type RecordDeviceHeartbeatParams struct {
+	LastSeenAt *time.Time `json:"last_seen_at"`
+	ID         string     `json:"id"`
+}
+
+func (q *Queries) RecordDeviceHeartbeat(ctx context.Context, arg RecordDeviceHeartbeatParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordDeviceHeartbeat, arg.LastSeenAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const recordDeviceHello = `-- name: RecordDeviceHello :execrows
+UPDATE devices
+SET hostname = $1,
+    agent_version = $2,
+    last_seen_at = $3
+WHERE id = $4 AND is_deleted = FALSE
+`
+
+type RecordDeviceHelloParams struct {
+	Hostname     string     `json:"hostname"`
+	AgentVersion string     `json:"agent_version"`
+	LastSeenAt   *time.Time `json:"last_seen_at"`
+	ID           string     `json:"id"`
+}
+
+func (q *Queries) RecordDeviceHello(ctx context.Context, arg RecordDeviceHelloParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordDeviceHello,
+		arg.Hostname,
+		arg.AgentVersion,
+		arg.LastSeenAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const removeDeviceLabel = `-- name: RemoveDeviceLabel :execrows

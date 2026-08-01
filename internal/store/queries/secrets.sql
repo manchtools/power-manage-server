@@ -39,6 +39,58 @@ INSERT INTO luks_tokens (
 )
 RETURNING *;
 
+-- name: ConsumeLuksToken :one
+UPDATE luks_tokens
+SET used = TRUE
+WHERE token = sqlc.arg(token)
+  AND device_id = sqlc.arg(device_id)
+  AND used = FALSE
+  AND expires_at > sqlc.arg(now)
+RETURNING *;
+
+-- name: GetCurrentLuksKeyForAgent :one
+SELECT * FROM luks_keys
+WHERE device_id = sqlc.arg(device_id)
+  AND action_id = sqlc.arg(action_id)
+  AND is_current = TRUE
+ORDER BY rotated_at DESC, id DESC
+LIMIT 1;
+
+-- name: RetireCurrentLuksKeys :execrows
+UPDATE luks_keys SET is_current = FALSE
+WHERE device_id = sqlc.arg(device_id)
+  AND action_id = sqlc.arg(action_id)
+  AND is_current = TRUE;
+
+-- name: InsertLuksKey :one
+INSERT INTO luks_keys (
+    id, device_id, action_id, device_path, passphrase,
+    rotated_at, rotation_reason, created_at
+) VALUES (
+    sqlc.arg(id), sqlc.arg(device_id), sqlc.arg(action_id),
+    sqlc.arg(device_path), sqlc.arg(passphrase), sqlc.arg(rotated_at),
+    sqlc.arg(rotation_reason), sqlc.arg(created_at)
+)
+RETURNING *;
+
+-- name: RetireCurrentLpsPassword :execrows
+UPDATE lps_passwords SET is_current = FALSE
+WHERE device_id = sqlc.arg(device_id)
+  AND action_id = sqlc.arg(action_id)
+  AND username = sqlc.arg(username)
+  AND is_current = TRUE;
+
+-- name: InsertLpsPassword :one
+INSERT INTO lps_passwords (
+    id, device_id, action_id, username, password,
+    rotated_at, rotation_reason, created_at
+) VALUES (
+    sqlc.arg(id), sqlc.arg(device_id), sqlc.arg(action_id),
+    sqlc.arg(username), sqlc.arg(password), sqlc.arg(rotated_at),
+    sqlc.arg(rotation_reason), sqlc.arg(created_at)
+)
+RETURNING *;
+
 -- name: ListCurrentLuksKeys :many
 SELECT k.id, k.device_id, d.hostname AS device_hostname,
        k.action_id, COALESCE(a.name, '')::text AS action_name,
