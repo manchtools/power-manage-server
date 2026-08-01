@@ -10,6 +10,44 @@ import (
 	"time"
 )
 
+const countActions = `-- name: CountActions :one
+SELECT COUNT(*) FROM actions
+WHERE is_deleted = FALSE AND is_system = FALSE
+`
+
+func (q *Queries) CountActions(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countActions)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const deleteActionMemberships = `-- name: DeleteActionMemberships :many
+DELETE FROM action_set_members
+WHERE action_id = $1
+RETURNING set_id
+`
+
+func (q *Queries) DeleteActionMemberships(ctx context.Context, actionID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, deleteActionMemberships, actionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var set_id string
+		if err := rows.Scan(&set_id); err != nil {
+			return nil, err
+		}
+		items = append(items, set_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getManifestAction = `-- name: GetManifestAction :one
 
 SELECT id, name, description, action_type, desired_state, params, params_canonical, timeout_seconds, schedule, is_system, created_at, created_by, updated_at, is_deleted, search_tsv FROM actions
@@ -79,6 +117,71 @@ func (q *Queries) GetManifestDefinition(ctx context.Context, id string) (Definit
 		&i.Description,
 		&i.MemberCount,
 		&i.Schedule,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const insertAuthoringAction = `-- name: InsertAuthoringAction :one
+INSERT INTO actions (
+    id, name, description, action_type, desired_state, params,
+    params_canonical, timeout_seconds, schedule, is_system,
+    created_at, created_by
+) VALUES (
+    $1, $2, NULLIF($3::text, ''),
+    $4, $5, $6,
+    $7, $8, $9,
+    $10, $11, $12
+)
+RETURNING id, name, description, action_type, desired_state, params, params_canonical, timeout_seconds, schedule, is_system, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type InsertAuthoringActionParams struct {
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Description     string     `json:"description"`
+	ActionType      int32      `json:"action_type"`
+	DesiredState    int32      `json:"desired_state"`
+	Params          []byte     `json:"params"`
+	ParamsCanonical []byte     `json:"params_canonical"`
+	TimeoutSeconds  int32      `json:"timeout_seconds"`
+	Schedule        []byte     `json:"schedule"`
+	IsSystem        bool       `json:"is_system"`
+	CreatedAt       *time.Time `json:"created_at"`
+	CreatedBy       string     `json:"created_by"`
+}
+
+func (q *Queries) InsertAuthoringAction(ctx context.Context, arg InsertAuthoringActionParams) (Action, error) {
+	row := q.db.QueryRow(ctx, insertAuthoringAction,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.ActionType,
+		arg.DesiredState,
+		arg.Params,
+		arg.ParamsCanonical,
+		arg.TimeoutSeconds,
+		arg.Schedule,
+		arg.IsSystem,
+		arg.CreatedAt,
+		arg.CreatedBy,
+	)
+	var i Action
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.ActionType,
+		&i.DesiredState,
+		&i.Params,
+		&i.ParamsCanonical,
+		&i.TimeoutSeconds,
+		&i.Schedule,
+		&i.IsSystem,
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.UpdatedAt,
@@ -236,4 +339,198 @@ func (q *Queries) ListManifestDefinitionActions(ctx context.Context, definitionI
 		return nil, err
 	}
 	return items, nil
+}
+
+const renameAuthoringAction = `-- name: RenameAuthoringAction :one
+UPDATE actions
+SET name = $1, updated_at = $2
+WHERE id = $3
+  AND is_deleted = FALSE
+  AND (is_system = FALSE OR $4::boolean)
+RETURNING id, name, description, action_type, desired_state, params, params_canonical, timeout_seconds, schedule, is_system, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type RenameAuthoringActionParams struct {
+	Name        string     `json:"name"`
+	UpdatedAt   *time.Time `json:"updated_at"`
+	ID          string     `json:"id"`
+	AllowSystem bool       `json:"allow_system"`
+}
+
+func (q *Queries) RenameAuthoringAction(ctx context.Context, arg RenameAuthoringActionParams) (Action, error) {
+	row := q.db.QueryRow(ctx, renameAuthoringAction,
+		arg.Name,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.AllowSystem,
+	)
+	var i Action
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.ActionType,
+		&i.DesiredState,
+		&i.Params,
+		&i.ParamsCanonical,
+		&i.TimeoutSeconds,
+		&i.Schedule,
+		&i.IsSystem,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const softDeleteAuthoringAction = `-- name: SoftDeleteAuthoringAction :one
+UPDATE actions
+SET is_deleted = TRUE, updated_at = $1
+WHERE id = $2
+  AND is_deleted = FALSE
+  AND (is_system = FALSE OR $3::boolean)
+RETURNING id, name, description, action_type, desired_state, params, params_canonical, timeout_seconds, schedule, is_system, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type SoftDeleteAuthoringActionParams struct {
+	UpdatedAt   *time.Time `json:"updated_at"`
+	ID          string     `json:"id"`
+	AllowSystem bool       `json:"allow_system"`
+}
+
+func (q *Queries) SoftDeleteAuthoringAction(ctx context.Context, arg SoftDeleteAuthoringActionParams) (Action, error) {
+	row := q.db.QueryRow(ctx, softDeleteAuthoringAction, arg.UpdatedAt, arg.ID, arg.AllowSystem)
+	var i Action
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.ActionType,
+		&i.DesiredState,
+		&i.Params,
+		&i.ParamsCanonical,
+		&i.TimeoutSeconds,
+		&i.Schedule,
+		&i.IsSystem,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const updateAuthoringActionDescription = `-- name: UpdateAuthoringActionDescription :one
+UPDATE actions
+SET description = NULLIF($1::text, ''),
+    updated_at = $2
+WHERE id = $3
+  AND is_deleted = FALSE
+  AND (is_system = FALSE OR $4::boolean)
+RETURNING id, name, description, action_type, desired_state, params, params_canonical, timeout_seconds, schedule, is_system, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type UpdateAuthoringActionDescriptionParams struct {
+	Description string     `json:"description"`
+	UpdatedAt   *time.Time `json:"updated_at"`
+	ID          string     `json:"id"`
+	AllowSystem bool       `json:"allow_system"`
+}
+
+func (q *Queries) UpdateAuthoringActionDescription(ctx context.Context, arg UpdateAuthoringActionDescriptionParams) (Action, error) {
+	row := q.db.QueryRow(ctx, updateAuthoringActionDescription,
+		arg.Description,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.AllowSystem,
+	)
+	var i Action
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.ActionType,
+		&i.DesiredState,
+		&i.Params,
+		&i.ParamsCanonical,
+		&i.TimeoutSeconds,
+		&i.Schedule,
+		&i.IsSystem,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const updateAuthoringActionParams = `-- name: UpdateAuthoringActionParams :one
+UPDATE actions
+SET desired_state = $1,
+    params = $2,
+    params_canonical = $3,
+    timeout_seconds = CASE
+        WHEN $4::boolean THEN $5::integer
+        ELSE timeout_seconds
+    END,
+    schedule = CASE
+        WHEN $6::boolean THEN $7::jsonb
+        ELSE schedule
+    END,
+    updated_at = $8
+WHERE id = $9
+  AND is_deleted = FALSE
+  AND (is_system = FALSE OR $10::boolean)
+RETURNING id, name, description, action_type, desired_state, params, params_canonical, timeout_seconds, schedule, is_system, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type UpdateAuthoringActionParamsParams struct {
+	DesiredState    int32      `json:"desired_state"`
+	Params          []byte     `json:"params"`
+	ParamsCanonical []byte     `json:"params_canonical"`
+	TimeoutSet      bool       `json:"timeout_set"`
+	TimeoutSeconds  int32      `json:"timeout_seconds"`
+	ScheduleSet     bool       `json:"schedule_set"`
+	Schedule        []byte     `json:"schedule"`
+	UpdatedAt       *time.Time `json:"updated_at"`
+	ID              string     `json:"id"`
+	AllowSystem     bool       `json:"allow_system"`
+}
+
+func (q *Queries) UpdateAuthoringActionParams(ctx context.Context, arg UpdateAuthoringActionParamsParams) (Action, error) {
+	row := q.db.QueryRow(ctx, updateAuthoringActionParams,
+		arg.DesiredState,
+		arg.Params,
+		arg.ParamsCanonical,
+		arg.TimeoutSet,
+		arg.TimeoutSeconds,
+		arg.ScheduleSet,
+		arg.Schedule,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.AllowSystem,
+	)
+	var i Action
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.ActionType,
+		&i.DesiredState,
+		&i.Params,
+		&i.ParamsCanonical,
+		&i.TimeoutSeconds,
+		&i.Schedule,
+		&i.IsSystem,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
 }

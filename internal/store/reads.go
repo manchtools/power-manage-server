@@ -164,6 +164,15 @@ func (s *Store) CountDevices(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// CountActions returns the number of live, operator-authored actions.
+func (s *Store) CountActions(ctx context.Context) (int64, error) {
+	n, err := s.queries.CountActions(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("action: count: %w", err)
+	}
+	return n, nil
+}
+
 // GetDelivery returns one durable manifest delivery. ErrNotFound when the
 // delivery id is unknown.
 func (s *Store) GetDelivery(ctx context.Context, id string) (DeliveryRow, error) {
