@@ -79,6 +79,10 @@ type DeviceGroupView = generated.GetDeviceGroupRow
 // DeviceGroupMemberView is one live member device.
 type DeviceGroupMemberView = generated.ListDeviceGroupMembersRow
 
+// DynamicDeviceView is the current device state consumed by the in-process
+// dynamic-group evaluator.
+type DynamicDeviceView = generated.ListDevicesForDynamicEvaluationRow
+
 // DeviceGroupListFilter contains the keyset and device-group scope shared by
 // the list and count reads.
 type DeviceGroupListFilter struct {
@@ -111,6 +115,16 @@ func (s *Store) ListDeviceGroupMembers(ctx context.Context, id string) ([]Device
 	rows, err := s.queries.ListDeviceGroupMembers(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("device group: list members: %w", err)
+	}
+	return rows, nil
+}
+
+// ListDevicesForDynamicEvaluation returns every live device with the labels,
+// inventory and group names understood by the retained query language.
+func (s *Store) ListDevicesForDynamicEvaluation(ctx context.Context) ([]DynamicDeviceView, error) {
+	rows, err := s.queries.ListDevicesForDynamicEvaluation(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("device group: list evaluation devices: %w", err)
 	}
 	return rows, nil
 }

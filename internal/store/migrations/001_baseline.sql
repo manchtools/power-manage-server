@@ -360,6 +360,9 @@ CREATE TABLE public.device_group_members (
     PRIMARY KEY (group_id, device_id)
 );
 
+CREATE INDEX idx_device_group_members_device_id
+    ON public.device_group_members USING btree (device_id);
+
 CREATE TABLE public.device_assigned_users (
     device_id   text NOT NULL,
     user_id     text NOT NULL,

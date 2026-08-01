@@ -33,6 +33,45 @@ func (q *Queries) AddDeviceGroupMember(ctx context.Context, arg AddDeviceGroupMe
 	return result.RowsAffected(), nil
 }
 
+const addDynamicDeviceGroupMembers = `-- name: AddDynamicDeviceGroupMembers :many
+INSERT INTO device_group_members (group_id, device_id, added_at)
+SELECT $1, wanted.device_id, $2
+FROM unnest($3::text[]) AS wanted(device_id)
+JOIN devices d ON d.id = wanted.device_id AND d.is_deleted = FALSE
+WHERE EXISTS (
+    SELECT 1 FROM device_groups g
+    WHERE g.id = $1 AND g.is_deleted = FALSE AND g.is_dynamic = TRUE
+)
+ON CONFLICT (group_id, device_id) DO NOTHING
+RETURNING device_id
+`
+
+type AddDynamicDeviceGroupMembersParams struct {
+	GroupID   string     `json:"group_id"`
+	AddedAt   *time.Time `json:"added_at"`
+	DeviceIds []string   `json:"device_ids"`
+}
+
+func (q *Queries) AddDynamicDeviceGroupMembers(ctx context.Context, arg AddDynamicDeviceGroupMembersParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, addDynamicDeviceGroupMembers, arg.GroupID, arg.AddedAt, arg.DeviceIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var device_id string
+		if err := rows.Scan(&device_id); err != nil {
+			return nil, err
+		}
+		items = append(items, device_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countDeviceGroups = `-- name: CountDeviceGroups :one
 SELECT COUNT(*) FROM device_groups g
 WHERE g.is_deleted = FALSE
@@ -148,6 +187,25 @@ func (q *Queries) GetDeviceGroup(ctx context.Context, id string) (GetDeviceGroup
 	return i, err
 }
 
+const getDynamicDeviceGroupQueryForUpdate = `-- name: GetDynamicDeviceGroupQueryForUpdate :one
+SELECT is_dynamic, dynamic_query
+FROM device_groups
+WHERE id = $1 AND is_deleted = FALSE
+FOR UPDATE
+`
+
+type GetDynamicDeviceGroupQueryForUpdateRow struct {
+	IsDynamic    bool    `json:"is_dynamic"`
+	DynamicQuery *string `json:"dynamic_query"`
+}
+
+func (q *Queries) GetDynamicDeviceGroupQueryForUpdate(ctx context.Context, id string) (GetDynamicDeviceGroupQueryForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getDynamicDeviceGroupQueryForUpdate, id)
+	var i GetDynamicDeviceGroupQueryForUpdateRow
+	err := row.Scan(&i.IsDynamic, &i.DynamicQuery)
+	return i, err
+}
+
 const insertDeviceGroup = `-- name: InsertDeviceGroup :one
 INSERT INTO device_groups (
     id, name, description, created_at, created_by, is_dynamic, dynamic_query
@@ -196,6 +254,33 @@ func (q *Queries) InsertDeviceGroup(ctx context.Context, arg InsertDeviceGroupPa
 		&i.SearchTsv,
 	)
 	return i, err
+}
+
+const listDeviceGroupMemberIDs = `-- name: ListDeviceGroupMemberIDs :many
+SELECT m.device_id
+FROM device_group_members m
+WHERE m.group_id = $1
+ORDER BY m.device_id
+`
+
+func (q *Queries) ListDeviceGroupMemberIDs(ctx context.Context, groupID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeviceGroupMemberIDs, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var device_id string
+		if err := rows.Scan(&device_id); err != nil {
+			return nil, err
+		}
+		items = append(items, device_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDeviceGroupMembers = `-- name: ListDeviceGroupMembers :many
@@ -385,6 +470,63 @@ func (q *Queries) ListDeviceGroupsForDevice(ctx context.Context, arg ListDeviceG
 	return items, nil
 }
 
+const listDevicesForDynamicEvaluation = `-- name: ListDevicesForDynamicEvaluation :many
+SELECT d.id, d.hostname,
+       convert_to(COALESCE((
+           SELECT jsonb_object_agg(dl.key, dl.value)
+           FROM device_labels dl
+           WHERE dl.device_id = d.id
+       ), '{}'::jsonb)::text, 'UTF8') AS labels_json,
+       convert_to(COALESCE((
+           SELECT jsonb_object_agg(di.table_name, di.rows)
+           FROM device_inventory di
+           WHERE di.device_id = d.id
+       ), '{}'::jsonb)::text, 'UTF8') AS inventory_json,
+       COALESCE((
+           SELECT array_agg(dg.name ORDER BY dg.name)
+           FROM device_group_members memberships
+           JOIN device_groups dg ON dg.id = memberships.group_id AND dg.is_deleted = FALSE
+           WHERE memberships.device_id = d.id
+       ), ARRAY[]::text[])::text[] AS group_names
+FROM devices d
+WHERE d.is_deleted = FALSE
+ORDER BY d.id
+`
+
+type ListDevicesForDynamicEvaluationRow struct {
+	ID            string   `json:"id"`
+	Hostname      string   `json:"hostname"`
+	LabelsJson    []byte   `json:"labels_json"`
+	InventoryJson []byte   `json:"inventory_json"`
+	GroupNames    []string `json:"group_names"`
+}
+
+func (q *Queries) ListDevicesForDynamicEvaluation(ctx context.Context) ([]ListDevicesForDynamicEvaluationRow, error) {
+	rows, err := q.db.Query(ctx, listDevicesForDynamicEvaluation)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDevicesForDynamicEvaluationRow{}
+	for rows.Next() {
+		var i ListDevicesForDynamicEvaluationRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Hostname,
+			&i.LabelsJson,
+			&i.InventoryJson,
+			&i.GroupNames,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const removeDeviceGroupMember = `-- name: RemoveDeviceGroupMember :execrows
 DELETE FROM device_group_members m
 USING device_groups g
@@ -404,6 +546,40 @@ func (q *Queries) RemoveDeviceGroupMember(ctx context.Context, arg RemoveDeviceG
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const removeDynamicDeviceGroupMembers = `-- name: RemoveDynamicDeviceGroupMembers :many
+DELETE FROM device_group_members m
+USING device_groups g
+WHERE m.group_id = $1
+  AND m.device_id = ANY($2::text[])
+  AND g.id = m.group_id AND g.is_deleted = FALSE AND g.is_dynamic = TRUE
+RETURNING m.device_id
+`
+
+type RemoveDynamicDeviceGroupMembersParams struct {
+	GroupID   string   `json:"group_id"`
+	DeviceIds []string `json:"device_ids"`
+}
+
+func (q *Queries) RemoveDynamicDeviceGroupMembers(ctx context.Context, arg RemoveDynamicDeviceGroupMembersParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, removeDynamicDeviceGroupMembers, arg.GroupID, arg.DeviceIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var device_id string
+		if err := rows.Scan(&device_id); err != nil {
+			return nil, err
+		}
+		items = append(items, device_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const renameDeviceGroup = `-- name: RenameDeviceGroup :one

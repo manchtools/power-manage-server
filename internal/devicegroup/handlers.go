@@ -20,6 +20,7 @@ import (
 	"github.com/manchtools/power-manage-sdk/maintenance"
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/dynamicquery"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
@@ -399,6 +400,55 @@ func (h *Handlers) RemoveDeviceFromGroup(ctx context.Context, req *connect.Reque
 	return connect.NewResponse(&pmv1.RemoveDeviceFromGroupResponse{Group: group}), nil
 }
 
+// ValidateDynamicQuery validates a query and previews its current match count.
+func (h *Handlers) ValidateDynamicQuery(ctx context.Context, req *connect.Request[pmv1.ValidateDynamicQueryRequest]) (*connect.Response[pmv1.ValidateDynamicQueryResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	if _, err := h.actor(ctx); err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, "ValidateDynamicQuery", ""); err != nil {
+		return nil, err
+	}
+	if err := dynamicquery.ValidateDeviceQuery(req.Msg.Query); err != nil {
+		return connect.NewResponse(&pmv1.ValidateDynamicQueryResponse{Valid: false, Error: err.Error()}), nil
+	}
+	count, err := h.state.CountMatchingDevices(ctx, req.Msg.Query)
+	if err != nil {
+		return nil, h.mapError(ctx, "count dynamic query matches", err)
+	}
+	return connect.NewResponse(&pmv1.ValidateDynamicQueryResponse{
+		Valid: true, MatchingDeviceCount: boundedCount(count),
+	}), nil
+}
+
+// EvaluateDynamicGroup reconciles one materialized dynamic membership.
+func (h *Handlers) EvaluateDynamicGroup(ctx context.Context, req *connect.Request[pmv1.EvaluateDynamicGroupRequest]) (*connect.Response[pmv1.EvaluateDynamicGroupResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, "EvaluateDynamicGroup", req.Msg.Id); err != nil {
+		return nil, err
+	}
+	result, err := h.state.EvaluateDynamicGroup(ctx, h.operation(req, actor,
+		powermanagev1connect.ControlServiceEvaluateDynamicGroupProcedure, "EvaluateDynamicGroup"), req.Msg.Id)
+	if err != nil {
+		return nil, h.mapError(ctx, "evaluate dynamic group", err)
+	}
+	group, err := h.groupProto(result.Group)
+	if err != nil {
+		return nil, h.internal(ctx, "decode evaluated device group", err)
+	}
+	return connect.NewResponse(&pmv1.EvaluateDynamicGroupResponse{
+		Group: group, DevicesAdded: boundedCount(result.Added), DevicesRemoved: boundedCount(result.Removed),
+	}), nil
+}
+
 // SetDeviceGroupSyncInterval replaces the sync contribution.
 func (h *Handlers) SetDeviceGroupSyncInterval(ctx context.Context, req *connect.Request[pmv1.SetDeviceGroupSyncIntervalRequest]) (*connect.Response[pmv1.UpdateDeviceGroupResponse], error) {
 	if err := validateRequest(h, ctx, req); err != nil {
@@ -548,7 +598,7 @@ func (h *Handlers) mapError(ctx context.Context, operation string, err error) er
 	case errors.Is(err, ErrInvalidQuery):
 		return rpcError(ctx, "invalid_dynamic_query", connect.CodeInvalidArgument, "invalid dynamic query")
 	case errors.Is(err, ErrStaticGroup):
-		return rpcError(ctx, "static_group_has_no_dynamic_query", connect.CodeFailedPrecondition, "static device group has no dynamic query")
+		return rpcError(ctx, "group_not_dynamic", connect.CodeFailedPrecondition, "group is not dynamic")
 	case errors.Is(err, ErrDynamicGroup):
 		return rpcError(ctx, "dynamic_group_membership_managed", connect.CodeFailedPrecondition, "dynamic group membership is evaluator-managed")
 	case errors.Is(err, ErrMemberNotFound):
@@ -600,13 +650,12 @@ func rpcError(ctx context.Context, code string, connectCode connect.Code, messag
 	return err
 }
 
-// Mount registers the direct device-group surface. The two evaluator RPCs are
-// mounted with the evaluator checkpoint, not as stubs.
+// Mount registers the complete direct device-group surface.
 func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []string {
 	if mux == nil {
 		panic("device group: mux is required")
 	}
-	mounted := make([]string, 0, 13)
+	mounted := make([]string, 0, 15)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -621,6 +670,8 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	register(powermanagev1connect.ControlServiceDeleteDeviceGroupProcedure, connect.NewUnaryHandler(powermanagev1connect.ControlServiceDeleteDeviceGroupProcedure, h.DeleteDeviceGroup, opts...))
 	register(powermanagev1connect.ControlServiceAddDeviceToGroupProcedure, connect.NewUnaryHandler(powermanagev1connect.ControlServiceAddDeviceToGroupProcedure, h.AddDeviceToGroup, opts...))
 	register(powermanagev1connect.ControlServiceRemoveDeviceFromGroupProcedure, connect.NewUnaryHandler(powermanagev1connect.ControlServiceRemoveDeviceFromGroupProcedure, h.RemoveDeviceFromGroup, opts...))
+	register(powermanagev1connect.ControlServiceValidateDynamicQueryProcedure, connect.NewUnaryHandler(powermanagev1connect.ControlServiceValidateDynamicQueryProcedure, h.ValidateDynamicQuery, opts...))
+	register(powermanagev1connect.ControlServiceEvaluateDynamicGroupProcedure, connect.NewUnaryHandler(powermanagev1connect.ControlServiceEvaluateDynamicGroupProcedure, h.EvaluateDynamicGroup, opts...))
 	register(powermanagev1connect.ControlServiceSetDeviceGroupSyncIntervalProcedure, connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetDeviceGroupSyncIntervalProcedure, h.SetDeviceGroupSyncInterval, opts...))
 	register(powermanagev1connect.ControlServiceSetDeviceGroupInventoryIntervalProcedure, connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetDeviceGroupInventoryIntervalProcedure, h.SetDeviceGroupInventoryInterval, opts...))
 	register(powermanagev1connect.ControlServiceSetDeviceGroupMaintenanceWindowProcedure, connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetDeviceGroupMaintenanceWindowProcedure, h.SetDeviceGroupMaintenanceWindow, opts...))
@@ -637,6 +688,7 @@ func MutationProcedures() []string {
 		powermanagev1connect.ControlServiceDeleteDeviceGroupProcedure,
 		powermanagev1connect.ControlServiceAddDeviceToGroupProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceFromGroupProcedure,
+		powermanagev1connect.ControlServiceEvaluateDynamicGroupProcedure,
 		powermanagev1connect.ControlServiceSetDeviceGroupSyncIntervalProcedure,
 		powermanagev1connect.ControlServiceSetDeviceGroupInventoryIntervalProcedure,
 		powermanagev1connect.ControlServiceSetDeviceGroupMaintenanceWindowProcedure,
@@ -649,5 +701,6 @@ func ReadProcedures() []string {
 		powermanagev1connect.ControlServiceGetDeviceGroupProcedure,
 		powermanagev1connect.ControlServiceListDeviceGroupsProcedure,
 		powermanagev1connect.ControlServiceListDeviceGroupsForDeviceProcedure,
+		powermanagev1connect.ControlServiceValidateDynamicQueryProcedure,
 	}
 }

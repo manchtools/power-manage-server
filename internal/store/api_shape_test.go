@@ -82,6 +82,7 @@ var nonMutatingExports = map[string]string{
 	"GetDeviceGroupID":                 "read",
 	"GetDeviceGroup":                   "read",
 	"ListDeviceGroupMembers":           "read",
+	"ListDevicesForDynamicEvaluation":  "read",
 	"ListDeviceGroups":                 "read",
 	"CountDeviceGroups":                "read",
 	"ListDeviceGroupsForDevice":        "read",

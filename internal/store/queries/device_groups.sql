@@ -59,6 +59,40 @@ JOIN devices d ON d.id = m.device_id AND d.is_deleted = FALSE
 WHERE m.group_id = $1
 ORDER BY d.id;
 
+-- name: ListDeviceGroupMemberIDs :many
+SELECT m.device_id
+FROM device_group_members m
+WHERE m.group_id = $1
+ORDER BY m.device_id;
+
+-- name: GetDynamicDeviceGroupQueryForUpdate :one
+SELECT is_dynamic, dynamic_query
+FROM device_groups
+WHERE id = $1 AND is_deleted = FALSE
+FOR UPDATE;
+
+-- name: ListDevicesForDynamicEvaluation :many
+SELECT d.id, d.hostname,
+       convert_to(COALESCE((
+           SELECT jsonb_object_agg(dl.key, dl.value)
+           FROM device_labels dl
+           WHERE dl.device_id = d.id
+       ), '{}'::jsonb)::text, 'UTF8') AS labels_json,
+       convert_to(COALESCE((
+           SELECT jsonb_object_agg(di.table_name, di.rows)
+           FROM device_inventory di
+           WHERE di.device_id = d.id
+       ), '{}'::jsonb)::text, 'UTF8') AS inventory_json,
+       COALESCE((
+           SELECT array_agg(dg.name ORDER BY dg.name)
+           FROM device_group_members memberships
+           JOIN device_groups dg ON dg.id = memberships.group_id AND dg.is_deleted = FALSE
+           WHERE memberships.device_id = d.id
+       ), ARRAY[]::text[])::text[] AS group_names
+FROM devices d
+WHERE d.is_deleted = FALSE
+ORDER BY d.id;
+
 -- name: InsertDeviceGroup :one
 INSERT INTO device_groups (
     id, name, description, created_at, created_by, is_dynamic, dynamic_query
@@ -114,6 +148,26 @@ USING device_groups g
 WHERE m.group_id = sqlc.arg(group_id)
   AND m.device_id = sqlc.arg(device_id)
   AND g.id = m.group_id AND g.is_deleted = FALSE AND g.is_dynamic = FALSE;
+
+-- name: AddDynamicDeviceGroupMembers :many
+INSERT INTO device_group_members (group_id, device_id, added_at)
+SELECT sqlc.arg(group_id), wanted.device_id, sqlc.arg(added_at)
+FROM unnest(sqlc.arg(device_ids)::text[]) AS wanted(device_id)
+JOIN devices d ON d.id = wanted.device_id AND d.is_deleted = FALSE
+WHERE EXISTS (
+    SELECT 1 FROM device_groups g
+    WHERE g.id = sqlc.arg(group_id) AND g.is_deleted = FALSE AND g.is_dynamic = TRUE
+)
+ON CONFLICT (group_id, device_id) DO NOTHING
+RETURNING device_id;
+
+-- name: RemoveDynamicDeviceGroupMembers :many
+DELETE FROM device_group_members m
+USING device_groups g
+WHERE m.group_id = sqlc.arg(group_id)
+  AND m.device_id = ANY(sqlc.arg(device_ids)::text[])
+  AND g.id = m.group_id AND g.is_deleted = FALSE AND g.is_dynamic = TRUE
+RETURNING m.device_id;
 
 -- name: DeleteDeviceGroupMembers :execrows
 DELETE FROM device_group_members WHERE group_id = $1;

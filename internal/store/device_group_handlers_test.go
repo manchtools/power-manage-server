@@ -50,7 +50,8 @@ func TestDeviceGroupHandlers_CRUDMembershipAndAudit(t *testing.T) {
 		"CreateStaticDeviceGroup", "CreateDynamicDeviceGroup", "GetDeviceGroup", "ListDeviceGroups",
 		"ListDeviceGroupsForDevice", "RenameDeviceGroup", "UpdateDeviceGroupDescription",
 		"UpdateDynamicDeviceGroupQuery", "DeleteDeviceGroup", "AddDeviceToGroup", "RemoveDeviceFromGroup",
-		"SetDeviceGroupSyncInterval", "SetDeviceGroupInventoryInterval", "SetDeviceGroupMaintenanceWindow",
+		"ValidateDynamicQuery", "EvaluateDynamicGroup", "SetDeviceGroupSyncInterval",
+		"SetDeviceGroupInventoryInterval", "SetDeviceGroupMaintenanceWindow",
 	)
 
 	created, err := f.handlers.CreateDeviceGroup(ctx, connect.NewRequest(&pmv1.CreateDeviceGroupRequest{
@@ -111,11 +112,42 @@ func TestDeviceGroupHandlers_CRUDMembershipAndAudit(t *testing.T) {
 		Name: "dynamic workstations", IsDynamic: true, DynamicQuery: `device.labels.env equals prod`,
 	}))
 	require.NoError(t, err)
+	invalid, err := f.handlers.ValidateDynamicQuery(ctx, connect.NewRequest(&pmv1.ValidateDynamicQueryRequest{Query: "("}))
+	require.NoError(t, err)
+	assert.False(t, invalid.Msg.Valid)
+	_, err = f.raw.Exec(ctx, `INSERT INTO device_labels (device_id, key, value) VALUES ($1, 'env', 'prod')`, f.outsideID)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(ctx, `UPDATE device_inventory SET rows = '[{"physical_memory":2048}]' WHERE device_id = $1 AND table_name = 'system_info'`, f.groupID)
+	require.NoError(t, err)
+	for _, query := range []string{
+		`device.hostname equals group`,
+		`device.labels.env equals prod`,
+		`device.memory_total greaterThan 1024`,
+		`device.group equals scope`,
+	} {
+		preview, err := f.handlers.ValidateDynamicQuery(ctx, connect.NewRequest(&pmv1.ValidateDynamicQueryRequest{Query: query}))
+		require.NoError(t, err, query)
+		assert.True(t, preview.Msg.Valid, query)
+		assert.Equal(t, int32(1), preview.Msg.MatchingDeviceCount, query)
+	}
 	updatedQuery, err := f.handlers.UpdateDeviceGroupQuery(ctx, connect.NewRequest(&pmv1.UpdateDeviceGroupQueryRequest{
-		Id: dynamic.Msg.Group.Id, IsDynamic: true, DynamicQuery: `device.hostname contains work`,
+		Id: dynamic.Msg.Group.Id, IsDynamic: true, DynamicQuery: `device.hostname equals group`,
 	}))
 	require.NoError(t, err)
-	assert.Equal(t, `device.hostname contains work`, updatedQuery.Msg.Group.DynamicQuery)
+	assert.Equal(t, `device.hostname equals group`, updatedQuery.Msg.Group.DynamicQuery)
+	evaluated, err := f.handlers.EvaluateDynamicGroup(ctx, connect.NewRequest(&pmv1.EvaluateDynamicGroupRequest{Id: dynamic.Msg.Group.Id}))
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), evaluated.Msg.DevicesAdded)
+	assert.Zero(t, evaluated.Msg.DevicesRemoved)
+	assert.Equal(t, int32(1), evaluated.Msg.Group.MemberCount)
+	_, err = f.handlers.UpdateDeviceGroupQuery(ctx, connect.NewRequest(&pmv1.UpdateDeviceGroupQueryRequest{
+		Id: dynamic.Msg.Group.Id, IsDynamic: true, DynamicQuery: `device.hostname equals outside`,
+	}))
+	require.NoError(t, err)
+	evaluated, err = f.handlers.EvaluateDynamicGroup(ctx, connect.NewRequest(&pmv1.EvaluateDynamicGroupRequest{Id: dynamic.Msg.Group.Id}))
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), evaluated.Msg.DevicesAdded)
+	assert.Equal(t, int32(1), evaluated.Msg.DevicesRemoved)
 	_, err = f.handlers.AddDeviceToGroup(ctx, connect.NewRequest(&pmv1.AddDeviceToGroupRequest{
 		GroupId: dynamic.Msg.Group.Id, DeviceId: f.outsideID,
 	}))
@@ -197,7 +229,7 @@ func TestDeviceGroupHandlers_ShapeSpecificCreatePermissionAndScope(t *testing.T)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "membership writes must not widen the caller's device scope")
 }
 
-func TestDeviceGroupHandlers_MountsDirectSurfaceWithoutEvaluatorRPCs(t *testing.T) {
+func TestDeviceGroupHandlers_MountsCompleteDirectSurface(t *testing.T) {
 	f := newDeviceGroupHandlerFixture(t)
 	mounted := f.handlers.Mount(http.NewServeMux())
 	assert.Equal(t, []string{
@@ -211,6 +243,8 @@ func TestDeviceGroupHandlers_MountsDirectSurfaceWithoutEvaluatorRPCs(t *testing.
 		powermanagev1connect.ControlServiceDeleteDeviceGroupProcedure,
 		powermanagev1connect.ControlServiceAddDeviceToGroupProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceFromGroupProcedure,
+		powermanagev1connect.ControlServiceValidateDynamicQueryProcedure,
+		powermanagev1connect.ControlServiceEvaluateDynamicGroupProcedure,
 		powermanagev1connect.ControlServiceSetDeviceGroupSyncIntervalProcedure,
 		powermanagev1connect.ControlServiceSetDeviceGroupInventoryIntervalProcedure,
 		powermanagev1connect.ControlServiceSetDeviceGroupMaintenanceWindowProcedure,
