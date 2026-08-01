@@ -13,6 +13,7 @@ import (
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -121,6 +122,26 @@ func (c *Compiler) Definition(ctx context.Context, id string) ([]*pmv1.Manifest,
 		manifests = append(manifests, compiled)
 	}
 	return manifests, nil
+}
+
+// OneShotAction creates the singleton manifest used by an explicit dispatch.
+// The Action schedule remains authoring/display data; the manifest schedule is
+// empty because receipt of this delivery is the one-shot execution trigger.
+func OneShotAction(action *pmv1.Action) (*pmv1.Manifest, error) {
+	if action == nil {
+		return nil, ErrInvalidInput
+	}
+	cloned, ok := proto.Clone(action).(*pmv1.Action)
+	if !ok || cloned.GetId() == nil || !validInput(context.Background(), cloned.Id.Value) {
+		return nil, ErrInvalidInput
+	}
+	return finish(&pmv1.Manifest{
+		ManifestId:       ulid.Make().String(),
+		Provenance:       &pmv1.ManifestProvenance{ActionId: cloned.Id.Value},
+		Schedule:         &pmv1.ActionSchedule{},
+		DefaultOnFailure: pmv1.OnFailure_ON_FAILURE_CONTINUE,
+		Occurrences:      []*pmv1.ManifestOccurrence{occurrence(cloned, pmv1.OnFailure_ON_FAILURE_CONTINUE)},
+	})
 }
 
 // docref: end manifest-compiler

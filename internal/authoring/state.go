@@ -299,6 +299,35 @@ func validateActionData(id string, actionType pmv1.ActionType, desired pmv1.Desi
 	return canonical, nil
 }
 
+// ValidateExecutableAction applies the same type, parameter, and safety rules
+// used by persisted Actions to an inline Action before it enters a manifest.
+func ValidateExecutableAction(action *pmv1.Action) error {
+	if action == nil || !validID(action.GetId().GetValue()) {
+		return ErrInvalidInput
+	}
+	params := actionparams.ExtractParamsMsg(action)
+	if params == nil {
+		// UPDATE is the only ordinary action whose empty params oneof is
+		// meaningful. REBOOT and SYNC use DispatchInstantAction instead.
+		if action.Type != pmv1.ActionType_ACTION_TYPE_UPDATE {
+			return ErrInvalidInput
+		}
+	} else if !actionparams.ParamsMatchType(action, action.Type) {
+		return ErrInvalidInput
+	}
+	raw := []byte("{}")
+	if params != nil {
+		var err error
+		raw, err = actionparams.MarshalActionParams(params)
+		if err != nil {
+			return ErrInvalidInput
+		}
+	}
+	_, err := validateActionData(action.Id.Value, action.Type, action.DesiredState,
+		action.TimeoutSeconds, action.Schedule, raw)
+	return err
+}
+
 func validateActionSafety(params proto.Message) error {
 	switch p := params.(type) {
 	case *pmv1.ShellParams:
