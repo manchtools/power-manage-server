@@ -34,6 +34,16 @@ const (
 
 	PermAssignRoleToUserGroup   = "AssignRoleToUserGroup"
 	PermRevokeRoleFromUserGroup = "RevokeRoleFromUserGroup"
+	PermCreateStaticUserGroup   = "CreateStaticUserGroup"
+	PermCreateDynamicUserGroup  = "CreateDynamicUserGroup"
+	PermGetUserGroup            = "GetUserGroup"
+	PermListUserGroups          = "ListUserGroups"
+	PermUpdateUserGroup         = "UpdateUserGroup"
+	PermDeleteUserGroup         = "DeleteUserGroup"
+	PermAddUserToGroup          = "AddUserToGroup"
+	PermRemoveUserFromGroup     = "RemoveUserFromGroup"
+	PermListUserGroupsForUser   = "ListUserGroupsForUser"
+	PermSetUserGroupMaintenance = "SetUserGroupMaintenanceWindow"
 
 	PermCreateIdentityProvider = "CreateIdentityProvider"
 	PermGetIdentityProvider    = "GetIdentityProvider"
@@ -60,6 +70,10 @@ var gatedPermissions = []string{
 	PermCreateRole, PermGetRole, PermListRoles, PermUpdateRole, PermDeleteRole,
 	PermAssignRoleToUser, PermRevokeRoleFromUser, PermListPermissions,
 	PermAssignRoleToUserGroup, PermRevokeRoleFromUserGroup,
+	PermCreateStaticUserGroup, PermCreateDynamicUserGroup,
+	PermGetUserGroup, PermListUserGroups, PermUpdateUserGroup, PermDeleteUserGroup,
+	PermAddUserToGroup, PermRemoveUserFromGroup, PermListUserGroupsForUser,
+	PermSetUserGroupMaintenance,
 	PermCreateIdentityProvider, PermGetIdentityProvider, PermListIdentityProviders,
 	PermUpdateIdentityProvider, PermDeleteIdentityProvider,
 	PermEnableSCIM, PermDisableSCIM, PermRotateSCIMToken,

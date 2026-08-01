@@ -128,6 +128,38 @@ var authenticatedMutations = map[string]call{
 		_, err := f.client.DeleteUser(f.ctx(), authed(&pmv1.DeleteUserRequest{Id: newULID()}, token))
 		return err
 	},
+	powermanagev1connect.ControlServiceCreateUserGroupProcedure: func(f *fixture, token string) error {
+		_, err := f.client.CreateUserGroup(f.ctx(), authed(&pmv1.CreateUserGroupRequest{Name: "Operators"}, token))
+		return err
+	},
+	powermanagev1connect.ControlServiceUpdateUserGroupProcedure: func(f *fixture, token string) error {
+		_, err := f.client.UpdateUserGroup(f.ctx(), authed(&pmv1.UpdateUserGroupRequest{
+			GroupId: newULID(), Name: "Operators",
+		}, token))
+		return err
+	},
+	powermanagev1connect.ControlServiceDeleteUserGroupProcedure: func(f *fixture, token string) error {
+		_, err := f.client.DeleteUserGroup(f.ctx(), authed(&pmv1.DeleteUserGroupRequest{Id: newULID()}, token))
+		return err
+	},
+	powermanagev1connect.ControlServiceAddUserToGroupProcedure: func(f *fixture, token string) error {
+		_, err := f.client.AddUserToGroup(f.ctx(), authed(&pmv1.AddUserToGroupRequest{
+			GroupId: newULID(), UserId: newULID(),
+		}, token))
+		return err
+	},
+	powermanagev1connect.ControlServiceRemoveUserFromGroupProcedure: func(f *fixture, token string) error {
+		_, err := f.client.RemoveUserFromGroup(f.ctx(), authed(&pmv1.RemoveUserFromGroupRequest{
+			GroupId: newULID(), UserId: newULID(),
+		}, token))
+		return err
+	},
+	powermanagev1connect.ControlServiceSetUserGroupMaintenanceWindowProcedure: func(f *fixture, token string) error {
+		_, err := f.client.SetUserGroupMaintenanceWindow(f.ctx(), authed(&pmv1.SetUserGroupMaintenanceWindowRequest{
+			Id: newULID(),
+		}, token))
+		return err
+	},
 	powermanagev1connect.ControlServiceCreateRoleProcedure: func(f *fixture, token string) error {
 		_, err := f.client.CreateRole(f.ctx(), authed(&pmv1.CreateRoleRequest{
 			Name: "Auditors", Permissions: []string{"ListUsers"},

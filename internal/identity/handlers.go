@@ -33,6 +33,12 @@ type Store interface {
 	ListUserRoleGrants(ctx context.Context, userID string) ([]store.RoleGrantRow, error)
 	ListInheritedRolesForUser(ctx context.Context, userID string) ([]store.InheritedRoleRow, error)
 	ListUserGroupIDsForUser(ctx context.Context, userID string) ([]string, error)
+	GetUserGroupView(ctx context.Context, id string) (store.UserGroupView, error)
+	ListUserGroups(ctx context.Context, filter store.UserGroupListFilter) ([]store.UserGroupView, error)
+	CountUserGroups(ctx context.Context, filter store.UserGroupListFilter) (int64, error)
+	ListUserGroupsForUser(ctx context.Context, userID string, filter store.UserGroupListFilter) ([]store.UserGroupView, error)
+	ListUserGroupMembers(ctx context.Context, groupID string) ([]store.UserGroupMemberView, error)
+	ListUserGroupRoleGrants(ctx context.Context, groupID string) ([]store.GroupRoleGrantRow, error)
 	ListUserSSHKeys(ctx context.Context, userID string) ([]store.UserSSHKeyRow, error)
 	ListIdentityLinksForUser(ctx context.Context, userID string) ([]store.IdentityLinkWithProviderRow, error)
 	GetIdentityLink(ctx context.Context, id string) (store.IdentityLinkRow, error)
@@ -158,12 +164,6 @@ func (h *Handlers) authorize(ctx context.Context, permission, resourceID string)
 // is no subject.
 func (h *Handlers) mutationOp(req connect.AnyRequest, actor *auth.UserContext, permission string) store.AuditOperation {
 	return h.operation(req, actor, store.ClassMutation, permission, store.AuthorizationAllowed, store.ResultSuccess, "")
-}
-
-// sensitiveReadOp builds the audit operation for a read of protected
-// material.
-func (h *Handlers) sensitiveReadOp(req connect.AnyRequest, actor *auth.UserContext, permission string) store.AuditOperation {
-	return h.operation(req, actor, store.ClassSensitiveRead, permission, store.AuthorizationAllowed, store.ResultSuccess, "")
 }
 
 func (h *Handlers) operation(

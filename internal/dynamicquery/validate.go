@@ -86,8 +86,14 @@ func validateUserAtom(a *Atom) error {
 	if a.Field == "" {
 		return fmt.Errorf("query must not be empty")
 	}
-	if !strings.HasPrefix(strings.ToLower(a.Field), "user.") {
+	field := strings.ToLower(a.Field)
+	if !strings.HasPrefix(field, "user.") {
 		return fmt.Errorf("unsupported field %q (user-group queries only accept user.* fields)", a.Field)
+	}
+	switch field {
+	case "user.email", "user.disabled", "user.display_name", "user.preferred_username", "user.locale":
+	default:
+		return fmt.Errorf("unsupported user-group field %q", a.Field)
 	}
 	return checkOpAllowed(a, userOps)
 }

@@ -3,12 +3,193 @@
 -- authorization change and every one of them is audited.
 
 -- name: InsertUserGroup :one
-INSERT INTO user_groups (id, name, description, created_at, created_by, updated_at)
-VALUES ($1, $2, $3, $4, $5, $4)
+INSERT INTO user_groups (id, name, description, created_at, created_by, updated_at, is_dynamic, dynamic_query)
+VALUES ($1, $2, $3, $4, $5, $4, sqlc.arg(is_dynamic), sqlc.narg(dynamic_query))
 RETURNING *;
 
 -- name: GetUserGroup :one
 SELECT * FROM user_groups WHERE id = $1 AND is_deleted = FALSE;
+
+-- name: GetUserGroupView :one
+SELECT g.id, g.name, g.description, g.created_at, g.created_by,
+       g.is_dynamic, g.dynamic_query, g.maintenance_window,
+       COUNT(u.id)::bigint AS live_member_count,
+       EXISTS (SELECT 1 FROM scim_group_mapping sgm WHERE sgm.user_group_id = g.id) AS is_scim_managed
+FROM user_groups g
+LEFT JOIN user_group_members m ON m.group_id = g.id
+LEFT JOIN users u ON u.id = m.user_id AND u.is_deleted = FALSE
+WHERE g.id = $1 AND g.is_deleted = FALSE
+GROUP BY g.id;
+
+-- name: ListUserGroups :many
+SELECT g.id, g.name, g.description, g.created_at, g.created_by,
+       g.is_dynamic, g.dynamic_query, g.maintenance_window,
+       COUNT(u.id)::bigint AS live_member_count,
+       EXISTS (SELECT 1 FROM scim_group_mapping sgm WHERE sgm.user_group_id = g.id) AS is_scim_managed
+FROM user_groups g
+LEFT JOIN user_group_members m ON m.group_id = g.id
+LEFT JOIN users u ON u.id = m.user_id AND u.is_deleted = FALSE
+WHERE g.is_deleted = FALSE
+  AND g.id > sqlc.arg(after_id)
+  AND (
+      NOT sqlc.arg(scope_restricted)::boolean
+      OR g.id = ANY(sqlc.arg(scope_group_ids)::text[])
+  )
+GROUP BY g.id
+ORDER BY g.id
+LIMIT sqlc.arg(row_limit);
+
+-- name: CountUserGroups :one
+SELECT COUNT(*) FROM user_groups g
+WHERE g.is_deleted = FALSE
+  AND (
+      NOT sqlc.arg(scope_restricted)::boolean
+      OR g.id = ANY(sqlc.arg(scope_group_ids)::text[])
+  );
+
+-- name: ListUserGroupsForUser :many
+SELECT g.id, g.name, g.description, g.created_at, g.created_by,
+       g.is_dynamic, g.dynamic_query, g.maintenance_window,
+       COUNT(live.id)::bigint AS live_member_count,
+       EXISTS (SELECT 1 FROM scim_group_mapping sgm WHERE sgm.user_group_id = g.id) AS is_scim_managed
+FROM user_group_members requested
+JOIN user_groups g ON g.id = requested.group_id AND g.is_deleted = FALSE
+LEFT JOIN user_group_members members ON members.group_id = g.id
+LEFT JOIN users live ON live.id = members.user_id AND live.is_deleted = FALSE
+WHERE requested.user_id = sqlc.arg(user_id)
+  AND (
+      NOT sqlc.arg(scope_restricted)::boolean
+      OR g.id = ANY(sqlc.arg(scope_group_ids)::text[])
+  )
+GROUP BY g.id
+ORDER BY g.id;
+
+-- name: IsUserGroupSCIMManaged :one
+SELECT EXISTS (SELECT 1 FROM scim_group_mapping WHERE user_group_id = $1);
+
+-- name: UserGroupConfersUnscopedAdmin :one
+SELECT EXISTS (
+    SELECT 1
+    FROM user_group_roles gr
+    JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
+    WHERE gr.group_id = $1
+      AND gr.scope_kind IS NULL
+      AND gr.scope_id IS NULL
+      AND r.name = 'Admin'
+);
+
+-- name: LockLastAdminGuard :exec
+-- Transaction-scoped so the guard and the audited mutation commit or
+-- roll back together. Every authority-removing path uses this one key.
+SELECT pg_advisory_xact_lock(418296719726);
+
+-- name: EnabledAdminExistsAfterUserGroupDelete :one
+SELECT EXISTS (
+    SELECT 1
+    FROM users u
+    WHERE u.is_deleted = FALSE
+      AND u.disabled = FALSE
+      AND (
+          EXISTS (
+              SELECT 1
+              FROM user_roles ur
+              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
+              WHERE ur.user_id = u.id
+                AND ur.scope_kind IS NULL
+                AND ur.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM user_group_members m
+              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+              JOIN user_group_roles gr ON gr.group_id = m.group_id
+              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
+              WHERE m.user_id = u.id
+                AND m.group_id <> sqlc.arg(group_id)
+                AND gr.scope_kind IS NULL
+                AND gr.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+      )
+);
+
+-- name: EnabledAdminExistsAfterUserGroupMemberRemoval :one
+SELECT EXISTS (
+    SELECT 1
+    FROM users u
+    WHERE u.is_deleted = FALSE
+      AND u.disabled = FALSE
+      AND (
+          EXISTS (
+              SELECT 1
+              FROM user_roles ur
+              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
+              WHERE ur.user_id = u.id
+                AND ur.scope_kind IS NULL
+                AND ur.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM user_group_members m
+              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+              JOIN user_group_roles gr ON gr.group_id = m.group_id
+              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
+              WHERE m.user_id = u.id
+                AND NOT (m.group_id = sqlc.arg(group_id) AND m.user_id = sqlc.arg(user_id))
+                AND gr.scope_kind IS NULL
+                AND gr.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+      )
+);
+
+-- name: UpdateUserGroup :one
+UPDATE user_groups
+SET name = sqlc.arg(name), description = sqlc.arg(description), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND is_deleted = FALSE
+RETURNING *;
+
+-- name: SetUserGroupMaintenanceWindow :one
+UPDATE user_groups SET maintenance_window = sqlc.arg(maintenance_window), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND is_deleted = FALSE
+RETURNING *;
+
+-- name: DeleteUserGroupMembers :execrows
+DELETE FROM user_group_members WHERE group_id = $1;
+
+-- name: DeleteUserGroupRoleGrants :execrows
+DELETE FROM user_group_roles WHERE group_id = $1;
+
+-- name: DeleteUserGroupAssignments :execrows
+UPDATE assignments SET is_deleted = TRUE
+WHERE target_type = 'user_group' AND target_id = $1 AND is_deleted = FALSE;
+
+-- name: DeleteUserGroupUserRoleScopes :execrows
+DELETE FROM user_roles WHERE scope_kind = 'user_group' AND scope_id = $1;
+
+-- name: DeleteUserGroupUserGroupRoleScopes :execrows
+DELETE FROM user_group_roles WHERE scope_kind = 'user_group' AND scope_id = $1;
+
+-- name: BumpSessionsAffectedByUserGroupDelete :execrows
+UPDATE users SET session_version = session_version + 1, updated_at = sqlc.arg(updated_at)
+WHERE is_deleted = FALSE AND id IN (
+    SELECT m.user_id FROM user_group_members m WHERE m.group_id = sqlc.arg(group_id)
+    UNION
+    SELECT ur.user_id FROM user_roles ur
+    WHERE ur.scope_kind = 'user_group' AND ur.scope_id = sqlc.arg(group_id)
+    UNION
+    SELECT m.user_id
+    FROM user_group_roles gr
+    JOIN user_group_members m ON m.group_id = gr.group_id
+    WHERE gr.scope_kind = 'user_group' AND gr.scope_id = sqlc.arg(group_id)
+);
+
+-- name: SoftDeleteUserGroup :one
+UPDATE user_groups SET is_deleted = TRUE, updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND is_deleted = FALSE
+RETURNING *;
 
 -- name: UpdateUserGroupName :one
 UPDATE user_groups SET name = $2, updated_at = $3

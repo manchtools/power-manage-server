@@ -21,6 +21,10 @@ type (
 	RoleGrantRow = generated.ListUserRoleGrantsRow
 	// GroupRoleGrantRow is one role grant on a user group.
 	GroupRoleGrantRow = generated.ListUserGroupRoleGrantsRow
+	// UserGroupView is one live group with derived membership and SCIM state.
+	UserGroupView = generated.GetUserGroupViewRow
+	// UserGroupMemberView is one live group member.
+	UserGroupMemberView = generated.ListUserGroupMembersRow
 	// InheritedRoleRow is a role a subject holds through a group.
 	InheritedRoleRow = generated.ListInheritedRolesForUserRow
 	// ScopedGrantRow is one (permission, scope) tuple a subject holds.
@@ -40,6 +44,15 @@ type (
 	// UserSessionStateRow is the subject state a session check needs.
 	UserSessionStateRow = generated.GetUserSessionStateRow
 )
+
+// UserGroupListFilter contains the keyset and user-group scope shared by
+// group list reads.
+type UserGroupListFilter struct {
+	AfterID         string
+	Limit           int32
+	ScopeRestricted bool
+	ScopeGroupIDs   []string
+}
 
 // GetUserByEmail returns one live user by address. ErrNotFound when no
 // live user holds it.
@@ -108,6 +121,69 @@ func (s *Store) ListUserGroupRoleGrants(ctx context.Context, groupID string) ([]
 	rows, err := s.queries.ListUserGroupRoleGrants(ctx, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("user_group: role grants: %w", err)
+	}
+	return rows, nil
+}
+
+// GetUserGroupView returns one live group with its derived display state.
+func (s *Store) GetUserGroupView(ctx context.Context, id string) (UserGroupView, error) {
+	row, err := s.queries.GetUserGroupView(ctx, id)
+	if err != nil {
+		return UserGroupView{}, fmt.Errorf("user_group: get: %w", translateNotFound(err))
+	}
+	return row, nil
+}
+
+// ListUserGroups returns a deterministic scoped keyset page.
+func (s *Store) ListUserGroups(ctx context.Context, filter UserGroupListFilter) ([]UserGroupView, error) {
+	if filter.Limit <= 0 || filter.Limit > 101 {
+		return nil, fmt.Errorf("user_group: list limit must be between 1 and 101")
+	}
+	rows, err := s.queries.ListUserGroups(ctx, generated.ListUserGroupsParams{
+		AfterID: filter.AfterID, RowLimit: filter.Limit,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("user_group: list: %w", err)
+	}
+	groups := make([]UserGroupView, len(rows))
+	for i, row := range rows {
+		groups[i] = UserGroupView(row)
+	}
+	return groups, nil
+}
+
+// CountUserGroups counts the same scope selected by ListUserGroups.
+func (s *Store) CountUserGroups(ctx context.Context, filter UserGroupListFilter) (int64, error) {
+	count, err := s.queries.CountUserGroups(ctx, generated.CountUserGroupsParams{
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("user_group: count: %w", err)
+	}
+	return count, nil
+}
+
+// ListUserGroupsForUser returns visible live groups containing a subject.
+func (s *Store) ListUserGroupsForUser(ctx context.Context, userID string, filter UserGroupListFilter) ([]UserGroupView, error) {
+	rows, err := s.queries.ListUserGroupsForUser(ctx, generated.ListUserGroupsForUserParams{
+		UserID: userID, ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("user_group: list for user: %w", err)
+	}
+	groups := make([]UserGroupView, len(rows))
+	for i, row := range rows {
+		groups[i] = UserGroupView(row)
+	}
+	return groups, nil
+}
+
+// ListUserGroupMembers returns every live member of one group.
+func (s *Store) ListUserGroupMembers(ctx context.Context, groupID string) ([]UserGroupMemberView, error) {
+	rows, err := s.queries.ListUserGroupMembers(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("user_group: members: %w", err)
 	}
 	return rows, nil
 }

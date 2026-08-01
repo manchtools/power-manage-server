@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
@@ -103,6 +104,37 @@ func roleToProto(r store.RoleRow) *pmv1.Role {
 		CreatedAt:   timestampValue(r.CreatedAt),
 		IsSystem:    r.IsSystem,
 	}
+}
+
+func userGroupToProto(row store.UserGroupView, grants []store.GroupRoleGrantRow) (*pmv1.UserGroup, error) {
+	group := &pmv1.UserGroup{
+		Id: row.ID, Name: row.Name, Description: row.Description,
+		MemberCount: boundedIdentityCount(row.LiveMemberCount),
+		CreatedAt:   timestampValue(row.CreatedAt), IsDynamic: row.IsDynamic,
+		IsScimManaged: row.IsScimManaged,
+	}
+	if row.DynamicQuery != nil {
+		group.DynamicQuery = *row.DynamicQuery
+	}
+	if len(row.MaintenanceWindow) > 0 && string(row.MaintenanceWindow) != "{}" {
+		window := &pmv1.MaintenanceWindow{}
+		if err := protojson.Unmarshal(row.MaintenanceWindow, window); err != nil {
+			return nil, err
+		}
+		if len(window.Schedule) > 0 {
+			group.MaintenanceWindow = window
+		}
+	}
+	for _, grant := range grants {
+		wire := &pmv1.RoleGrant{
+			Role: roleToProto(grant.Role), ScopeKind: scopeKindToProto(grant.ScopeKind),
+		}
+		if grant.ScopeID != nil {
+			wire.ScopeId = *grant.ScopeID
+		}
+		group.RoleGrants = append(group.RoleGrants, wire)
+	}
+	return group, nil
 }
 
 func grantToProto(g store.RoleGrantRow, scopeNames map[string]string) *pmv1.RoleGrant {

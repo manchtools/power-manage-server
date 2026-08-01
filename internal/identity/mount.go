@@ -90,6 +90,26 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	register(powermanagev1connect.ControlServiceDeleteUserProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceDeleteUserProcedure, h.DeleteUser, opts...))
 
+	// User groups and membership.
+	register(powermanagev1connect.ControlServiceCreateUserGroupProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceCreateUserGroupProcedure, h.CreateUserGroup, opts...))
+	register(powermanagev1connect.ControlServiceGetUserGroupProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetUserGroupProcedure, h.GetUserGroup, opts...))
+	register(powermanagev1connect.ControlServiceListUserGroupsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListUserGroupsProcedure, h.ListUserGroups, opts...))
+	register(powermanagev1connect.ControlServiceUpdateUserGroupProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceUpdateUserGroupProcedure, h.UpdateUserGroup, opts...))
+	register(powermanagev1connect.ControlServiceDeleteUserGroupProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceDeleteUserGroupProcedure, h.DeleteUserGroup, opts...))
+	register(powermanagev1connect.ControlServiceAddUserToGroupProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceAddUserToGroupProcedure, h.AddUserToGroup, opts...))
+	register(powermanagev1connect.ControlServiceRemoveUserFromGroupProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRemoveUserFromGroupProcedure, h.RemoveUserFromGroup, opts...))
+	register(powermanagev1connect.ControlServiceListUserGroupsForUserProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListUserGroupsForUserProcedure, h.ListUserGroupsForUser, opts...))
+	register(powermanagev1connect.ControlServiceSetUserGroupMaintenanceWindowProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetUserGroupMaintenanceWindowProcedure, h.SetUserGroupMaintenanceWindow, opts...))
+
 	// Roles and grants.
 	register(powermanagev1connect.ControlServiceCreateRoleProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceCreateRoleProcedure, h.CreateRole, opts...))
@@ -143,6 +163,12 @@ func MutationProcedures() []string {
 		powermanagev1connect.ControlServiceRemoveUserSshKeyProcedure,
 		powermanagev1connect.ControlServiceSetUserProvisioningEnabledProcedure,
 		powermanagev1connect.ControlServiceDeleteUserProcedure,
+		powermanagev1connect.ControlServiceCreateUserGroupProcedure,
+		powermanagev1connect.ControlServiceUpdateUserGroupProcedure,
+		powermanagev1connect.ControlServiceDeleteUserGroupProcedure,
+		powermanagev1connect.ControlServiceAddUserToGroupProcedure,
+		powermanagev1connect.ControlServiceRemoveUserFromGroupProcedure,
+		powermanagev1connect.ControlServiceSetUserGroupMaintenanceWindowProcedure,
 		powermanagev1connect.ControlServiceCreateRoleProcedure,
 		powermanagev1connect.ControlServiceUpdateRoleProcedure,
 		powermanagev1connect.ControlServiceDeleteRoleProcedure,
@@ -164,6 +190,9 @@ func ReadProcedures() []string {
 		powermanagev1connect.ControlServiceListIdentityLinksProcedure,
 		powermanagev1connect.ControlServiceGetUserProcedure,
 		powermanagev1connect.ControlServiceListUsersProcedure,
+		powermanagev1connect.ControlServiceGetUserGroupProcedure,
+		powermanagev1connect.ControlServiceListUserGroupsProcedure,
+		powermanagev1connect.ControlServiceListUserGroupsForUserProcedure,
 		powermanagev1connect.ControlServiceGetRoleProcedure,
 		powermanagev1connect.ControlServiceListRolesProcedure,
 		powermanagev1connect.ControlServiceListPermissionsProcedure,

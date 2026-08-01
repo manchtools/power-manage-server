@@ -28,16 +28,19 @@ const (
 	ErrInvalidPageToken = "invalid_page_token"
 	ErrInternal         = "internal_error"
 
-	ErrUserNotFound         = "user_not_found"
-	ErrRoleNotFound         = "role_not_found"
-	ErrProviderNotFound     = "provider_not_found"
-	ErrIdentityLinkNotFound = "identity_link_not_found"
-	ErrGrantNotFound        = "grant_not_found"
+	ErrUserNotFound            = "user_not_found"
+	ErrRoleNotFound            = "role_not_found"
+	ErrProviderNotFound        = "provider_not_found"
+	ErrIdentityLinkNotFound    = "identity_link_not_found"
+	ErrGrantNotFound           = "grant_not_found"
+	ErrUserGroupNotFound       = "user_group_not_found"
+	ErrUserGroupMemberNotFound = "user_group_member_not_found"
 
-	ErrEmailAlreadyExists = "email_already_exists"
-	ErrRoleNameExists     = "role_name_exists"
-	ErrProviderSlugExists = "provider_slug_exists"
-	ErrUserAlreadyHasRole = "user_already_has_role"
+	ErrEmailAlreadyExists  = "email_already_exists"
+	ErrRoleNameExists      = "role_name_exists"
+	ErrProviderSlugExists  = "provider_slug_exists"
+	ErrUserAlreadyHasRole  = "user_already_has_role"
+	ErrUserGroupNameExists = "user_group_name_exists"
 
 	ErrCannotModifySystemRole = "cannot_modify_system_role"
 	ErrRoleInUse              = "role_in_use"
@@ -48,6 +51,9 @@ const (
 	ErrSSONoMatchingAccount   = "sso_no_matching_account"
 	ErrCannotUnlinkOtherUser  = "cannot_unlink_other_user"
 	ErrLastAuthMethod         = "last_auth_method"
+	ErrDynamicGroupMembership = "dynamic_group_membership_managed"
+	ErrSCIMManagedResource    = "scim_managed_resource"
+	ErrCannotRemoveLastAdmin  = "cannot_remove_last_admin"
 )
 
 // rpcError builds a connect error carrying the structured detail the

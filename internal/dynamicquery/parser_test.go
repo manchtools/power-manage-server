@@ -163,4 +163,10 @@ func TestValidateUserQuery(t *testing.T) {
 	if !strings.Contains(err.Error(), "user.*") {
 		t.Fatalf("ValidateUserQuery error %q does not mention user.* prefix", err.Error())
 	}
+
+	for _, removed := range []string{"user.has_password", "user.totp_enabled"} {
+		if err := dynamicquery.ValidateUserQuery(removed + ` equals "true"`); err == nil {
+			t.Fatalf("ValidateUserQuery accepted removed local-auth field %q", removed)
+		}
+	}
 }

@@ -10,6 +10,199 @@ import (
 	"time"
 )
 
+const bumpSessionsAffectedByUserGroupDelete = `-- name: BumpSessionsAffectedByUserGroupDelete :execrows
+UPDATE users SET session_version = session_version + 1, updated_at = $1
+WHERE is_deleted = FALSE AND id IN (
+    SELECT m.user_id FROM user_group_members m WHERE m.group_id = $2
+    UNION
+    SELECT ur.user_id FROM user_roles ur
+    WHERE ur.scope_kind = 'user_group' AND ur.scope_id = $2
+    UNION
+    SELECT m.user_id
+    FROM user_group_roles gr
+    JOIN user_group_members m ON m.group_id = gr.group_id
+    WHERE gr.scope_kind = 'user_group' AND gr.scope_id = $2
+)
+`
+
+type BumpSessionsAffectedByUserGroupDeleteParams struct {
+	UpdatedAt *time.Time `json:"updated_at"`
+	GroupID   string     `json:"group_id"`
+}
+
+func (q *Queries) BumpSessionsAffectedByUserGroupDelete(ctx context.Context, arg BumpSessionsAffectedByUserGroupDeleteParams) (int64, error) {
+	result, err := q.db.Exec(ctx, bumpSessionsAffectedByUserGroupDelete, arg.UpdatedAt, arg.GroupID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const countUserGroups = `-- name: CountUserGroups :one
+SELECT COUNT(*) FROM user_groups g
+WHERE g.is_deleted = FALSE
+  AND (
+      NOT $1::boolean
+      OR g.id = ANY($2::text[])
+  )
+`
+
+type CountUserGroupsParams struct {
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+func (q *Queries) CountUserGroups(ctx context.Context, arg CountUserGroupsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUserGroups, arg.ScopeRestricted, arg.ScopeGroupIds)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const deleteUserGroupAssignments = `-- name: DeleteUserGroupAssignments :execrows
+UPDATE assignments SET is_deleted = TRUE
+WHERE target_type = 'user_group' AND target_id = $1 AND is_deleted = FALSE
+`
+
+func (q *Queries) DeleteUserGroupAssignments(ctx context.Context, targetID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUserGroupAssignments, targetID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteUserGroupMembers = `-- name: DeleteUserGroupMembers :execrows
+DELETE FROM user_group_members WHERE group_id = $1
+`
+
+func (q *Queries) DeleteUserGroupMembers(ctx context.Context, groupID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUserGroupMembers, groupID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteUserGroupRoleGrants = `-- name: DeleteUserGroupRoleGrants :execrows
+DELETE FROM user_group_roles WHERE group_id = $1
+`
+
+func (q *Queries) DeleteUserGroupRoleGrants(ctx context.Context, groupID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUserGroupRoleGrants, groupID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteUserGroupUserGroupRoleScopes = `-- name: DeleteUserGroupUserGroupRoleScopes :execrows
+DELETE FROM user_group_roles WHERE scope_kind = 'user_group' AND scope_id = $1
+`
+
+func (q *Queries) DeleteUserGroupUserGroupRoleScopes(ctx context.Context, scopeID *string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUserGroupUserGroupRoleScopes, scopeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteUserGroupUserRoleScopes = `-- name: DeleteUserGroupUserRoleScopes :execrows
+DELETE FROM user_roles WHERE scope_kind = 'user_group' AND scope_id = $1
+`
+
+func (q *Queries) DeleteUserGroupUserRoleScopes(ctx context.Context, scopeID *string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUserGroupUserRoleScopes, scopeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const enabledAdminExistsAfterUserGroupDelete = `-- name: EnabledAdminExistsAfterUserGroupDelete :one
+SELECT EXISTS (
+    SELECT 1
+    FROM users u
+    WHERE u.is_deleted = FALSE
+      AND u.disabled = FALSE
+      AND (
+          EXISTS (
+              SELECT 1
+              FROM user_roles ur
+              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
+              WHERE ur.user_id = u.id
+                AND ur.scope_kind IS NULL
+                AND ur.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM user_group_members m
+              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+              JOIN user_group_roles gr ON gr.group_id = m.group_id
+              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
+              WHERE m.user_id = u.id
+                AND m.group_id <> $1
+                AND gr.scope_kind IS NULL
+                AND gr.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+      )
+)
+`
+
+func (q *Queries) EnabledAdminExistsAfterUserGroupDelete(ctx context.Context, groupID string) (bool, error) {
+	row := q.db.QueryRow(ctx, enabledAdminExistsAfterUserGroupDelete, groupID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const enabledAdminExistsAfterUserGroupMemberRemoval = `-- name: EnabledAdminExistsAfterUserGroupMemberRemoval :one
+SELECT EXISTS (
+    SELECT 1
+    FROM users u
+    WHERE u.is_deleted = FALSE
+      AND u.disabled = FALSE
+      AND (
+          EXISTS (
+              SELECT 1
+              FROM user_roles ur
+              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
+              WHERE ur.user_id = u.id
+                AND ur.scope_kind IS NULL
+                AND ur.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM user_group_members m
+              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+              JOIN user_group_roles gr ON gr.group_id = m.group_id
+              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
+              WHERE m.user_id = u.id
+                AND NOT (m.group_id = $1 AND m.user_id = $2)
+                AND gr.scope_kind IS NULL
+                AND gr.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+      )
+)
+`
+
+type EnabledAdminExistsAfterUserGroupMemberRemovalParams struct {
+	GroupID string `json:"group_id"`
+	UserID  string `json:"user_id"`
+}
+
+func (q *Queries) EnabledAdminExistsAfterUserGroupMemberRemoval(ctx context.Context, arg EnabledAdminExistsAfterUserGroupMemberRemovalParams) (bool, error) {
+	row := q.db.QueryRow(ctx, enabledAdminExistsAfterUserGroupMemberRemoval, arg.GroupID, arg.UserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const getUserGroup = `-- name: GetUserGroup :one
 SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, is_dynamic, dynamic_query, maintenance_window, search_tsv FROM user_groups WHERE id = $1 AND is_deleted = FALSE
 `
@@ -34,19 +227,64 @@ func (q *Queries) GetUserGroup(ctx context.Context, id string) (UserGroup, error
 	return i, err
 }
 
+const getUserGroupView = `-- name: GetUserGroupView :one
+SELECT g.id, g.name, g.description, g.created_at, g.created_by,
+       g.is_dynamic, g.dynamic_query, g.maintenance_window,
+       COUNT(u.id)::bigint AS live_member_count,
+       EXISTS (SELECT 1 FROM scim_group_mapping sgm WHERE sgm.user_group_id = g.id) AS is_scim_managed
+FROM user_groups g
+LEFT JOIN user_group_members m ON m.group_id = g.id
+LEFT JOIN users u ON u.id = m.user_id AND u.is_deleted = FALSE
+WHERE g.id = $1 AND g.is_deleted = FALSE
+GROUP BY g.id
+`
+
+type GetUserGroupViewRow struct {
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Description       string    `json:"description"`
+	CreatedAt         time.Time `json:"created_at"`
+	CreatedBy         string    `json:"created_by"`
+	IsDynamic         bool      `json:"is_dynamic"`
+	DynamicQuery      *string   `json:"dynamic_query"`
+	MaintenanceWindow []byte    `json:"maintenance_window"`
+	LiveMemberCount   int64     `json:"live_member_count"`
+	IsScimManaged     bool      `json:"is_scim_managed"`
+}
+
+func (q *Queries) GetUserGroupView(ctx context.Context, id string) (GetUserGroupViewRow, error) {
+	row := q.db.QueryRow(ctx, getUserGroupView, id)
+	var i GetUserGroupViewRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.IsDynamic,
+		&i.DynamicQuery,
+		&i.MaintenanceWindow,
+		&i.LiveMemberCount,
+		&i.IsScimManaged,
+	)
+	return i, err
+}
+
 const insertUserGroup = `-- name: InsertUserGroup :one
 
-INSERT INTO user_groups (id, name, description, created_at, created_by, updated_at)
-VALUES ($1, $2, $3, $4, $5, $4)
+INSERT INTO user_groups (id, name, description, created_at, created_by, updated_at, is_dynamic, dynamic_query)
+VALUES ($1, $2, $3, $4, $5, $4, $6, $7)
 RETURNING id, name, description, member_count, created_at, created_by, updated_at, is_deleted, is_dynamic, dynamic_query, maintenance_window, search_tsv
 `
 
 type InsertUserGroupParams struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	CreatedAt   time.Time `json:"created_at"`
-	CreatedBy   string    `json:"created_by"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description"`
+	CreatedAt    time.Time `json:"created_at"`
+	CreatedBy    string    `json:"created_by"`
+	IsDynamic    bool      `json:"is_dynamic"`
+	DynamicQuery *string   `json:"dynamic_query"`
 }
 
 // User groups. A group is a container for subjects; the authority it
@@ -59,6 +297,275 @@ func (q *Queries) InsertUserGroup(ctx context.Context, arg InsertUserGroupParams
 		arg.Description,
 		arg.CreatedAt,
 		arg.CreatedBy,
+		arg.IsDynamic,
+		arg.DynamicQuery,
+	)
+	var i UserGroup
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.MemberCount,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.IsDynamic,
+		&i.DynamicQuery,
+		&i.MaintenanceWindow,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const isUserGroupSCIMManaged = `-- name: IsUserGroupSCIMManaged :one
+SELECT EXISTS (SELECT 1 FROM scim_group_mapping WHERE user_group_id = $1)
+`
+
+func (q *Queries) IsUserGroupSCIMManaged(ctx context.Context, userGroupID string) (bool, error) {
+	row := q.db.QueryRow(ctx, isUserGroupSCIMManaged, userGroupID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const listUserGroups = `-- name: ListUserGroups :many
+SELECT g.id, g.name, g.description, g.created_at, g.created_by,
+       g.is_dynamic, g.dynamic_query, g.maintenance_window,
+       COUNT(u.id)::bigint AS live_member_count,
+       EXISTS (SELECT 1 FROM scim_group_mapping sgm WHERE sgm.user_group_id = g.id) AS is_scim_managed
+FROM user_groups g
+LEFT JOIN user_group_members m ON m.group_id = g.id
+LEFT JOIN users u ON u.id = m.user_id AND u.is_deleted = FALSE
+WHERE g.is_deleted = FALSE
+  AND g.id > $1
+  AND (
+      NOT $2::boolean
+      OR g.id = ANY($3::text[])
+  )
+GROUP BY g.id
+ORDER BY g.id
+LIMIT $4
+`
+
+type ListUserGroupsParams struct {
+	AfterID         string   `json:"after_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+	RowLimit        int32    `json:"row_limit"`
+}
+
+type ListUserGroupsRow struct {
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Description       string    `json:"description"`
+	CreatedAt         time.Time `json:"created_at"`
+	CreatedBy         string    `json:"created_by"`
+	IsDynamic         bool      `json:"is_dynamic"`
+	DynamicQuery      *string   `json:"dynamic_query"`
+	MaintenanceWindow []byte    `json:"maintenance_window"`
+	LiveMemberCount   int64     `json:"live_member_count"`
+	IsScimManaged     bool      `json:"is_scim_managed"`
+}
+
+func (q *Queries) ListUserGroups(ctx context.Context, arg ListUserGroupsParams) ([]ListUserGroupsRow, error) {
+	rows, err := q.db.Query(ctx, listUserGroups,
+		arg.AfterID,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserGroupsRow{}
+	for rows.Next() {
+		var i ListUserGroupsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.IsDynamic,
+			&i.DynamicQuery,
+			&i.MaintenanceWindow,
+			&i.LiveMemberCount,
+			&i.IsScimManaged,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserGroupsForUser = `-- name: ListUserGroupsForUser :many
+SELECT g.id, g.name, g.description, g.created_at, g.created_by,
+       g.is_dynamic, g.dynamic_query, g.maintenance_window,
+       COUNT(live.id)::bigint AS live_member_count,
+       EXISTS (SELECT 1 FROM scim_group_mapping sgm WHERE sgm.user_group_id = g.id) AS is_scim_managed
+FROM user_group_members requested
+JOIN user_groups g ON g.id = requested.group_id AND g.is_deleted = FALSE
+LEFT JOIN user_group_members members ON members.group_id = g.id
+LEFT JOIN users live ON live.id = members.user_id AND live.is_deleted = FALSE
+WHERE requested.user_id = $1
+  AND (
+      NOT $2::boolean
+      OR g.id = ANY($3::text[])
+  )
+GROUP BY g.id
+ORDER BY g.id
+`
+
+type ListUserGroupsForUserParams struct {
+	UserID          string   `json:"user_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+type ListUserGroupsForUserRow struct {
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Description       string    `json:"description"`
+	CreatedAt         time.Time `json:"created_at"`
+	CreatedBy         string    `json:"created_by"`
+	IsDynamic         bool      `json:"is_dynamic"`
+	DynamicQuery      *string   `json:"dynamic_query"`
+	MaintenanceWindow []byte    `json:"maintenance_window"`
+	LiveMemberCount   int64     `json:"live_member_count"`
+	IsScimManaged     bool      `json:"is_scim_managed"`
+}
+
+func (q *Queries) ListUserGroupsForUser(ctx context.Context, arg ListUserGroupsForUserParams) ([]ListUserGroupsForUserRow, error) {
+	rows, err := q.db.Query(ctx, listUserGroupsForUser, arg.UserID, arg.ScopeRestricted, arg.ScopeGroupIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserGroupsForUserRow{}
+	for rows.Next() {
+		var i ListUserGroupsForUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.IsDynamic,
+			&i.DynamicQuery,
+			&i.MaintenanceWindow,
+			&i.LiveMemberCount,
+			&i.IsScimManaged,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockLastAdminGuard = `-- name: LockLastAdminGuard :exec
+SELECT pg_advisory_xact_lock(418296719726)
+`
+
+// Transaction-scoped so the guard and the audited mutation commit or
+// roll back together. Every authority-removing path uses this one key.
+func (q *Queries) LockLastAdminGuard(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockLastAdminGuard)
+	return err
+}
+
+const setUserGroupMaintenanceWindow = `-- name: SetUserGroupMaintenanceWindow :one
+UPDATE user_groups SET maintenance_window = $1, updated_at = $2
+WHERE id = $3 AND is_deleted = FALSE
+RETURNING id, name, description, member_count, created_at, created_by, updated_at, is_deleted, is_dynamic, dynamic_query, maintenance_window, search_tsv
+`
+
+type SetUserGroupMaintenanceWindowParams struct {
+	MaintenanceWindow []byte    `json:"maintenance_window"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ID                string    `json:"id"`
+}
+
+func (q *Queries) SetUserGroupMaintenanceWindow(ctx context.Context, arg SetUserGroupMaintenanceWindowParams) (UserGroup, error) {
+	row := q.db.QueryRow(ctx, setUserGroupMaintenanceWindow, arg.MaintenanceWindow, arg.UpdatedAt, arg.ID)
+	var i UserGroup
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.MemberCount,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.IsDynamic,
+		&i.DynamicQuery,
+		&i.MaintenanceWindow,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const softDeleteUserGroup = `-- name: SoftDeleteUserGroup :one
+UPDATE user_groups SET is_deleted = TRUE, updated_at = $1
+WHERE id = $2 AND is_deleted = FALSE
+RETURNING id, name, description, member_count, created_at, created_by, updated_at, is_deleted, is_dynamic, dynamic_query, maintenance_window, search_tsv
+`
+
+type SoftDeleteUserGroupParams struct {
+	UpdatedAt time.Time `json:"updated_at"`
+	ID        string    `json:"id"`
+}
+
+func (q *Queries) SoftDeleteUserGroup(ctx context.Context, arg SoftDeleteUserGroupParams) (UserGroup, error) {
+	row := q.db.QueryRow(ctx, softDeleteUserGroup, arg.UpdatedAt, arg.ID)
+	var i UserGroup
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.MemberCount,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.IsDynamic,
+		&i.DynamicQuery,
+		&i.MaintenanceWindow,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const updateUserGroup = `-- name: UpdateUserGroup :one
+UPDATE user_groups
+SET name = $1, description = $2, updated_at = $3
+WHERE id = $4 AND is_deleted = FALSE
+RETURNING id, name, description, member_count, created_at, created_by, updated_at, is_deleted, is_dynamic, dynamic_query, maintenance_window, search_tsv
+`
+
+type UpdateUserGroupParams struct {
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+}
+
+func (q *Queries) UpdateUserGroup(ctx context.Context, arg UpdateUserGroupParams) (UserGroup, error) {
+	row := q.db.QueryRow(ctx, updateUserGroup,
+		arg.Name,
+		arg.Description,
+		arg.UpdatedAt,
+		arg.ID,
 	)
 	var i UserGroup
 	err := row.Scan(
@@ -108,4 +615,23 @@ func (q *Queries) UpdateUserGroupName(ctx context.Context, arg UpdateUserGroupNa
 		&i.SearchTsv,
 	)
 	return i, err
+}
+
+const userGroupConfersUnscopedAdmin = `-- name: UserGroupConfersUnscopedAdmin :one
+SELECT EXISTS (
+    SELECT 1
+    FROM user_group_roles gr
+    JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
+    WHERE gr.group_id = $1
+      AND gr.scope_kind IS NULL
+      AND gr.scope_id IS NULL
+      AND r.name = 'Admin'
+)
+`
+
+func (q *Queries) UserGroupConfersUnscopedAdmin(ctx context.Context, groupID string) (bool, error) {
+	row := q.db.QueryRow(ctx, userGroupConfersUnscopedAdmin, groupID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }

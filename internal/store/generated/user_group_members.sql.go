@@ -10,6 +10,35 @@ import (
 	"time"
 )
 
+const addStaticUserGroupMember = `-- name: AddStaticUserGroupMember :execrows
+INSERT INTO user_group_members (group_id, user_id, added_at, added_by)
+SELECT $1, $2, $3, $4
+FROM user_groups g
+JOIN users u ON u.id = $2 AND u.is_deleted = FALSE
+WHERE g.id = $1 AND g.is_deleted = FALSE AND g.is_dynamic = FALSE
+ON CONFLICT (group_id, user_id) DO NOTHING
+`
+
+type AddStaticUserGroupMemberParams struct {
+	GroupID string    `json:"group_id"`
+	UserID  string    `json:"user_id"`
+	AddedAt time.Time `json:"added_at"`
+	AddedBy string    `json:"added_by"`
+}
+
+func (q *Queries) AddStaticUserGroupMember(ctx context.Context, arg AddStaticUserGroupMemberParams) (int64, error) {
+	result, err := q.db.Exec(ctx, addStaticUserGroupMember,
+		arg.GroupID,
+		arg.UserID,
+		arg.AddedAt,
+		arg.AddedBy,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countIdentityLinksForUser = `-- name: CountIdentityLinksForUser :one
 SELECT COUNT(*) FROM identity_links WHERE user_id = $1
 `
@@ -91,4 +120,59 @@ func (q *Queries) ListUserGroupMemberIDs(ctx context.Context, groupID string) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const listUserGroupMembers = `-- name: ListUserGroupMembers :many
+SELECT m.user_id, u.email, m.added_at
+FROM user_group_members m
+JOIN users u ON u.id = m.user_id AND u.is_deleted = FALSE
+WHERE m.group_id = $1
+ORDER BY m.user_id
+`
+
+type ListUserGroupMembersRow struct {
+	UserID  string    `json:"user_id"`
+	Email   string    `json:"email"`
+	AddedAt time.Time `json:"added_at"`
+}
+
+func (q *Queries) ListUserGroupMembers(ctx context.Context, groupID string) ([]ListUserGroupMembersRow, error) {
+	rows, err := q.db.Query(ctx, listUserGroupMembers, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserGroupMembersRow{}
+	for rows.Next() {
+		var i ListUserGroupMembersRow
+		if err := rows.Scan(&i.UserID, &i.Email, &i.AddedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const removeStaticUserGroupMember = `-- name: RemoveStaticUserGroupMember :execrows
+DELETE FROM user_group_members m
+USING user_groups g
+WHERE m.group_id = $1
+  AND m.user_id = $2
+  AND g.id = m.group_id AND g.is_deleted = FALSE AND g.is_dynamic = FALSE
+`
+
+type RemoveStaticUserGroupMemberParams struct {
+	GroupID string `json:"group_id"`
+	UserID  string `json:"user_id"`
+}
+
+func (q *Queries) RemoveStaticUserGroupMember(ctx context.Context, arg RemoveStaticUserGroupMemberParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeStaticUserGroupMember, arg.GroupID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
