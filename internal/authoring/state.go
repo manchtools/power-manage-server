@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -282,7 +284,51 @@ func validateActionData(id string, actionType pmv1.ActionType, desired pmv1.Desi
 	if detail, ok := sdkvalidate.Struct(actionValidator, action); !ok {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, detail)
 	}
+	if err := validateActionSafety(actionparams.ExtractParamsMsg(action)); err != nil {
+		return nil, err
+	}
 	return canonical, nil
+}
+
+func validateActionSafety(params proto.Message) error {
+	switch p := params.(type) {
+	case *pmv1.ShellParams:
+		if p.Script == "" && p.DetectionScript == "" {
+			return fmt.Errorf("%w: shell action needs a script or detection script", ErrInvalidInput)
+		}
+	case *pmv1.AppInstallParams:
+		if !strings.HasPrefix(strings.ToLower(p.Url), "https://") || !isLowerHex64(p.ChecksumSha256) {
+			return fmt.Errorf("%w: application install requires HTTPS and a lowercase SHA-256", ErrInvalidInput)
+		}
+	case *pmv1.AgentUpdateParams:
+		if p.Amd64 == nil && p.Arm64 == nil {
+			return fmt.Errorf("%w: agent update needs at least one architecture", ErrInvalidInput)
+		}
+		for _, arch := range []*pmv1.AgentUpdateArch{p.Amd64, p.Arm64} {
+			if arch == nil {
+				continue
+			}
+			if !strings.HasPrefix(strings.ToLower(arch.BinaryUrl), "https://") ||
+				(arch.ChecksumUrl == "" && arch.ExpectedSha256 == "") ||
+				(arch.ChecksumUrl != "" && !strings.HasPrefix(strings.ToLower(arch.ChecksumUrl), "https://")) ||
+				(arch.ExpectedSha256 != "" && !isLowerHex64(arch.ExpectedSha256)) {
+				return fmt.Errorf("%w: unsafe agent update source", ErrInvalidInput)
+			}
+		}
+	}
+	return nil
+}
+
+func isLowerHex64(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, c := range value {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func canonicalJSONObject(raw []byte) ([]byte, error) {

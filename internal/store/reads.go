@@ -32,6 +32,20 @@ type JobRow = generated.Job
 // ActionRow is one live authored action used to compile agent manifests.
 type ActionRow = generated.Action
 
+// ActionListFilter contains the keyset, type, assignment and object-scope
+// narrowing shared by the Action list and count reads.
+type ActionListFilter struct {
+	AfterID         string
+	Limit           int32
+	Type            int32
+	UnassignedOnly  bool
+	ScopeRestricted bool
+	ScopeGroupIDs   []string
+}
+
+// AssignmentTarget is one live target reached from an authored source.
+type AssignmentTarget = generated.ListAuthoringAssignmentsForSourceRow
+
 // ActionSetRow is one live authored action set used to compile agent manifests.
 type ActionSetRow = generated.ActionSet
 
@@ -169,11 +183,66 @@ func (s *Store) CountDevices(ctx context.Context) (int64, error) {
 
 // CountActions returns the number of live, operator-authored actions.
 func (s *Store) CountActions(ctx context.Context) (int64, error) {
-	n, err := s.queries.CountActions(ctx)
+	return s.CountAuthoringActions(ctx, ActionListFilter{})
+}
+
+// ListAuthoringActions returns a deterministic keyset page of live,
+// operator-visible Actions. System actions never enter this read surface.
+func (s *Store) ListAuthoringActions(ctx context.Context, filter ActionListFilter) ([]ActionRow, error) {
+	rows, err := s.queries.ListAuthoringActions(ctx, generated.ListAuthoringActionsParams{
+		AfterID: filter.AfterID, TypeFilter: filter.Type,
+		UnassignedOnly: filter.UnassignedOnly, ScopeRestricted: filter.ScopeRestricted,
+		RowLimit: filter.Limit, ScopeGroupIds: filter.ScopeGroupIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("action: list: %w", err)
+	}
+	return rows, nil
+}
+
+// CountAuthoringActions counts the same Action population selected by the
+// list filter, ignoring its keyset and limit.
+func (s *Store) CountAuthoringActions(ctx context.Context, filter ActionListFilter) (int64, error) {
+	n, err := s.queries.CountAuthoringActions(ctx, generated.CountAuthoringActionsParams{
+		TypeFilter: filter.Type, UnassignedOnly: filter.UnassignedOnly,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("action: count: %w", err)
 	}
 	return n, nil
+}
+
+// ListAuthoringAssignmentTargets returns the live assignment targets for one
+// Action, ActionSet, Definition, or compliance-policy source.
+func (s *Store) ListAuthoringAssignmentTargets(ctx context.Context, sourceType, sourceID string) ([]AssignmentTarget, error) {
+	rows, err := s.queries.ListAuthoringAssignmentsForSource(ctx, generated.ListAuthoringAssignmentsForSourceParams{
+		SourceType: sourceType, SourceID: sourceID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("authoring: list assignment targets: %w", err)
+	}
+	return rows, nil
+}
+
+// ListContainingActionSetIDs returns the live sets that directly contain an
+// Action.
+func (s *Store) ListContainingActionSetIDs(ctx context.Context, actionID string) ([]string, error) {
+	ids, err := s.queries.ListContainingActionSetIDs(ctx, actionID)
+	if err != nil {
+		return nil, fmt.Errorf("authoring: list containing action sets: %w", err)
+	}
+	return ids, nil
+}
+
+// ListContainingDefinitionIDs returns the live Definitions that directly
+// contain an ActionSet.
+func (s *Store) ListContainingDefinitionIDs(ctx context.Context, actionSetID string) ([]string, error) {
+	ids, err := s.queries.ListContainingDefinitionIDs(ctx, actionSetID)
+	if err != nil {
+		return nil, fmt.Errorf("authoring: list containing definitions: %w", err)
+	}
+	return ids, nil
 }
 
 // CountActionSets returns the number of live authored sets.

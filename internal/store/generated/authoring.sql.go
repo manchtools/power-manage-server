@@ -61,13 +61,81 @@ func (q *Queries) CountActionSets(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const countActions = `-- name: CountActions :one
-SELECT COUNT(*) FROM actions
-WHERE is_deleted = FALSE AND is_system = FALSE
+const countAuthoringActions = `-- name: CountAuthoringActions :one
+WITH assignment_groups AS (
+    SELECT a.source_type, a.source_id, a.target_id AS group_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, a.target_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN devices d ON d.id = a.target_id AND d.is_deleted = FALSE
+    JOIN device_group_members m ON m.device_id = d.id
+    JOIN device_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN users u ON u.id = a.target_id AND u.is_deleted = FALSE
+    JOIN user_group_members m ON m.user_id = u.id
+    JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user'
+), visible_action_ids AS (
+    SELECT ag.source_id AS action_id
+    FROM assignment_groups ag
+    WHERE ag.source_type = 'action'
+      AND ag.group_id = ANY($4::text[])
+    UNION
+    SELECT m.action_id
+    FROM action_set_members m
+    JOIN action_sets s ON s.id = m.set_id AND s.is_deleted = FALSE
+    JOIN assignment_groups ag ON ag.source_type = 'action_set' AND ag.source_id = s.id
+    WHERE ag.group_id = ANY($4::text[])
+    UNION
+    SELECT sm.action_id
+    FROM definition_members dm
+    JOIN definitions d ON d.id = dm.definition_id AND d.is_deleted = FALSE
+    JOIN action_sets s ON s.id = dm.action_set_id AND s.is_deleted = FALSE
+    JOIN action_set_members sm ON sm.set_id = s.id
+    JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
+    WHERE ag.group_id = ANY($4::text[])
+)
+SELECT COUNT(*)
+FROM actions a
+WHERE a.is_deleted = FALSE
+  AND a.is_system = FALSE
+  AND ($1::integer = 0 OR a.action_type = $1::integer)
+  AND (
+      NOT $2::boolean
+      OR NOT EXISTS (
+          SELECT 1 FROM assignments x
+          WHERE x.source_type = 'action' AND x.source_id = a.id AND x.is_deleted = FALSE
+      )
+  )
+  AND (
+      NOT $3::boolean
+      OR EXISTS (SELECT 1 FROM visible_action_ids v WHERE v.action_id = a.id)
+  )
 `
 
-func (q *Queries) CountActions(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countActions)
+type CountAuthoringActionsParams struct {
+	TypeFilter      int32    `json:"type_filter"`
+	UnassignedOnly  bool     `json:"unassigned_only"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+func (q *Queries) CountAuthoringActions(ctx context.Context, arg CountAuthoringActionsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAuthoringActions,
+		arg.TypeFilter,
+		arg.UnassignedOnly,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -372,6 +440,217 @@ func (q *Queries) ListActionSetMembers(ctx context.Context, setID string) ([]Lis
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAuthoringActions = `-- name: ListAuthoringActions :many
+WITH assignment_groups AS (
+    SELECT a.source_type, a.source_id, a.target_id AS group_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, a.target_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN devices d ON d.id = a.target_id AND d.is_deleted = FALSE
+    JOIN device_group_members m ON m.device_id = d.id
+    JOIN device_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN users u ON u.id = a.target_id AND u.is_deleted = FALSE
+    JOIN user_group_members m ON m.user_id = u.id
+    JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user'
+), visible_action_ids AS (
+    SELECT ag.source_id AS action_id
+    FROM assignment_groups ag
+    WHERE ag.source_type = 'action'
+      AND ag.group_id = ANY($6::text[])
+    UNION
+    SELECT m.action_id
+    FROM action_set_members m
+    JOIN action_sets s ON s.id = m.set_id AND s.is_deleted = FALSE
+    JOIN assignment_groups ag ON ag.source_type = 'action_set' AND ag.source_id = s.id
+    WHERE ag.group_id = ANY($6::text[])
+    UNION
+    SELECT sm.action_id
+    FROM definition_members dm
+    JOIN definitions d ON d.id = dm.definition_id AND d.is_deleted = FALSE
+    JOIN action_sets s ON s.id = dm.action_set_id AND s.is_deleted = FALSE
+    JOIN action_set_members sm ON sm.set_id = s.id
+    JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
+    WHERE ag.group_id = ANY($6::text[])
+)
+SELECT a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.params_canonical, a.timeout_seconds, a.schedule, a.is_system, a.created_at, a.created_by, a.updated_at, a.is_deleted, a.search_tsv
+FROM actions a
+WHERE a.is_deleted = FALSE
+  AND a.is_system = FALSE
+  AND a.id > $1
+  AND ($2::integer = 0 OR a.action_type = $2::integer)
+  AND (
+      NOT $3::boolean
+      OR NOT EXISTS (
+          SELECT 1 FROM assignments x
+          WHERE x.source_type = 'action' AND x.source_id = a.id AND x.is_deleted = FALSE
+      )
+  )
+  AND (
+      NOT $4::boolean
+      OR EXISTS (SELECT 1 FROM visible_action_ids v WHERE v.action_id = a.id)
+  )
+ORDER BY a.id
+LIMIT $5
+`
+
+type ListAuthoringActionsParams struct {
+	AfterID         string   `json:"after_id"`
+	TypeFilter      int32    `json:"type_filter"`
+	UnassignedOnly  bool     `json:"unassigned_only"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	RowLimit        int32    `json:"row_limit"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+func (q *Queries) ListAuthoringActions(ctx context.Context, arg ListAuthoringActionsParams) ([]Action, error) {
+	rows, err := q.db.Query(ctx, listAuthoringActions,
+		arg.AfterID,
+		arg.TypeFilter,
+		arg.UnassignedOnly,
+		arg.ScopeRestricted,
+		arg.RowLimit,
+		arg.ScopeGroupIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Action{}
+	for rows.Next() {
+		var i Action
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.ActionType,
+			&i.DesiredState,
+			&i.Params,
+			&i.ParamsCanonical,
+			&i.TimeoutSeconds,
+			&i.Schedule,
+			&i.IsSystem,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.UpdatedAt,
+			&i.IsDeleted,
+			&i.SearchTsv,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAuthoringAssignmentsForSource = `-- name: ListAuthoringAssignmentsForSource :many
+SELECT target_type, target_id
+FROM assignments
+WHERE source_type = $1
+  AND source_id = $2
+  AND is_deleted = FALSE
+ORDER BY target_type, target_id
+`
+
+type ListAuthoringAssignmentsForSourceParams struct {
+	SourceType string `json:"source_type"`
+	SourceID   string `json:"source_id"`
+}
+
+type ListAuthoringAssignmentsForSourceRow struct {
+	TargetType string `json:"target_type"`
+	TargetID   string `json:"target_id"`
+}
+
+func (q *Queries) ListAuthoringAssignmentsForSource(ctx context.Context, arg ListAuthoringAssignmentsForSourceParams) ([]ListAuthoringAssignmentsForSourceRow, error) {
+	rows, err := q.db.Query(ctx, listAuthoringAssignmentsForSource, arg.SourceType, arg.SourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAuthoringAssignmentsForSourceRow{}
+	for rows.Next() {
+		var i ListAuthoringAssignmentsForSourceRow
+		if err := rows.Scan(&i.TargetType, &i.TargetID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listContainingActionSetIDs = `-- name: ListContainingActionSetIDs :many
+SELECT m.set_id
+FROM action_set_members m
+JOIN action_sets s ON s.id = m.set_id AND s.is_deleted = FALSE
+WHERE m.action_id = $1
+ORDER BY m.set_id
+`
+
+func (q *Queries) ListContainingActionSetIDs(ctx context.Context, actionID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listContainingActionSetIDs, actionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var set_id string
+		if err := rows.Scan(&set_id); err != nil {
+			return nil, err
+		}
+		items = append(items, set_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listContainingDefinitionIDs = `-- name: ListContainingDefinitionIDs :many
+SELECT m.definition_id
+FROM definition_members m
+JOIN definitions d ON d.id = m.definition_id AND d.is_deleted = FALSE
+WHERE m.action_set_id = $1
+ORDER BY m.definition_id
+`
+
+func (q *Queries) ListContainingDefinitionIDs(ctx context.Context, actionSetID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listContainingDefinitionIDs, actionSetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var definition_id string
+		if err := rows.Scan(&definition_id); err != nil {
+			return nil, err
+		}
+		items = append(items, definition_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

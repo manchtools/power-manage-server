@@ -5,9 +5,150 @@
 SELECT * FROM actions
 WHERE id = $1 AND is_deleted = FALSE;
 
--- name: CountActions :one
-SELECT COUNT(*) FROM actions
-WHERE is_deleted = FALSE AND is_system = FALSE;
+-- name: ListAuthoringActions :many
+WITH assignment_groups AS (
+    SELECT a.source_type, a.source_id, a.target_id AS group_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, a.target_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN devices d ON d.id = a.target_id AND d.is_deleted = FALSE
+    JOIN device_group_members m ON m.device_id = d.id
+    JOIN device_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN users u ON u.id = a.target_id AND u.is_deleted = FALSE
+    JOIN user_group_members m ON m.user_id = u.id
+    JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user'
+), visible_action_ids AS (
+    SELECT ag.source_id AS action_id
+    FROM assignment_groups ag
+    WHERE ag.source_type = 'action'
+      AND ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    UNION
+    SELECT m.action_id
+    FROM action_set_members m
+    JOIN action_sets s ON s.id = m.set_id AND s.is_deleted = FALSE
+    JOIN assignment_groups ag ON ag.source_type = 'action_set' AND ag.source_id = s.id
+    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    UNION
+    SELECT sm.action_id
+    FROM definition_members dm
+    JOIN definitions d ON d.id = dm.definition_id AND d.is_deleted = FALSE
+    JOIN action_sets s ON s.id = dm.action_set_id AND s.is_deleted = FALSE
+    JOIN action_set_members sm ON sm.set_id = s.id
+    JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
+    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+)
+SELECT a.*
+FROM actions a
+WHERE a.is_deleted = FALSE
+  AND a.is_system = FALSE
+  AND a.id > sqlc.arg(after_id)
+  AND (sqlc.arg(type_filter)::integer = 0 OR a.action_type = sqlc.arg(type_filter)::integer)
+  AND (
+      NOT sqlc.arg(unassigned_only)::boolean
+      OR NOT EXISTS (
+          SELECT 1 FROM assignments x
+          WHERE x.source_type = 'action' AND x.source_id = a.id AND x.is_deleted = FALSE
+      )
+  )
+  AND (
+      NOT sqlc.arg(scope_restricted)::boolean
+      OR EXISTS (SELECT 1 FROM visible_action_ids v WHERE v.action_id = a.id)
+  )
+ORDER BY a.id
+LIMIT sqlc.arg(row_limit);
+
+-- name: CountAuthoringActions :one
+WITH assignment_groups AS (
+    SELECT a.source_type, a.source_id, a.target_id AS group_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, a.target_id
+    FROM assignments a
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user_group'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN devices d ON d.id = a.target_id AND d.is_deleted = FALSE
+    JOIN device_group_members m ON m.device_id = d.id
+    JOIN device_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'device'
+    UNION ALL
+    SELECT a.source_type, a.source_id, m.group_id
+    FROM assignments a
+    JOIN users u ON u.id = a.target_id AND u.is_deleted = FALSE
+    JOIN user_group_members m ON m.user_id = u.id
+    JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE AND a.target_type = 'user'
+), visible_action_ids AS (
+    SELECT ag.source_id AS action_id
+    FROM assignment_groups ag
+    WHERE ag.source_type = 'action'
+      AND ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    UNION
+    SELECT m.action_id
+    FROM action_set_members m
+    JOIN action_sets s ON s.id = m.set_id AND s.is_deleted = FALSE
+    JOIN assignment_groups ag ON ag.source_type = 'action_set' AND ag.source_id = s.id
+    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    UNION
+    SELECT sm.action_id
+    FROM definition_members dm
+    JOIN definitions d ON d.id = dm.definition_id AND d.is_deleted = FALSE
+    JOIN action_sets s ON s.id = dm.action_set_id AND s.is_deleted = FALSE
+    JOIN action_set_members sm ON sm.set_id = s.id
+    JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
+    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+)
+SELECT COUNT(*)
+FROM actions a
+WHERE a.is_deleted = FALSE
+  AND a.is_system = FALSE
+  AND (sqlc.arg(type_filter)::integer = 0 OR a.action_type = sqlc.arg(type_filter)::integer)
+  AND (
+      NOT sqlc.arg(unassigned_only)::boolean
+      OR NOT EXISTS (
+          SELECT 1 FROM assignments x
+          WHERE x.source_type = 'action' AND x.source_id = a.id AND x.is_deleted = FALSE
+      )
+  )
+  AND (
+      NOT sqlc.arg(scope_restricted)::boolean
+      OR EXISTS (SELECT 1 FROM visible_action_ids v WHERE v.action_id = a.id)
+  );
+
+-- name: ListAuthoringAssignmentsForSource :many
+SELECT target_type, target_id
+FROM assignments
+WHERE source_type = sqlc.arg(source_type)
+  AND source_id = sqlc.arg(source_id)
+  AND is_deleted = FALSE
+ORDER BY target_type, target_id;
+
+-- name: ListContainingActionSetIDs :many
+SELECT m.set_id
+FROM action_set_members m
+JOIN action_sets s ON s.id = m.set_id AND s.is_deleted = FALSE
+WHERE m.action_id = $1
+ORDER BY m.set_id;
+
+-- name: ListContainingDefinitionIDs :many
+SELECT m.definition_id
+FROM definition_members m
+JOIN definitions d ON d.id = m.definition_id AND d.is_deleted = FALSE
+WHERE m.action_set_id = $1
+ORDER BY m.definition_id;
 
 -- name: InsertAuthoringAction :one
 INSERT INTO actions (
