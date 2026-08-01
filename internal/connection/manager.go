@@ -182,10 +182,17 @@ type Manager struct {
 
 // NewManager creates a new connection manager.
 func NewManager() *Manager {
-	return &Manager{
+	m := &Manager{
 		now:    time.Now,
 		agents: make(map[string]*Agent),
 	}
+	// Delivery rows survive process restarts. Seeding from wall-clock
+	// nanoseconds keeps a new process's epochs above the values it most likely
+	// wrote before restart instead of resetting to one and being rejected as
+	// stale forever. The atomic increment still supplies the strict ordering
+	// between live connections in this process.
+	m.nextEpoch.Store(time.Now().UnixNano())
+	return m
 }
 
 // Register registers a new agent connection. The parent ctx should be

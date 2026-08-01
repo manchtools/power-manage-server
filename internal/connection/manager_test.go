@@ -16,6 +16,7 @@ import (
 )
 
 func TestManager_RegisterGet(t *testing.T) {
+	startedAfter := time.Now().UnixNano()
 	m := NewManager()
 
 	agent := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
@@ -25,6 +26,8 @@ func TestManager_RegisterGet(t *testing.T) {
 	assert.False(t, agent.ConnectedAt.IsZero())
 	assert.False(t, agent.LastSeen.IsZero())
 	assert.Positive(t, agent.Epoch)
+	assert.Greater(t, agent.Epoch, startedAfter,
+		"epochs must not restart at one while durable deliveries retain the previous process's epoch")
 
 	got, ok := m.Get("device-1")
 	require.True(t, ok)
