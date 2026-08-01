@@ -10,6 +10,70 @@ import (
 	"time"
 )
 
+const countExecutionViews = `-- name: CountExecutionViews :one
+SELECT COUNT(*)
+FROM executions e
+JOIN devices d ON d.id = e.device_id AND d.is_deleted = FALSE
+LEFT JOIN actions a ON a.id = e.action_id AND a.is_deleted = FALSE
+WHERE ($1::text = '' OR e.device_id = $1)
+  AND ($2::text = '' OR e.status = $2)
+  AND ($3::integer = 0 OR e.action_type = $3)
+  AND (
+      $4::text = ''
+      OR strpos(lower(COALESCE(a.name, '')), lower($4)) > 0
+      OR strpos(lower(d.hostname), lower($4)) > 0
+  )
+  AND (
+      NOT $5::boolean
+      OR EXISTS (
+          SELECT 1 FROM device_group_members dgm
+          WHERE dgm.device_id = e.device_id
+            AND dgm.group_id = ANY($6::text[])
+      )
+  )
+  AND (
+      $7::text IS NULL
+      OR EXISTS (
+          SELECT 1 FROM device_assigned_users dau
+          WHERE dau.device_id = e.device_id
+            AND dau.user_id = $7
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM device_assigned_groups dag
+          JOIN user_group_members ugm ON ugm.group_id = dag.group_id
+          JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+          WHERE dag.device_id = e.device_id
+            AND ugm.user_id = $7
+      )
+  )
+`
+
+type CountExecutionViewsParams struct {
+	DeviceID        string   `json:"device_id"`
+	Status          string   `json:"status"`
+	ActionType      int32    `json:"action_type"`
+	Search          string   `json:"search"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+	AssignedUserID  *string  `json:"assigned_user_id"`
+}
+
+func (q *Queries) CountExecutionViews(ctx context.Context, arg CountExecutionViewsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countExecutionViews,
+		arg.DeviceID,
+		arg.Status,
+		arg.ActionType,
+		arg.Search,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+		arg.AssignedUserID,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getDeviceLogResult = `-- name: GetDeviceLogResult :one
 SELECT query_id, device_id, completed, success, error, logs, created_at
 FROM log_query_results
@@ -37,6 +101,71 @@ func (q *Queries) GetDeviceLogResult(ctx context.Context, queryID string) (GetDe
 		&i.Error,
 		&i.Logs,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getExecutionView = `-- name: GetExecutionView :one
+SELECT e.id, e.device_id, e.action_id, e.action_type, e.desired_state, e.params, e.timeout_seconds, e.status, e.error, e.output, e.detection_output, e.changed, e.compliant, e.created_at, e.scheduled_for, e.dispatched_at, e.started_at, e.completed_at, e.duration_ms, e.created_by_type, e.created_by_id, e.search_tsv, COALESCE(a.name, '')::text AS action_name
+FROM executions e
+JOIN devices d ON d.id = e.device_id AND d.is_deleted = FALSE
+LEFT JOIN actions a ON a.id = e.action_id AND a.is_deleted = FALSE
+WHERE e.id = $1
+`
+
+type GetExecutionViewRow struct {
+	ID              string      `json:"id"`
+	DeviceID        string      `json:"device_id"`
+	ActionID        *string     `json:"action_id"`
+	ActionType      int32       `json:"action_type"`
+	DesiredState    int32       `json:"desired_state"`
+	Params          []byte      `json:"params"`
+	TimeoutSeconds  int32       `json:"timeout_seconds"`
+	Status          string      `json:"status"`
+	Error           *string     `json:"error"`
+	Output          []byte      `json:"output"`
+	DetectionOutput []byte      `json:"detection_output"`
+	Changed         bool        `json:"changed"`
+	Compliant       bool        `json:"compliant"`
+	CreatedAt       *time.Time  `json:"created_at"`
+	ScheduledFor    *time.Time  `json:"scheduled_for"`
+	DispatchedAt    *time.Time  `json:"dispatched_at"`
+	StartedAt       *time.Time  `json:"started_at"`
+	CompletedAt     *time.Time  `json:"completed_at"`
+	DurationMs      *int64      `json:"duration_ms"`
+	CreatedByType   string      `json:"created_by_type"`
+	CreatedByID     string      `json:"created_by_id"`
+	SearchTsv       interface{} `json:"search_tsv"`
+	ActionName      string      `json:"action_name"`
+}
+
+func (q *Queries) GetExecutionView(ctx context.Context, id string) (GetExecutionViewRow, error) {
+	row := q.db.QueryRow(ctx, getExecutionView, id)
+	var i GetExecutionViewRow
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.ActionID,
+		&i.ActionType,
+		&i.DesiredState,
+		&i.Params,
+		&i.TimeoutSeconds,
+		&i.Status,
+		&i.Error,
+		&i.Output,
+		&i.DetectionOutput,
+		&i.Changed,
+		&i.Compliant,
+		&i.CreatedAt,
+		&i.ScheduledFor,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.DurationMs,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.SearchTsv,
+		&i.ActionName,
 	)
 	return i, err
 }
@@ -162,6 +291,140 @@ func (q *Queries) ListDeviceComplianceResults(ctx context.Context, deviceID stri
 			&i.Compliant,
 			&i.DetectionOutput,
 			&i.CheckedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExecutionViews = `-- name: ListExecutionViews :many
+SELECT e.id, e.device_id, e.action_id, e.action_type, e.desired_state, e.params, e.timeout_seconds, e.status, e.error, e.output, e.detection_output, e.changed, e.compliant, e.created_at, e.scheduled_for, e.dispatched_at, e.started_at, e.completed_at, e.duration_ms, e.created_by_type, e.created_by_id, e.search_tsv, COALESCE(a.name, '')::text AS action_name
+FROM executions e
+JOIN devices d ON d.id = e.device_id AND d.is_deleted = FALSE
+LEFT JOIN actions a ON a.id = e.action_id AND a.is_deleted = FALSE
+WHERE ($1::text = '' OR e.id < $1)
+  AND ($2::text = '' OR e.device_id = $2)
+  AND ($3::text = '' OR e.status = $3)
+  AND ($4::integer = 0 OR e.action_type = $4)
+  AND (
+      $5::text = ''
+      OR strpos(lower(COALESCE(a.name, '')), lower($5)) > 0
+      OR strpos(lower(d.hostname), lower($5)) > 0
+  )
+  AND (
+      NOT $6::boolean
+      OR EXISTS (
+          SELECT 1 FROM device_group_members dgm
+          WHERE dgm.device_id = e.device_id
+            AND dgm.group_id = ANY($7::text[])
+      )
+  )
+  AND (
+      $8::text IS NULL
+      OR EXISTS (
+          SELECT 1 FROM device_assigned_users dau
+          WHERE dau.device_id = e.device_id
+            AND dau.user_id = $8
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM device_assigned_groups dag
+          JOIN user_group_members ugm ON ugm.group_id = dag.group_id
+          JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+          WHERE dag.device_id = e.device_id
+            AND ugm.user_id = $8
+      )
+  )
+ORDER BY e.id DESC
+LIMIT $9
+`
+
+type ListExecutionViewsParams struct {
+	AfterID         string   `json:"after_id"`
+	DeviceID        string   `json:"device_id"`
+	Status          string   `json:"status"`
+	ActionType      int32    `json:"action_type"`
+	Search          string   `json:"search"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+	AssignedUserID  *string  `json:"assigned_user_id"`
+	RowLimit        int32    `json:"row_limit"`
+}
+
+type ListExecutionViewsRow struct {
+	ID              string      `json:"id"`
+	DeviceID        string      `json:"device_id"`
+	ActionID        *string     `json:"action_id"`
+	ActionType      int32       `json:"action_type"`
+	DesiredState    int32       `json:"desired_state"`
+	Params          []byte      `json:"params"`
+	TimeoutSeconds  int32       `json:"timeout_seconds"`
+	Status          string      `json:"status"`
+	Error           *string     `json:"error"`
+	Output          []byte      `json:"output"`
+	DetectionOutput []byte      `json:"detection_output"`
+	Changed         bool        `json:"changed"`
+	Compliant       bool        `json:"compliant"`
+	CreatedAt       *time.Time  `json:"created_at"`
+	ScheduledFor    *time.Time  `json:"scheduled_for"`
+	DispatchedAt    *time.Time  `json:"dispatched_at"`
+	StartedAt       *time.Time  `json:"started_at"`
+	CompletedAt     *time.Time  `json:"completed_at"`
+	DurationMs      *int64      `json:"duration_ms"`
+	CreatedByType   string      `json:"created_by_type"`
+	CreatedByID     string      `json:"created_by_id"`
+	SearchTsv       interface{} `json:"search_tsv"`
+	ActionName      string      `json:"action_name"`
+}
+
+func (q *Queries) ListExecutionViews(ctx context.Context, arg ListExecutionViewsParams) ([]ListExecutionViewsRow, error) {
+	rows, err := q.db.Query(ctx, listExecutionViews,
+		arg.AfterID,
+		arg.DeviceID,
+		arg.Status,
+		arg.ActionType,
+		arg.Search,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+		arg.AssignedUserID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExecutionViewsRow{}
+	for rows.Next() {
+		var i ListExecutionViewsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeviceID,
+			&i.ActionID,
+			&i.ActionType,
+			&i.DesiredState,
+			&i.Params,
+			&i.TimeoutSeconds,
+			&i.Status,
+			&i.Error,
+			&i.Output,
+			&i.DetectionOutput,
+			&i.Changed,
+			&i.Compliant,
+			&i.CreatedAt,
+			&i.ScheduledFor,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.DurationMs,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.SearchTsv,
+			&i.ActionName,
 		); err != nil {
 			return nil, err
 		}

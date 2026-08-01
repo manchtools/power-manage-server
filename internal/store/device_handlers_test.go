@@ -158,6 +158,9 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.GetDeviceCompliancePolicyStatus(context.Background(),
 		connect.NewRequest(&pmv1.GetDeviceCompliancePolicyStatusRequest{DeviceId: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.GetExecution(context.Background(),
+		connect.NewRequest(&pmv1.GetExecutionRequest{Id: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	_, err = f.handlers.GetDevice(context.Background(), connect.NewRequest(&pmv1.GetDeviceRequest{Id: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -175,6 +178,12 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	_, err = f.handlers.GetDeviceCompliancePolicyStatus(context.Background(),
 		connect.NewRequest(&pmv1.GetDeviceCompliancePolicyStatusRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.GetExecution(context.Background(),
+		connect.NewRequest(&pmv1.GetExecutionRequest{Id: newID()}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.ListExecutions(context.Background(),
+		connect.NewRequest(&pmv1.ListExecutionsRequest{}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
@@ -499,6 +508,102 @@ func TestDeviceHandlers_GetDeviceComplianceReadsDirectState(t *testing.T) {
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "invalid output must not be silently dropped")
 }
 
+func TestDeviceHandlers_ExecutionReadsUseDirectKeysetAndScope(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	actionID := newID()
+	groupExecutionID, directExecutionID, outsideExecutionID := newID(), newID(), newID()
+	_, err := f.raw.Exec(context.Background(), `
+		INSERT INTO actions (id, name, action_type, params, created_by)
+		VALUES ($1, 'catalog execution', 200, '{}', $2)`, actionID, f.actorID)
+	require.NoError(t, err)
+	for _, row := range []struct {
+		id, deviceID, status string
+		actionID             *string
+		actionType           int32
+		output               string
+	}{
+		{groupExecutionID, f.groupID, "success", &actionID, 200, `{"exitCode":0,"stdout":"done"}`},
+		{directExecutionID, f.directID, "pending", nil, 500, ``},
+		{outsideExecutionID, f.outsideID, "failed", &actionID, 200, `{"exitCode":1,"stderr":"hidden"}`},
+	} {
+		_, err := f.raw.Exec(context.Background(), `
+			INSERT INTO executions
+				(id, device_id, action_id, action_type, desired_state, status, output,
+				 created_at, created_by_type, created_by_id)
+			VALUES ($1, $2, $3, $4, 0, $5, $6, $7, 'user', $8)`,
+			row.id, row.deviceID, row.actionID, row.actionType, row.status,
+			nullJSON(row.output), f.now, f.actorID)
+		require.NoError(t, err)
+	}
+	scoped := auth.WithUser(context.Background(), &auth.UserContext{
+		ID: f.actorID, Kind: auth.PrincipalUser,
+		Permissions: []string{"GetExecution", "ListExecutions"},
+		ScopedGrants: []auth.ScopedGrant{
+			{Permission: "GetExecution", ScopeKind: auth.ScopeKindDeviceGroup, ScopeID: f.scopeGroup},
+			{Permission: "ListExecutions", ScopeKind: auth.ScopeKindDeviceGroup, ScopeID: f.scopeGroup},
+		},
+	})
+
+	got, err := f.handlers.GetExecution(scoped,
+		connect.NewRequest(&pmv1.GetExecutionRequest{Id: groupExecutionID}))
+	require.NoError(t, err)
+	assert.Equal(t, "catalog execution", got.Msg.Execution.ActionName)
+	assert.Equal(t, "done", got.Msg.Execution.Output.Stdout)
+	_, err = f.handlers.GetExecution(scoped,
+		connect.NewRequest(&pmv1.GetExecutionRequest{Id: outsideExecutionID}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "scope must not disclose the execution")
+
+	listed, err := f.handlers.ListExecutions(scoped,
+		connect.NewRequest(&pmv1.ListExecutionsRequest{}))
+	require.NoError(t, err)
+	require.Len(t, listed.Msg.Executions, 1)
+	assert.Equal(t, groupExecutionID, listed.Msg.Executions[0].Id)
+	assert.Equal(t, int32(1), listed.Msg.TotalCount)
+
+	assigned := f.actor("GetExecution:assigned", "ListExecutions:assigned")
+	first, err := f.handlers.ListExecutions(assigned,
+		connect.NewRequest(&pmv1.ListExecutionsRequest{PageSize: 1}))
+	require.NoError(t, err)
+	require.Len(t, first.Msg.Executions, 1)
+	assert.NotEmpty(t, first.Msg.NextPageToken)
+	second, err := f.handlers.ListExecutions(assigned,
+		connect.NewRequest(&pmv1.ListExecutionsRequest{PageSize: 1, PageToken: first.Msg.NextPageToken}))
+	require.NoError(t, err)
+	require.Len(t, second.Msg.Executions, 1)
+	assert.Empty(t, second.Msg.NextPageToken)
+	assert.NotEqual(t, first.Msg.Executions[0].Id, second.Msg.Executions[0].Id)
+	assert.Equal(t, int32(2), second.Msg.TotalCount)
+
+	searched, err := f.handlers.ListExecutions(assigned,
+		connect.NewRequest(&pmv1.ListExecutionsRequest{
+			Search: "catalog", TypeFilter: pmv1.ActionType_ACTION_TYPE_SHELL,
+			StatusFilter: pmv1.ExecutionStatus_EXECUTION_STATUS_SUCCESS,
+		}))
+	require.NoError(t, err)
+	require.Len(t, searched.Msg.Executions, 1)
+	assert.Equal(t, groupExecutionID, searched.Msg.Executions[0].Id)
+	_, err = f.handlers.ListExecutions(assigned,
+		connect.NewRequest(&pmv1.ListExecutionsRequest{StatusFilter: pmv1.ExecutionStatus(99)}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	assertSensitiveDeviceRead(t, f, powermanagev1connect.ControlServiceGetExecutionProcedure,
+		"execution", groupExecutionID)
+	operation, err := latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceListExecutionsProcedure)
+	require.NoError(t, err)
+	assert.Equal(t, string(store.ClassSensitiveRead), operation.OperationClass)
+	effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	assert.Empty(t, effects, "a collection read has no fabricated resource effect")
+}
+
+func nullJSON(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 func TestDeviceHandlers_SensitiveReadFailsClosedWhenEvidenceFails(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	_, err := f.raw.Exec(context.Background(), `
@@ -618,6 +723,8 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetDeviceLogResultProcedure,
 		powermanagev1connect.ControlServiceGetDeviceComplianceProcedure,
 		powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
+		powermanagev1connect.ControlServiceGetExecutionProcedure,
+		powermanagev1connect.ControlServiceListExecutionsProcedure,
 		powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceAssignDeviceProcedure,
@@ -634,6 +741,8 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetDeviceLogResultProcedure,
 		powermanagev1connect.ControlServiceGetDeviceComplianceProcedure,
 		powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
+		powermanagev1connect.ControlServiceGetExecutionProcedure,
+		powermanagev1connect.ControlServiceListExecutionsProcedure,
 	}, device.SensitiveReadProcedures())
 	classified := append(device.MutationProcedures(), device.ReadProcedures()...)
 	classified = append(classified, device.SensitiveReadProcedures()...)

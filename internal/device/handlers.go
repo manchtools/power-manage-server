@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -190,6 +191,12 @@ func (h *Handlers) recordSensitiveRead(
 ) error {
 	op := h.operation(req, actor, procedure, permission)
 	op.Class = store.ClassSensitiveRead
+	if resourceID == "" {
+		if _, err := h.store.RecordOperation(ctx, op); err != nil {
+			return h.internal(ctx, "record sensitive read", err)
+		}
+		return nil
+	}
 	if _, err := h.store.RecordOperation(ctx, op, store.AuditEffect{
 		ResourceType: resourceType, ResourceID: resourceID,
 		Action: "READ", Outcome: store.EffectApplied,
@@ -569,6 +576,214 @@ func worseComplianceStatus(left, right pmv1.ComplianceStatus) pmv1.ComplianceSta
 		return right
 	}
 	return left
+}
+
+// GetExecution returns one visible execution and its protected output.
+func (h *Handlers) GetExecution(ctx context.Context, req *connect.Request[pmv1.GetExecutionRequest]) (*connect.Response[pmv1.GetExecutionResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, "GetExecution", ""); err != nil {
+		return nil, err
+	}
+	row, err := h.store.GetExecution(ctx, req.Msg.Id)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, errExecutionNotFound, "execution not found")
+		}
+		return nil, h.internal(ctx, "read execution", err)
+	}
+	if _, err := h.readDevice(ctx, "GetExecution", row.DeviceID); err != nil {
+		if connect.CodeOf(err) == connect.CodeNotFound {
+			return nil, notFound(ctx, errExecutionNotFound, "execution not found")
+		}
+		return nil, err
+	}
+	execution, err := executionToProto(row)
+	if err != nil {
+		return nil, h.internal(ctx, "decode execution", err)
+	}
+	if err := h.recordSensitiveRead(ctx, req, actor,
+		powermanagev1connect.ControlServiceGetExecutionProcedure, "GetExecution",
+		"execution", row.ID); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.GetExecutionResponse{Execution: execution}), nil
+}
+
+// ListExecutions returns a newest-first direct keyset page narrowed by the
+// caller's device visibility.
+func (h *Handlers) ListExecutions(ctx context.Context, req *connect.Request[pmv1.ListExecutionsRequest]) (*connect.Response[pmv1.ListExecutionsResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, "ListExecutions", ""); err != nil {
+		return nil, err
+	}
+	if req.Msg.PageToken != "" {
+		if _, err := ulid.ParseStrict(req.Msg.PageToken); err != nil {
+			return nil, rpcError(ctx, errInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
+		}
+	}
+	status, ok := executionStatusToString(req.Msg.StatusFilter)
+	if !ok {
+		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid execution status")
+	}
+	if req.Msg.TypeFilter != pmv1.ActionType_ACTION_TYPE_UNSPECIFIED {
+		if _, ok := pmv1.ActionType_name[int32(req.Msg.TypeFilter)]; !ok {
+			return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid action type")
+		}
+	}
+	limit := req.Msg.PageSize
+	if limit == 0 {
+		limit = defaultPageSize
+	}
+	filter := store.ExecutionListFilter{
+		AfterID: req.Msg.PageToken, Limit: limit + 1,
+		DeviceID: req.Msg.DeviceId, Status: status,
+		ActionType: int32(req.Msg.TypeFilter), Search: strings.TrimSpace(req.Msg.Search),
+	}
+	filter.ScopeGroupIDs, filter.ScopeRestricted = auth.DeviceScopeListFilter(ctx, "ListExecutions")
+	if !auth.HasPermission(ctx, "ListExecutions") {
+		filter.AssignedUserID = &actor.ID
+	}
+	rows, err := h.store.ListExecutions(ctx, filter)
+	if err != nil {
+		return nil, h.internal(ctx, "list executions", err)
+	}
+	hasMore := len(rows) > int(limit)
+	if hasMore {
+		rows = rows[:limit]
+	}
+	countFilter := filter
+	countFilter.AfterID = ""
+	countFilter.Limit = 0
+	total, err := h.store.CountExecutions(ctx, countFilter)
+	if err != nil {
+		return nil, h.internal(ctx, "count executions", err)
+	}
+	executions := make([]*pmv1.ActionExecution, len(rows))
+	for i, row := range rows {
+		executions[i], err = executionToProto(row)
+		if err != nil {
+			return nil, h.internal(ctx, "decode listed execution", err)
+		}
+	}
+	next := ""
+	if hasMore {
+		next = rows[len(rows)-1].ID
+	}
+	if err := h.recordSensitiveRead(ctx, req, actor,
+		powermanagev1connect.ControlServiceListExecutionsProcedure, "ListExecutions",
+		"execution", ""); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.ListExecutionsResponse{
+		Executions: executions, NextPageToken: next, TotalCount: boundedInt32(total),
+	}), nil
+}
+
+func executionToProto(row store.ExecutionView) (*pmv1.ActionExecution, error) {
+	if _, ok := pmv1.ActionType_name[row.ActionType]; !ok || row.ActionType == 0 {
+		return nil, fmt.Errorf("invalid action type %d", row.ActionType)
+	}
+	if _, ok := pmv1.DesiredState_name[row.DesiredState]; !ok {
+		return nil, fmt.Errorf("invalid desired state %d", row.DesiredState)
+	}
+	status, ok := executionStatusFromString(row.Status)
+	if !ok {
+		return nil, fmt.Errorf("invalid execution status %q", row.Status)
+	}
+	output, err := decodeCommandOutput(row.Output)
+	if err != nil {
+		return nil, fmt.Errorf("decode output: %w", err)
+	}
+	detectionOutput, err := decodeCommandOutput(row.DetectionOutput)
+	if err != nil {
+		return nil, fmt.Errorf("decode detection output: %w", err)
+	}
+	execution := &pmv1.ActionExecution{
+		Id: row.ID, DeviceId: row.DeviceID, Type: pmv1.ActionType(row.ActionType),
+		Status: status, DesiredState: pmv1.DesiredState(row.DesiredState),
+		Output: output, DetectionOutput: detectionOutput,
+		Changed: row.Changed, Compliant: row.Compliant,
+		CreatedBy: row.CreatedByID, ActionName: row.ActionName,
+	}
+	if row.ActionID != nil {
+		execution.ActionId = *row.ActionID
+	}
+	if row.Error != nil {
+		execution.Error = *row.Error
+	}
+	if row.DurationMs != nil {
+		execution.DurationMs = *row.DurationMs
+	}
+	if row.CreatedAt != nil {
+		execution.CreatedAt = timestamppb.New(*row.CreatedAt)
+	}
+	if row.ScheduledFor != nil {
+		execution.ScheduledFor = timestamppb.New(*row.ScheduledFor)
+	}
+	if row.DispatchedAt != nil {
+		execution.DispatchedAt = timestamppb.New(*row.DispatchedAt)
+	}
+	if row.CompletedAt != nil {
+		execution.CompletedAt = timestamppb.New(*row.CompletedAt)
+	}
+	return execution, nil
+}
+
+func executionStatusToString(status pmv1.ExecutionStatus) (string, bool) {
+	switch status {
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED:
+		return "", true
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_PENDING:
+		return "pending", true
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_RUNNING:
+		return "running", true
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_SUCCESS:
+		return "success", true
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_FAILED:
+		return "failed", true
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_SKIPPED:
+		return "skipped", true
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_TIMEOUT:
+		return "timeout", true
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_SCHEDULED:
+		return "scheduled", true
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_CANCELLED:
+		return "cancelled", true
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_NOT_APPLICABLE:
+		return "not_applicable", true
+	case pmv1.ExecutionStatus_EXECUTION_STATUS_INDETERMINATE:
+		return "indeterminate", true
+	default:
+		return "", false
+	}
+}
+
+func executionStatusFromString(status string) (pmv1.ExecutionStatus, bool) {
+	for value := pmv1.ExecutionStatus_EXECUTION_STATUS_PENDING; value <= pmv1.ExecutionStatus_EXECUTION_STATUS_INDETERMINATE; value++ {
+		if name, _ := executionStatusToString(value); name == status {
+			return value, true
+		}
+	}
+	return pmv1.ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED, false
+}
+
+func boundedInt32(value int64) int32 {
+	if value > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(value)
 }
 
 // ListDeviceAssignees returns the live users and groups assigned to a device.

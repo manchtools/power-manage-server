@@ -332,6 +332,43 @@ type DeviceComplianceResult = generated.ListDeviceComplianceResultsRow
 // device.
 type DeviceComplianceEvaluation = generated.ListDeviceComplianceEvaluationsRow
 
+// ExecutionView is one current execution with its live action name when the
+// catalogue action still exists.
+type ExecutionView struct {
+	ID              string
+	DeviceID        string
+	ActionID        *string
+	ActionType      int32
+	DesiredState    int32
+	Status          string
+	Error           *string
+	Output          []byte
+	DetectionOutput []byte
+	Changed         bool
+	Compliant       bool
+	CreatedAt       *time.Time
+	ScheduledFor    *time.Time
+	DispatchedAt    *time.Time
+	CompletedAt     *time.Time
+	DurationMs      *int64
+	CreatedByID     string
+	ActionName      string
+}
+
+// ExecutionListFilter contains the keyset, exact filters, search text, and
+// device visibility shared by the execution list and count reads.
+type ExecutionListFilter struct {
+	AfterID         string
+	Limit           int32
+	DeviceID        string
+	Status          string
+	ActionType      int32
+	Search          string
+	ScopeRestricted bool
+	ScopeGroupIDs   []string
+	AssignedUserID  *string
+}
+
 // DefaultInventoryIntervalMinutes is the server cadence used when neither a
 // device nor any live device group supplies an inventory interval.
 const DefaultInventoryIntervalMinutes int32 = 1440
@@ -1199,6 +1236,66 @@ func (s *Store) ListDeviceComplianceEvaluations(ctx context.Context, deviceID st
 		return nil, fmt.Errorf("compliance: list device evaluations: %w", err)
 	}
 	return rows, nil
+}
+
+// GetExecution returns one current execution by identifier.
+func (s *Store) GetExecution(ctx context.Context, id string) (ExecutionView, error) {
+	row, err := s.queries.GetExecutionView(ctx, id)
+	if err != nil {
+		return ExecutionView{}, fmt.Errorf("execution: get: %w", translateNotFound(err))
+	}
+	return executionView(row), nil
+}
+
+// ListExecutions returns a newest-first keyset page.
+func (s *Store) ListExecutions(ctx context.Context, filter ExecutionListFilter) ([]ExecutionView, error) {
+	if filter.Limit < 0 || filter.Limit > 101 {
+		return nil, fmt.Errorf("execution: list limit must be between 0 and 101")
+	}
+	if filter.Limit == 0 {
+		filter.Limit = 50
+	}
+	rows, err := s.queries.ListExecutionViews(ctx, generated.ListExecutionViewsParams{
+		AfterID: filter.AfterID, DeviceID: filter.DeviceID,
+		Status: filter.Status, ActionType: filter.ActionType, Search: filter.Search,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		AssignedUserID: filter.AssignedUserID, RowLimit: filter.Limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("execution: list: %w", err)
+	}
+	views := make([]ExecutionView, len(rows))
+	for i, row := range rows {
+		views[i] = executionView(generated.GetExecutionViewRow(row))
+	}
+	return views, nil
+}
+
+// CountExecutions counts the same filtered population as ListExecutions.
+func (s *Store) CountExecutions(ctx context.Context, filter ExecutionListFilter) (int64, error) {
+	n, err := s.queries.CountExecutionViews(ctx, generated.CountExecutionViewsParams{
+		DeviceID: filter.DeviceID, Status: filter.Status,
+		ActionType: filter.ActionType, Search: filter.Search,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		AssignedUserID: filter.AssignedUserID,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("execution: count: %w", err)
+	}
+	return n, nil
+}
+
+func executionView(row generated.GetExecutionViewRow) ExecutionView {
+	return ExecutionView{
+		ID: row.ID, DeviceID: row.DeviceID, ActionID: row.ActionID,
+		ActionType: row.ActionType, DesiredState: row.DesiredState,
+		Status: row.Status, Error: row.Error, Output: row.Output,
+		DetectionOutput: row.DetectionOutput, Changed: row.Changed,
+		Compliant: row.Compliant, CreatedAt: row.CreatedAt,
+		ScheduledFor: row.ScheduledFor, DispatchedAt: row.DispatchedAt,
+		CompletedAt: row.CompletedAt, DurationMs: row.DurationMs,
+		CreatedByID: row.CreatedByID, ActionName: row.ActionName,
+	}
 }
 
 // GetUser returns one live user. ErrNotFound when unknown or deleted.
