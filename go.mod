@@ -12,6 +12,7 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/manchtools/power-manage-sdk v0.5.4-0.20260731143004-320bc1f8b94e
 	github.com/oklog/ulid/v2 v2.1.0
+	github.com/pires/go-proxyproto v0.15.0
 	github.com/pressly/goose/v3 v3.26.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.40.0

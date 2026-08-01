@@ -116,7 +116,7 @@ func run(cfg *Config, logger *slog.Logger) error {
 	}()
 	go func() {
 		logger.Info("agent mTLS listener ready", "address", cfg.AgentListen)
-		if err := agentServer.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := serveAgent(agentServer, cfg.AgentProxySources); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errorsCh <- fmt.Errorf("agent listener: %w", err)
 		}
 	}()

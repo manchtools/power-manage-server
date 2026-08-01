@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -35,6 +36,7 @@ type configDocument struct {
 	CORSOrigins           []string `json:"cors_origins"`
 	TerminalOrigins       []string `json:"terminal_origins"`
 	TrustedProxies        []string `json:"trusted_proxies"`
+	AgentProxySources     []string `json:"agent_proxy_sources"`
 	CORSAllowAll          bool     `json:"cors_allow_all"`
 	LogLevel              string   `json:"log_level"`
 	LogFormat             string   `json:"log_format"`
@@ -61,6 +63,7 @@ type Config struct {
 	CORSOrigins         []string
 	TerminalOrigins     []string
 	TrustedProxies      []string
+	AgentProxySources   []string
 	CORSAllowAll        bool
 	LogLevel            string
 	LogFormat           string
@@ -132,7 +135,8 @@ func loadConfig(args []string) (*Config, error) {
 		CORSOrigins:     append([]string(nil), document.CORSOrigins...),
 		TerminalOrigins: append([]string(nil), document.TerminalOrigins...),
 		TrustedProxies:  append([]string(nil), document.TrustedProxies...), CORSAllowAll: document.CORSAllowAll,
-		LogLevel: document.LogLevel, LogFormat: document.LogFormat,
+		AgentProxySources: append([]string(nil), document.AgentProxySources...),
+		LogLevel:          document.LogLevel, LogFormat: document.LogFormat,
 		CertificateValidity: certificateValidity, HeartbeatInterval: heartbeatInterval,
 		CACertFile:        document.CACertFile,
 		CAKeyFile:         pathOverride("POWER_MANAGE_CA_KEY_FILE", document.CAKeyFile),
@@ -201,6 +205,17 @@ func applyDefaults(document *configDocument) {
 func validateConfig(cfg *Config) error {
 	if cfg.PublicListen == "" || cfg.AgentListen == "" || cfg.PublicListen == cfg.AgentListen {
 		return errors.New("public_listen and agent_listen must be distinct")
+	}
+	if len(cfg.AgentProxySources) == 0 {
+		return errors.New("agent_proxy_sources must name the isolated reverse proxy network")
+	}
+	for _, source := range cfg.AgentProxySources {
+		if net.ParseIP(source) != nil {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(source); err != nil {
+			return fmt.Errorf("agent_proxy_sources contains invalid address %q", source)
+		}
 	}
 	if err := validateHTTPSURL("public_base_url", cfg.PublicBaseURL); err != nil {
 		return err

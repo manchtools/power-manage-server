@@ -45,6 +45,7 @@ func TestLoadConfigUsesOneFileAndSecretFiles(t *testing.T) {
   "agent_url": "https://agents.example",
   "terminal_url": "wss://manage.example/terminal",
   "cors_origins": ["https://manage.example"],
+  "agent_proxy_sources": ["172.30.0.2"],
   "ca_cert_file": "/certs/ca.crt",
   "ca_key_file": "/certs/ca.key",
   "agent_tls_cert_file": "/certs/control.crt",
@@ -60,6 +61,7 @@ func TestLoadConfigUsesOneFileAndSecretFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ":8081", cfg.PublicListen)
 	assert.Equal(t, ":8082", cfg.AgentListen)
+	assert.Equal(t, []string{"172.30.0.2"}, cfg.AgentProxySources)
 	assert.Equal(t, "manage.example", cfg.TerminalOrigins[0])
 	assert.Equal(t, sessionPrivate, cfg.SessionSigningKey)
 	assert.Equal(t, bytes.Repeat([]byte{1}, 32), cfg.SealingKey.Bytes())

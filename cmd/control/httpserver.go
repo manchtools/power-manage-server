@@ -3,9 +3,11 @@ package main
 import (
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
+	proxyproto "github.com/pires/go-proxyproto"
 	"golang.org/x/net/http2"
 
 	"github.com/manchtools/power-manage/server/internal/ca"
@@ -47,4 +49,40 @@ func buildAgentServer(cfg *Config, certificateAuthority *ca.CA, handler http.Han
 		return nil, fmt.Errorf("configure agent HTTP/2: %w", err)
 	}
 	return server, nil
+}
+
+// serveAgent accepts only PROXY-v2-prefixed connections from the configured
+// isolated Traefik network, then performs device mTLS on the remaining stream.
+// The PROXY header is outside TLS, so the proxy listener wraps the raw socket
+// and the TLS listener wraps it in turn.
+func serveAgent(server *http.Server, sources []string) error {
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return err
+	}
+	proxyListener, err := agentProxyListener(listener, sources)
+	if err != nil {
+		_ = listener.Close()
+		return err
+	}
+	return server.Serve(tls.NewListener(proxyListener, server.TLSConfig))
+}
+
+func agentProxyListener(listener net.Listener, sources []string) (net.Listener, error) {
+	if listener == nil {
+		return nil, fmt.Errorf("agent listener is required")
+	}
+	policy, err := proxyproto.TrustProxyHeaderFromRanges(sources)
+	if err != nil {
+		return nil, fmt.Errorf("agent proxy sources: %w", err)
+	}
+	return &proxyproto.Listener{
+		Listener: listener, ConnPolicy: policy, ReadHeaderTimeout: 5 * time.Second,
+		ValidateHeader: func(header *proxyproto.Header) error {
+			if header.Version != 2 {
+				return fmt.Errorf("agent listener requires PROXY protocol v2")
+			}
+			return nil
+		},
+	}, nil
 }
