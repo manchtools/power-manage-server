@@ -37,7 +37,14 @@ type Config struct {
 	Logger      *slog.Logger
 	Now         func() time.Time
 	CloseStream func(deviceID string)
+	AgentSender AgentSender
 	Decryptor   *crypto.Encryptor
+}
+
+// AgentSender is the only outbound transport capability an instant device
+// operation needs. The connection manager satisfies it directly.
+type AgentSender interface {
+	Send(deviceID string, message *pmv1.ServerMessage) error
 }
 
 // Handlers implements the device CRUD procedures.
@@ -46,6 +53,7 @@ type Handlers struct {
 	logger      *slog.Logger
 	now         func() time.Time
 	closeStream func(string)
+	agentSender AgentSender
 	decryptor   *crypto.Encryptor
 	validator   *validator.Validate
 }
@@ -65,12 +73,15 @@ func New(cfg Config) *Handlers {
 	if cfg.CloseStream == nil {
 		panic("device: stream closer is required")
 	}
+	if cfg.AgentSender == nil {
+		panic("device: agent sender is required")
+	}
 	if cfg.Decryptor == nil {
 		panic("device: secret decryptor is required")
 	}
 	return &Handlers{
 		store: cfg.Store, logger: cfg.Logger, now: cfg.Now,
-		closeStream: cfg.CloseStream, decryptor: cfg.Decryptor,
+		closeStream: cfg.CloseStream, agentSender: cfg.AgentSender, decryptor: cfg.Decryptor,
 		validator: sdkvalidate.NewValidator(),
 	}
 }

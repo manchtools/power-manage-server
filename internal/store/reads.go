@@ -385,6 +385,10 @@ type LuksKeyView struct {
 	RevocationAt                                       *time.Time
 }
 
+// LuksRevocationTarget summarizes the current keys governed by one encryption
+// action without exposing their encrypted passphrases.
+type LuksRevocationTarget = generated.GetLuksRevocationTargetRow
+
 // DefaultInventoryIntervalMinutes is the server cadence used when neither a
 // device nor any live device group supplies an inventory interval.
 const DefaultInventoryIntervalMinutes int32 = 1440
@@ -1389,6 +1393,18 @@ func (s *Store) ListDeviceLuksKeys(ctx context.Context, deviceID string) ([]Luks
 		}
 	}
 	return current, history, nil
+}
+
+// GetLuksRevocationTarget returns the current-key count and terminal state used
+// to reject missing, duplicate, or already-completed revocation requests.
+func (s *Store) GetLuksRevocationTarget(ctx context.Context, deviceID, actionID string) (LuksRevocationTarget, error) {
+	row, err := s.queries.GetLuksRevocationTarget(ctx, generated.GetLuksRevocationTargetParams{
+		DeviceID: deviceID, ActionID: actionID,
+	})
+	if err != nil {
+		return LuksRevocationTarget{}, fmt.Errorf("luks revocation target: %w", err)
+	}
+	return row, nil
 }
 
 // GetUser returns one live user. ErrNotFound when unknown or deleted.

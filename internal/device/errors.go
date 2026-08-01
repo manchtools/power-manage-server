@@ -21,6 +21,10 @@ const (
 	errQueryResultMissing = "query_result_not_found"
 	errExecutionNotFound  = "execution_not_found"
 	errActionNotFound     = "action_not_found"
+	errLuksKeyNotFound    = "luks_key_not_found"
+	errRevocationPending  = "luks_key_revocation_pending"
+	errAlreadyRevoked     = "luks_key_already_revoked"
+	errDeviceUnavailable  = "device_unavailable"
 	errUserNotFound       = "user_not_found"
 	errUserGroupMissing   = "user_group_not_found"
 )

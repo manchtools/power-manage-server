@@ -13,7 +13,7 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	if mux == nil {
 		panic("device: mux is required")
 	}
-	mounted := make([]string, 0, 21)
+	mounted := make([]string, 0, 22)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -44,6 +44,8 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure, h.GetDeviceLuksKeys, opts...))
 	register(powermanagev1connect.ControlServiceCreateLuksTokenProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceCreateLuksTokenProcedure, h.CreateLuksToken, opts...))
+	register(powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure, h.RevokeLuksDeviceKey, opts...))
 	register(powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetDeviceLabelProcedure, h.SetDeviceLabel, opts...))
 	register(powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
@@ -75,6 +77,7 @@ func MutationProcedures() []string {
 		powermanagev1connect.ControlServiceDeleteDeviceProcedure,
 		powermanagev1connect.ControlServiceCancelExecutionProcedure,
 		powermanagev1connect.ControlServiceCreateLuksTokenProcedure,
+		powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure,
 	}
 }
 

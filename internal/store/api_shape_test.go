@@ -130,6 +130,7 @@ var nonMutatingExports = map[string]string{
 	"CountExecutions":                  "read",
 	"ListDeviceLpsPasswords":           "read",
 	"ListDeviceLuksKeys":               "read",
+	"GetLuksRevocationTarget":          "read",
 	"IsDeviceDirectlyAssignedToUser":   "read",
 	"GetUser":                          "read",
 	"CountUsers":                       "read",

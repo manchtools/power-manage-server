@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -43,6 +45,17 @@ type deviceHandlerFixture struct {
 	scopeGroup string
 	closed     []string
 	encryptor  *pmcrypto.Encryptor
+	sender     *fakeAgentSender
+}
+
+type fakeAgentSender struct {
+	messages []*pmv1.ServerMessage
+	err      error
+}
+
+func (s *fakeAgentSender) Send(_ string, message *pmv1.ServerMessage) error {
+	s.messages = append(s.messages, message)
+	return s.err
 }
 
 func newDeviceHandlerFixture(t *testing.T) *deviceHandlerFixture {
@@ -55,7 +68,7 @@ func newDeviceHandlerFixture(t *testing.T) *deviceHandlerFixture {
 		t: t, store: st, raw: raw, now: now,
 		actorID: newID(), directID: newID(), groupID: newID(), outsideID: newID(),
 		userID: newID(), userGroup: newID(), scopeGroup: newID(),
-		encryptor: encryptor,
+		encryptor: encryptor, sender: &fakeAgentSender{},
 	}
 	fingerprint := strings.Repeat("a", 64)
 	expires := now.Add(24 * time.Hour)
@@ -130,10 +143,11 @@ func newDeviceHandlerFixture(t *testing.T) *deviceHandlerFixture {
 	require.NoError(t, err)
 
 	f.handlers = device.New(device.Config{
-		Store:     st,
-		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now:       func() time.Time { return now },
-		Decryptor: encryptor,
+		Store:       st,
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:         func() time.Time { return now },
+		Decryptor:   encryptor,
+		AgentSender: f.sender,
 		CloseStream: func(id string) {
 			f.closed = append(f.closed, id)
 		},
@@ -182,6 +196,9 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.CreateLuksToken(context.Background(),
 		connect.NewRequest(&pmv1.CreateLuksTokenRequest{DeviceId: "bad", ActionId: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.RevokeLuksDeviceKey(context.Background(),
+		connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{DeviceId: "bad", ActionId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	_, err = f.handlers.GetDevice(context.Background(), connect.NewRequest(&pmv1.GetDeviceRequest{Id: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -217,6 +234,9 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	_, err = f.handlers.CreateLuksToken(context.Background(),
 		connect.NewRequest(&pmv1.CreateLuksTokenRequest{DeviceId: f.directID, ActionId: newID()}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.RevokeLuksDeviceKey(context.Background(),
+		connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{DeviceId: f.directID, ActionId: newID()}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
@@ -841,6 +861,147 @@ func TestDeviceHandlers_CreateLuksTokenIsOwnerOnlyHashedAndAudited(t *testing.T)
 	assert.Equal(t, 1, tokenCount, "audit failure must roll the token insert back")
 }
 
+func TestDeviceHandlers_RevokeLuksDeviceKeyUsesDirectMTLSStream(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	actionID := newID()
+	ctx := f.actor("RevokeLuksDeviceKey")
+
+	_, err := f.handlers.RevokeLuksDeviceKey(f.actor(), connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{
+		DeviceId: f.directID, ActionId: actionID,
+	}))
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	_, err = f.handlers.RevokeLuksDeviceKey(ctx, connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{
+		DeviceId: f.directID, ActionId: actionID,
+	}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
+	seedCurrentLuksKeys(t, f, actionID, 2)
+	_, err = f.handlers.RevokeLuksDeviceKey(ctx, connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{
+		DeviceId: f.directID, ActionId: actionID,
+	}))
+	require.NoError(t, err)
+	require.Len(t, f.sender.messages, 1)
+	message := f.sender.messages[0]
+	_, err = ulid.ParseStrict(message.Id)
+	require.NoError(t, err)
+	require.NotNil(t, message.GetRevokeLuksDeviceKey())
+	assert.Equal(t, actionID, message.GetRevokeLuksDeviceKey().ActionId)
+
+	var dispatched int
+	err = f.raw.QueryRow(context.Background(), `
+		SELECT count(*) FROM luks_keys
+		WHERE device_id = $1 AND action_id = $2 AND revocation_status = 'dispatched'`,
+		f.directID, actionID).Scan(&dispatched)
+	require.NoError(t, err)
+	assert.Equal(t, 2, dispatched)
+	operation, err := latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure)
+	require.NoError(t, err)
+	effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, effects, 1)
+	assert.Equal(t, "luks_key_action", effects[0].ResourceType)
+	assert.Equal(t, actionID, effects[0].ResourceID)
+	assert.Equal(t, int64(2), *effects[0].AfterCount)
+
+	_, err = f.handlers.RevokeLuksDeviceKey(ctx, connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{
+		DeviceId: f.directID, ActionId: actionID,
+	}))
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Len(t, f.sender.messages, 1, "a pending revocation must not be sent twice")
+
+	require.NoError(t, f.handlers.CompleteLuksKeyRevocation(context.Background(), f.directID,
+		&pmv1.RevokeLuksDeviceKeyResult{ActionId: actionID, Success: true}))
+	var succeeded int
+	err = f.raw.QueryRow(context.Background(), `
+		SELECT count(*) FROM luks_keys
+		WHERE device_id = $1 AND action_id = $2 AND revocation_status = 'success'
+		  AND revocation_error IS NULL`, f.directID, actionID).Scan(&succeeded)
+	require.NoError(t, err)
+	assert.Equal(t, 2, succeeded)
+
+	// A replay is absorbed by the conditional update and preserved as rejected
+	// evidence instead of changing the terminal state again.
+	require.NoError(t, f.handlers.CompleteLuksKeyRevocation(context.Background(), f.directID,
+		&pmv1.RevokeLuksDeviceKeyResult{ActionId: actionID, Success: false, Error: "stale"}))
+	resultOperation, err := latestOperationFor(t, f.store, f.raw,
+		"powermanage.v1.AgentService.Stream/RevokeLuksDeviceKeyResult")
+	require.NoError(t, err)
+	resultEffects, err := f.store.ListAuditEffects(context.Background(), resultOperation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, resultEffects, 1)
+	assert.Equal(t, string(store.EffectRejected), resultEffects[0].Outcome)
+}
+
+func TestDeviceHandlers_RevokeLuksDeviceKeyRecordsUnavailableDevice(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	actionID := newID()
+	seedCurrentLuksKeys(t, f, actionID, 1)
+	f.sender.err = errors.New("agent not connected")
+
+	_, err := f.handlers.RevokeLuksDeviceKey(f.actor("RevokeLuksDeviceKey"),
+		connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{DeviceId: f.directID, ActionId: actionID}))
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+	var status string
+	var detail *string
+	err = f.raw.QueryRow(context.Background(), `
+		SELECT revocation_status, revocation_error FROM luks_keys
+		WHERE device_id = $1 AND action_id = $2 AND is_current = TRUE`,
+		f.directID, actionID).Scan(&status, &detail)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", status)
+	require.NotNil(t, detail)
+	assert.Equal(t, "device unavailable", *detail, "transport internals must not enter durable state")
+	operation, err := latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure)
+	require.NoError(t, err)
+	effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, effects, 2)
+	assert.Equal(t, string(store.EffectApplied), effects[0].Outcome)
+	assert.Equal(t, string(store.EffectFailed), effects[1].Outcome)
+}
+
+func TestDeviceHandlers_RevokeLuksDeviceKeyAuditFailurePreventsSend(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	actionID := newID()
+	seedCurrentLuksKeys(t, f, actionID, 1)
+	_, err := f.raw.Exec(context.Background(), `
+		ALTER TABLE audit_operations ADD CONSTRAINT reject_luks_revoke_audit
+		CHECK (request_descriptor <> '/powermanage.v1.ControlService/RevokeLuksDeviceKey') NOT VALID`)
+	require.NoError(t, err)
+
+	_, err = f.handlers.RevokeLuksDeviceKey(f.actor("RevokeLuksDeviceKey"),
+		connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{DeviceId: f.directID, ActionId: actionID}))
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+	assert.Empty(t, f.sender.messages, "the irreversible command must not leave before its audit commits")
+	var status *string
+	err = f.raw.QueryRow(context.Background(), `
+		SELECT revocation_status FROM luks_keys
+		WHERE device_id = $1 AND action_id = $2 AND is_current = TRUE`,
+		f.directID, actionID).Scan(&status)
+	require.NoError(t, err)
+	assert.Nil(t, status, "the state mutation must roll back with failed audit evidence")
+}
+
+func seedCurrentLuksKeys(t *testing.T, f *deviceHandlerFixture, actionID string, count int) {
+	t.Helper()
+	_, err := f.raw.Exec(context.Background(), `
+		INSERT INTO actions (id, name, action_type, params, created_by)
+		VALUES ($1, 'Encryption', $2, '{}', $3)
+		ON CONFLICT (id) DO NOTHING`,
+		actionID, int32(pmv1.ActionType_ACTION_TYPE_ENCRYPTION), f.actorID)
+	require.NoError(t, err)
+	for i := 0; i < count; i++ {
+		_, err = f.raw.Exec(context.Background(), `
+			INSERT INTO luks_keys
+				(id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current)
+			VALUES ($1, $2, $3, $4, 'enc:v1:test', $5, 'scheduled', TRUE)`,
+			newID(), f.directID, actionID, fmt.Sprintf("/dev/test%d", i), f.now)
+		require.NoError(t, err)
+	}
+}
+
 func TestDeviceHandlers_SensitiveReadFailsClosedWhenEvidenceFails(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	_, err := f.raw.Exec(context.Background(), `
@@ -858,7 +1019,7 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 	ctx := f.actor(
 		"SetDeviceLabel", "RemoveDeviceLabel", "AssignDevice", "UnassignDevice",
 		"ListDeviceAssignees", "SetDeviceSyncInterval", "SetDeviceInventoryInterval", "DeleteDevice",
-		"CancelExecution", "CreateLuksToken",
+		"CancelExecution", "CreateLuksToken", "RevokeLuksDeviceKey",
 	)
 
 	setLabel, err := f.handlers.SetDeviceLabel(ctx, connect.NewRequest(&pmv1.SetDeviceLabelRequest{
@@ -925,6 +1086,12 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 			DeviceId: f.directID, ActionId: encryptionActionID,
 		}))
 	require.NoError(t, err)
+	seedCurrentLuksKeys(t, f, encryptionActionID, 1)
+	_, err = f.handlers.RevokeLuksDeviceKey(ctx,
+		connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{
+			DeviceId: f.directID, ActionId: encryptionActionID,
+		}))
+	require.NoError(t, err)
 
 	_, err = f.handlers.DeleteDevice(ctx, connect.NewRequest(&pmv1.DeleteDeviceRequest{Id: f.directID}))
 	require.NoError(t, err)
@@ -988,6 +1155,7 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
 		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
 		powermanagev1connect.ControlServiceCreateLuksTokenProcedure,
+		powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure,
 		powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceAssignDeviceProcedure,

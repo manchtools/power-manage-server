@@ -10,6 +10,67 @@ import (
 	"time"
 )
 
+const completeLuksKeyRevocation = `-- name: CompleteLuksKeyRevocation :execrows
+UPDATE luks_keys
+SET revocation_status = $1,
+    revocation_error = $2,
+    revocation_at = $3
+WHERE device_id = $4
+  AND action_id = $5
+  AND is_current = TRUE
+  AND revocation_status = 'dispatched'
+`
+
+type CompleteLuksKeyRevocationParams struct {
+	RevocationStatus *string    `json:"revocation_status"`
+	RevocationError  *string    `json:"revocation_error"`
+	RevocationAt     *time.Time `json:"revocation_at"`
+	DeviceID         string     `json:"device_id"`
+	ActionID         string     `json:"action_id"`
+}
+
+func (q *Queries) CompleteLuksKeyRevocation(ctx context.Context, arg CompleteLuksKeyRevocationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeLuksKeyRevocation,
+		arg.RevocationStatus,
+		arg.RevocationError,
+		arg.RevocationAt,
+		arg.DeviceID,
+		arg.ActionID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getLuksRevocationTarget = `-- name: GetLuksRevocationTarget :one
+SELECT count(*)::bigint AS key_count,
+       COALESCE(bool_or(revocation_status = 'dispatched'), FALSE)::boolean AS dispatch_pending,
+       COALESCE(bool_or(revocation_status = 'success'), FALSE)::boolean AS already_revoked
+FROM luks_keys
+WHERE device_id = $1
+  AND action_id = $2
+  AND is_current = TRUE
+`
+
+type GetLuksRevocationTargetParams struct {
+	DeviceID string `json:"device_id"`
+	ActionID string `json:"action_id"`
+}
+
+type GetLuksRevocationTargetRow struct {
+	KeyCount        int64 `json:"key_count"`
+	DispatchPending bool  `json:"dispatch_pending"`
+	AlreadyRevoked  bool  `json:"already_revoked"`
+}
+
+func (q *Queries) GetLuksRevocationTarget(ctx context.Context, arg GetLuksRevocationTargetParams) (GetLuksRevocationTargetRow, error) {
+	row := q.db.QueryRow(ctx, getLuksRevocationTarget, arg.DeviceID, arg.ActionID)
+	var i GetLuksRevocationTargetRow
+	err := row.Scan(&i.KeyCount, &i.DispatchPending, &i.AlreadyRevoked)
+	return i, err
+}
+
 const insertLuksToken = `-- name: InsertLuksToken :one
 INSERT INTO luks_tokens (
     id, device_id, action_id, token, min_length, complexity, created_at, expires_at
@@ -303,4 +364,54 @@ func (q *Queries) ListLuksKeyHistory(ctx context.Context, deviceID string) ([]Li
 		return nil, err
 	}
 	return items, nil
+}
+
+const markLuksKeyRevocationDispatchFailed = `-- name: MarkLuksKeyRevocationDispatchFailed :execrows
+UPDATE luks_keys
+SET revocation_status = 'failed',
+    revocation_error = 'device unavailable',
+    revocation_at = $1
+WHERE device_id = $2
+  AND action_id = $3
+  AND is_current = TRUE
+  AND revocation_status = 'dispatched'
+`
+
+type MarkLuksKeyRevocationDispatchFailedParams struct {
+	RevocationAt *time.Time `json:"revocation_at"`
+	DeviceID     string     `json:"device_id"`
+	ActionID     string     `json:"action_id"`
+}
+
+func (q *Queries) MarkLuksKeyRevocationDispatchFailed(ctx context.Context, arg MarkLuksKeyRevocationDispatchFailedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markLuksKeyRevocationDispatchFailed, arg.RevocationAt, arg.DeviceID, arg.ActionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markLuksKeyRevocationDispatched = `-- name: MarkLuksKeyRevocationDispatched :execrows
+UPDATE luks_keys
+SET revocation_status = 'dispatched',
+    revocation_error = NULL,
+    revocation_at = $1
+WHERE device_id = $2
+  AND action_id = $3
+  AND is_current = TRUE
+  AND COALESCE(revocation_status, '') NOT IN ('dispatched', 'success')
+`
+
+type MarkLuksKeyRevocationDispatchedParams struct {
+	RevocationAt *time.Time `json:"revocation_at"`
+	DeviceID     string     `json:"device_id"`
+	ActionID     string     `json:"action_id"`
+}
+
+func (q *Queries) MarkLuksKeyRevocationDispatched(ctx context.Context, arg MarkLuksKeyRevocationDispatchedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markLuksKeyRevocationDispatched, arg.RevocationAt, arg.DeviceID, arg.ActionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -70,3 +70,42 @@ FROM (
 ) ranked
 WHERE history_position <= 3
 ORDER BY rotated_at DESC, id DESC;
+
+-- name: GetLuksRevocationTarget :one
+SELECT count(*)::bigint AS key_count,
+       COALESCE(bool_or(revocation_status = 'dispatched'), FALSE)::boolean AS dispatch_pending,
+       COALESCE(bool_or(revocation_status = 'success'), FALSE)::boolean AS already_revoked
+FROM luks_keys
+WHERE device_id = sqlc.arg(device_id)
+  AND action_id = sqlc.arg(action_id)
+  AND is_current = TRUE;
+
+-- name: MarkLuksKeyRevocationDispatched :execrows
+UPDATE luks_keys
+SET revocation_status = 'dispatched',
+    revocation_error = NULL,
+    revocation_at = sqlc.arg(revocation_at)
+WHERE device_id = sqlc.arg(device_id)
+  AND action_id = sqlc.arg(action_id)
+  AND is_current = TRUE
+  AND COALESCE(revocation_status, '') NOT IN ('dispatched', 'success');
+
+-- name: MarkLuksKeyRevocationDispatchFailed :execrows
+UPDATE luks_keys
+SET revocation_status = 'failed',
+    revocation_error = 'device unavailable',
+    revocation_at = sqlc.arg(revocation_at)
+WHERE device_id = sqlc.arg(device_id)
+  AND action_id = sqlc.arg(action_id)
+  AND is_current = TRUE
+  AND revocation_status = 'dispatched';
+
+-- name: CompleteLuksKeyRevocation :execrows
+UPDATE luks_keys
+SET revocation_status = sqlc.arg(revocation_status),
+    revocation_error = sqlc.narg(revocation_error),
+    revocation_at = sqlc.arg(revocation_at)
+WHERE device_id = sqlc.arg(device_id)
+  AND action_id = sqlc.arg(action_id)
+  AND is_current = TRUE
+  AND revocation_status = 'dispatched';
