@@ -29,6 +29,22 @@ type DeliveryRow = generated.Delivery
 // JobRow is one durable scheduled job.
 type JobRow = generated.Job
 
+// ActionRow is one live authored action used to compile agent manifests.
+type ActionRow = generated.Action
+
+// ActionSetRow is one live authored action set used to compile agent manifests.
+type ActionSetRow = generated.ActionSet
+
+// DefinitionRow is one live authored definition used to compile agent manifests.
+type DefinitionRow = generated.Definition
+
+// DefinitionManifestAction pairs one authored action with the set through
+// which the containing definition reaches it.
+type DefinitionManifestAction struct {
+	ActionSetID string
+	Action      ActionRow
+}
+
 // DeviceStatusFilter selects the server-derived online state for a device
 // listing. Zero keeps both states.
 type DeviceStatusFilter int32
@@ -198,6 +214,77 @@ func (s *Store) ListClaimableJobs(ctx context.Context, at time.Time, limit int32
 		return nil, fmt.Errorf("job: list claimable: %w", err)
 	}
 	return rows, nil
+}
+
+// GetManifestAction returns one live action for manifest compilation.
+func (s *Store) GetManifestAction(ctx context.Context, id string) (ActionRow, error) {
+	row, err := s.queries.GetManifestAction(ctx, id)
+	if err != nil {
+		return ActionRow{}, fmt.Errorf("manifest: get action: %w", translateNotFound(err))
+	}
+	return row, nil
+}
+
+// GetManifestActionSet returns one live action set for manifest compilation.
+func (s *Store) GetManifestActionSet(ctx context.Context, id string) (ActionSetRow, error) {
+	row, err := s.queries.GetManifestActionSet(ctx, id)
+	if err != nil {
+		return ActionSetRow{}, fmt.Errorf("manifest: get action set: %w", translateNotFound(err))
+	}
+	return row, nil
+}
+
+// ListManifestActionSetActions returns a set's live actions in authored order.
+func (s *Store) ListManifestActionSetActions(ctx context.Context, id string) ([]ActionRow, error) {
+	rows, err := s.queries.ListManifestActionSetActions(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("manifest: list action set actions: %w", err)
+	}
+	return rows, nil
+}
+
+// GetManifestDefinition returns one live definition for manifest compilation.
+func (s *Store) GetManifestDefinition(ctx context.Context, id string) (DefinitionRow, error) {
+	row, err := s.queries.GetManifestDefinition(ctx, id)
+	if err != nil {
+		return DefinitionRow{}, fmt.Errorf("manifest: get definition: %w", translateNotFound(err))
+	}
+	return row, nil
+}
+
+// ListManifestDefinitionActionSets returns a definition's live sets in
+// authored order.
+func (s *Store) ListManifestDefinitionActionSets(ctx context.Context, id string) ([]ActionSetRow, error) {
+	rows, err := s.queries.ListManifestDefinitionActionSets(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("manifest: list definition action sets: %w", err)
+	}
+	return rows, nil
+}
+
+// ListManifestDefinitionActions returns every live action for a definition in
+// set order and then action order, without one query per contained set.
+func (s *Store) ListManifestDefinitionActions(ctx context.Context, id string) ([]DefinitionManifestAction, error) {
+	rows, err := s.queries.ListManifestDefinitionActions(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("manifest: list definition actions: %w", err)
+	}
+	out := make([]DefinitionManifestAction, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, DefinitionManifestAction{
+			ActionSetID: row.ActionSetID,
+			Action: ActionRow{
+				ID: row.ID, Name: row.Name, Description: row.Description,
+				ActionType: row.ActionType, DesiredState: row.DesiredState,
+				Params: row.Params, ParamsCanonical: row.ParamsCanonical,
+				TimeoutSeconds: row.TimeoutSeconds, Schedule: row.Schedule,
+				IsSystem: row.IsSystem, CreatedAt: row.CreatedAt,
+				CreatedBy: row.CreatedBy, UpdatedAt: row.UpdatedAt,
+				IsDeleted: row.IsDeleted, SearchTsv: row.SearchTsv,
+			},
+		})
+	}
+	return out, nil
 }
 
 // GetDeviceView returns one live device with its labels and assignees.

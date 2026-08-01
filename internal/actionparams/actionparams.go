@@ -10,7 +10,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-var unmarshalOpts = protojson.UnmarshalOptions{DiscardUnknown: true}
+// Unknown fields are rejected. This is a pre-alpha, lockstep contract: silently
+// dropping a parameter can turn the operator's requested action into a
+// different action, which is less safe than refusing to compile it.
+var unmarshalOpts = protojson.UnmarshalOptions{}
 
 // marshalOptions is the single protojson configuration used to
 // serialise action params throughout the server — both user-created

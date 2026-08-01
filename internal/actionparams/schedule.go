@@ -3,6 +3,7 @@ package actionparams
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
@@ -42,28 +43,39 @@ func ScheduleToRaw(s *pm.ActionSchedule) (json.RawMessage, error) {
 // (no schedule configured) so callers leave the proto field unset rather than
 // carrying an all-zeros placeholder.
 func ScheduleFromJSON(data []byte) *pm.ActionSchedule {
-	// Probe for object presence first: an empty object carries no schedule,
-	// while a populated object is a schedule even if all fields are zero. This
-	// is what distinguishes "explicitly set" from "unset" — protojson alone
-	// can't, since both decode to the same all-zero proto.
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(data, &probe); err != nil {
-		// Truly-empty / whitespace-only input is a normal "no schedule" signal.
+	s, err := ParseSchedule(data)
+	if err != nil {
 		if len(bytes.TrimSpace(data)) > 0 {
 			slog.Warn("actionparams: schedule JSON malformed; treating as no schedule",
 				"bytes", len(data), "error", err)
 		}
 		return nil
 	}
+	return s
+}
+
+// ParseSchedule is the fail-closed form of ScheduleFromJSON. Compilation and
+// dispatch paths use it so malformed or unknown stored fields cannot silently
+// change the work sent to an agent.
+func ParseSchedule(data []byte) (*pm.ActionSchedule, error) {
+	// Probe for object presence first: an empty object carries no schedule,
+	// while a populated object is a schedule even if all fields are zero. This
+	// is what distinguishes "explicitly set" from "unset" — protojson alone
+	// can't, since both decode to the same all-zero proto.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		if len(bytes.TrimSpace(data)) == 0 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("decode schedule JSON: %w", err)
+	}
 	if len(probe) == 0 {
 		// `{}`, `null` (decodes to nil map), or absent → no schedule.
-		return nil
+		return nil, nil
 	}
 	var s pm.ActionSchedule
 	if err := unmarshalOpts.Unmarshal(data, &s); err != nil {
-		slog.Warn("actionparams: schedule JSON failed protojson decode; treating as no schedule",
-			"bytes", len(data), "error", err)
-		return nil
+		return nil, fmt.Errorf("decode schedule fields: %w", err)
 	}
-	return &s
+	return &s, nil
 }

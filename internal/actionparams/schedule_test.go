@@ -58,6 +58,12 @@ func TestScheduleFromJSON_DistinguishesPresentFromEmpty(t *testing.T) {
 	assert.Nil(t, actionparams.ScheduleFromJSON([]byte("{not json")))
 }
 
+func TestParseSchedule_RejectsUnknownFields(t *testing.T) {
+	got, err := actionparams.ParseSchedule([]byte(`{"unexpected":true}`))
+	require.Error(t, err)
+	assert.Nil(t, got)
+}
+
 // TestScheduleToRaw_NilOrEmptyIsAbsent pins that BOTH a nil schedule and an
 // all-default schedule serialise to a nil RawMessage.
 func TestScheduleToRaw_NilOrEmptyIsAbsent(t *testing.T) {

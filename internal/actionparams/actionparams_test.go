@@ -17,6 +17,13 @@ func TestPopulateAction_RejectsMalformedParams(t *testing.T) {
 	assert.Nil(t, action.Params)
 }
 
+func TestPopulateAction_RejectsUnknownParams(t *testing.T) {
+	action := &pm.Action{}
+	err := actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SHELL), []byte(`{"unexpected":true}`))
+	require.Error(t, err)
+	assert.Nil(t, action.Params)
+}
+
 func TestPopulateAction_RejectsUnknownType(t *testing.T) {
 	action := &pm.Action{}
 	err := actionparams.PopulateAction(action, 999999, []byte(`{"x":1}`))
