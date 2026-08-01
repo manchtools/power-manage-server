@@ -206,19 +206,19 @@ func TestAgentSecrets_LuksTokenIsDeviceBoundAndConsumedOnce(t *testing.T) {
 
 	wrongDevice := newID()
 	_, err = f.service.ValidateLuksToken(ctx, wrongDevice,
-		&pmv1.ValidateLuksTokenRequest{DeviceId: wrongDevice, Token: token})
+		&pmv1.ValidateLuksTokenRequest{Token: token})
 	require.Error(t, err)
 	var used bool
 	require.NoError(t, f.raw.QueryRow(ctx, `SELECT used FROM luks_tokens WHERE token = $1`, hex.EncodeToString(hash[:])).Scan(&used))
 	assert.False(t, used)
 
 	response, err := f.service.ValidateLuksToken(ctx, f.deviceID,
-		&pmv1.ValidateLuksTokenRequest{DeviceId: f.deviceID, Token: token})
+		&pmv1.ValidateLuksTokenRequest{Token: token})
 	require.NoError(t, err)
 	assert.Equal(t, f.luksActionID, response.ActionId)
 	assert.Equal(t, int32(20), response.MinLength)
 	_, err = f.service.ValidateLuksToken(ctx, f.deviceID,
-		&pmv1.ValidateLuksTokenRequest{DeviceId: f.deviceID, Token: token})
+		&pmv1.ValidateLuksTokenRequest{Token: token})
 	require.Error(t, err, "a consumed token must not validate twice")
 
 	var auditContainsSecret bool

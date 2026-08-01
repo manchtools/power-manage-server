@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
-	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -150,13 +148,4 @@ func TestManifestResultStateAcceptsOnlyAggregateOutcomes(t *testing.T) {
 	}
 	_, _, err := manifestResultState(&pmv1.ManifestResult{Status: pmv1.ExecutionStatus_EXECUTION_STATUS_RUNNING})
 	require.Error(t, err)
-}
-
-func TestDeviceIdentityContextRejectsMissingAndMismatchedClaims(t *testing.T) {
-	handler := &Handler{}
-	validID := ulid.Make().String()
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(handler.assertDeviceIdentity(context.Background(), validID)))
-	ctx := WithDeviceID(context.Background(), validID)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(handler.assertDeviceIdentity(ctx, ulid.Make().String())))
-	require.NoError(t, handler.assertDeviceIdentity(ctx, validID))
 }

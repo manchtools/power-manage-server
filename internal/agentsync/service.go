@@ -1,5 +1,5 @@
-// Package agentsync builds the pull response from the same durable delivery
-// rows used by the push dispatcher.
+// Package agentsync builds a stream synchronization state from durable delivery
+// rows.
 package agentsync
 
 import (
@@ -31,7 +31,7 @@ type Config struct {
 	Deliveries *delivery.Service
 }
 
-// Service implements the durable SyncActions read path.
+// Service implements durable stream synchronization.
 type Service struct {
 	store      *store.Store
 	manager    *connection.Manager
@@ -46,10 +46,10 @@ func New(cfg Config) *Service {
 	return &Service{store: cfg.Store, manager: cfg.Manager, deliveries: cfg.Deliveries}
 }
 
-// SyncActions returns each still-sendable delivery and marks the pull against
-// the same live connection epoch used by stream pushes.
+// Sync returns each still-sendable delivery and marks the response against the
+// same live connection epoch used by unsolicited stream pushes.
 // docref: begin durable-agent-sync
-func (s *Service) SyncActions(ctx context.Context, deviceID string) (*pmv1.SyncActionsResponse, error) {
+func (s *Service) Sync(ctx context.Context, deviceID string) (*pmv1.SyncState, error) {
 	if ctx == nil || !validID(deviceID) {
 		return nil, ErrInvalidInput
 	}
@@ -93,7 +93,7 @@ func (s *Service) SyncActions(ctx context.Context, deviceID string) (*pmv1.SyncA
 	if err != nil {
 		return nil, err
 	}
-	return &pmv1.SyncActionsResponse{
+	return &pmv1.SyncState{
 		SyncIntervalMinutes: device.SyncIntervalMinutes,
 		Deliveries:          deliveries,
 		MaintenanceWindow:   window,

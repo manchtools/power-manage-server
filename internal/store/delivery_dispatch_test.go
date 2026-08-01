@@ -96,7 +96,7 @@ func TestAgentSync_UsesDurableDeliveriesAndLiveEpoch(t *testing.T) {
 	t.Cleanup(agent.Close)
 	syncer := agentsync.New(agentsync.Config{Store: f.store, Manager: manager, Deliveries: f.service})
 
-	response, err := syncer.SyncActions(ctx, f.deviceID)
+	response, err := syncer.Sync(ctx, f.deviceID)
 	require.NoError(t, err)
 	assert.Equal(t, int32(17), response.SyncIntervalMinutes)
 	require.Len(t, response.Deliveries, 1)
@@ -113,7 +113,7 @@ func TestAgentSync_UsesDurableDeliveriesAndLiveEpoch(t *testing.T) {
 
 	_, err = f.service.AcknowledgeReceipt(ctx, f.deliveryID, f.deviceID)
 	require.NoError(t, err)
-	response, err = syncer.SyncActions(ctx, f.deviceID)
+	response, err = syncer.Sync(ctx, f.deviceID)
 	require.NoError(t, err)
 	assert.Empty(t, response.Deliveries, "durably received work is not offered again")
 }

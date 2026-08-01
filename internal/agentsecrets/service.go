@@ -68,7 +68,7 @@ func New(cfg Config) *Service {
 // ValidateLuksToken consumes one device-bound token and returns its policy.
 // docref: begin sealed-agent-secret-sinks
 func (s *Service) ValidateLuksToken(ctx context.Context, deviceID string, request *pmv1.ValidateLuksTokenRequest) (*pmv1.ValidateLuksTokenResponse, error) {
-	if ctx == nil || !validID(deviceID) || request == nil || request.DeviceId != deviceID || s.validator.Struct(request) != nil {
+	if ctx == nil || !validID(deviceID) || request == nil || s.validator.Struct(request) != nil {
 		return nil, ErrInvalidInput
 	}
 	hash := sha256.Sum256([]byte(request.Token))

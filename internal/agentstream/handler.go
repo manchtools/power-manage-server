@@ -56,7 +56,7 @@ type Secrets interface {
 // SyncSource returns the durable delivery backlog and current scheduling policy
 // for the authenticated device.
 type SyncSource interface {
-	SyncActions(context.Context, string) (*pmv1.SyncActionsResponse, error)
+	Sync(context.Context, string) (*pmv1.SyncState, error)
 }
 
 // DeviceWaker queues a reconnect's durable delivery backlog. The database
@@ -230,6 +230,9 @@ func (h *Handler) handleAgentMessage(ctx context.Context, agent *connection.Agen
 	switch payload := message.Payload.(type) {
 	case *pmv1.AgentMessage_Heartbeat:
 		return h.recordHeartbeat(ctx, deviceID)
+	case *pmv1.AgentMessage_SyncRequest:
+		response, err := h.sync.Sync(ctx, deviceID)
+		return h.sendResponse(agent, message.Id, response, err)
 	case *pmv1.AgentMessage_DeliveryReceipt:
 		_, err := h.deliveries.AcknowledgeReceipt(ctx, payload.DeliveryReceipt.DeliveryId, deviceID)
 		return err
@@ -264,6 +267,9 @@ func (h *Handler) handleAgentMessage(ctx context.Context, agent *connection.Agen
 	case *pmv1.AgentMessage_StoreLpsPasswords:
 		response, err := h.secrets.StoreLpsPasswords(ctx, deviceID, payload.StoreLpsPasswords)
 		return h.sendResponse(agent, message.Id, response, err)
+	case *pmv1.AgentMessage_ValidateLuksToken:
+		response, err := h.secrets.ValidateLuksToken(ctx, deviceID, payload.ValidateLuksToken)
+		return h.sendResponse(agent, message.Id, response, err)
 	case *pmv1.AgentMessage_TerminalOutput:
 		return h.routeTerminal(deviceID, payload.TerminalOutput.SessionId, message)
 	case *pmv1.AgentMessage_TerminalStateChange:
@@ -277,7 +283,7 @@ func (h *Handler) handleAgentMessage(ctx context.Context, agent *connection.Agen
 
 func (h *Handler) sendResponse(agent *connection.Agent, messageID string, response any, operationErr error) error {
 	if operationErr != nil {
-		h.logger.Warn("agent secret operation failed", "device_id", agent.DeviceID, "error", operationErr)
+		h.logger.Warn("agent request failed", "device_id", agent.DeviceID, "error", operationErr)
 		return agent.Send(&pmv1.ServerMessage{
 			Id: messageID,
 			Payload: &pmv1.ServerMessage_Error{Error: &pmv1.Error{
@@ -293,6 +299,10 @@ func (h *Handler) sendResponse(agent *connection.Agent, messageID string, respon
 		message.Payload = &pmv1.ServerMessage_StoreLuksKey{StoreLuksKey: response}
 	case *pmv1.StoreLpsPasswordsResponse:
 		message.Payload = &pmv1.ServerMessage_StoreLpsPasswords{StoreLpsPasswords: response}
+	case *pmv1.ValidateLuksTokenResponse:
+		message.Payload = &pmv1.ServerMessage_ValidateLuksToken{ValidateLuksToken: response}
+	case *pmv1.SyncState:
+		message.Payload = &pmv1.ServerMessage_SyncState{SyncState: response}
 	default:
 		return errors.New("unsupported agent response")
 	}
@@ -382,49 +392,6 @@ func manifestResultState(result *pmv1.ManifestResult) (state, code string, err e
 	default:
 		return "", "", errors.New("invalid manifest result status")
 	}
-}
-
-// SyncActions returns the same durable delivery units used by Stream.
-func (h *Handler) SyncActions(ctx context.Context, request *connect.Request[pmv1.SyncActionsRequest]) (*connect.Response[pmv1.SyncActionsResponse], error) {
-	if request == nil || request.Msg == nil || request.Msg.DeviceId == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device identity required"))
-	}
-	deviceID := request.Msg.DeviceId.Value
-	if err := h.assertDeviceIdentity(ctx, deviceID); err != nil {
-		return nil, err
-	}
-	response, err := h.sync.SyncActions(ctx, deviceID)
-	if err != nil {
-		h.logger.Error("sync device deliveries", "device_id", deviceID, "error", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("could not sync deliveries"))
-	}
-	return connect.NewResponse(response), nil
-}
-
-// ValidateLuksToken consumes an owner-issued token for the authenticated device.
-func (h *Handler) ValidateLuksToken(ctx context.Context, request *connect.Request[pmv1.ValidateLuksTokenRequest]) (*connect.Response[pmv1.ValidateLuksTokenResponse], error) {
-	if request == nil || request.Msg == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("request required"))
-	}
-	if err := h.assertDeviceIdentity(ctx, request.Msg.DeviceId); err != nil {
-		return nil, err
-	}
-	response, err := h.secrets.ValidateLuksToken(ctx, request.Msg.DeviceId, request.Msg)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("token is invalid or expired"))
-	}
-	return connect.NewResponse(response), nil
-}
-
-func (h *Handler) assertDeviceIdentity(ctx context.Context, claimed string) error {
-	authenticated, ok := DeviceIDFromContext(ctx)
-	if !ok || !validID(authenticated) {
-		return connect.NewError(connect.CodeUnauthenticated, errors.New("authenticated device identity required"))
-	}
-	if authenticated != claimed {
-		return connect.NewError(connect.CodePermissionDenied, errors.New("device identity mismatch"))
-	}
-	return nil
 }
 
 func validID(value string) bool {
