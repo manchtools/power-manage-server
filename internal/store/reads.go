@@ -56,6 +56,13 @@ type DeviceView struct {
 	ResolvedInventoryIntervalMinutes int32
 }
 
+// DeviceAssigneeView is one live user or user group assigned to a device.
+type DeviceAssigneeView struct {
+	ID   string
+	Kind string
+	Name string
+}
+
 // DefaultInventoryIntervalMinutes is the server cadence used when neither a
 // device nor any live device group supplies an inventory interval.
 const DefaultInventoryIntervalMinutes int32 = 1440
@@ -182,8 +189,10 @@ type normalizedDeviceFilter struct {
 }
 
 func (s *Store) normalizeDeviceFilter(filter DeviceListFilter) (normalizedDeviceFilter, error) {
-	if filter.Limit < 0 || filter.Limit > 100 {
-		return normalizedDeviceFilter{}, fmt.Errorf("device: list limit must be between 0 and 100")
+	// Handlers request one look-ahead row to produce an exact keyset next-page
+	// token. The wire page remains capped at 100 rows.
+	if filter.Limit < 0 || filter.Limit > 101 {
+		return normalizedDeviceFilter{}, fmt.Errorf("device: list limit must be between 0 and 101")
 	}
 	if filter.Status < DeviceStatusAny || filter.Status > DeviceStatusOffline {
 		return normalizedDeviceFilter{}, fmt.Errorf("device: invalid status filter %d", filter.Status)
@@ -337,6 +346,22 @@ func (s *Store) IsDeviceAssignedToUser(ctx context.Context, deviceID, userID str
 		return false, fmt.Errorf("device: check user assignment: %w", err)
 	}
 	return assigned, nil
+}
+
+// ListDeviceAssignees returns all live user and group assignees in one read.
+func (s *Store) ListDeviceAssignees(ctx context.Context, deviceID string) ([]DeviceAssigneeView, error) {
+	if _, err := s.GetDevice(ctx, deviceID); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListDeviceAssignees(ctx, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("device: list assignees: %w", err)
+	}
+	out := make([]DeviceAssigneeView, len(rows))
+	for i, row := range rows {
+		out[i] = DeviceAssigneeView{ID: row.AssigneeID, Kind: row.AssigneeKind, Name: row.AssigneeName}
+	}
+	return out, nil
 }
 
 // GetUser returns one live user. ErrNotFound when unknown or deleted.

@@ -380,6 +380,50 @@ func (q *Queries) ListDeviceAssignedUserIDsBatch(ctx context.Context, dollar_1 [
 	return items, nil
 }
 
+const listDeviceAssignees = `-- name: ListDeviceAssignees :many
+SELECT assignee_id, assignee_kind, assignee_name
+FROM (
+    SELECT dau.user_id AS assignee_id, 'user'::text AS assignee_kind,
+           u.email AS assignee_name, 1 AS kind_order
+    FROM device_assigned_users dau
+    JOIN users u ON u.id = dau.user_id AND u.is_deleted = FALSE
+    WHERE dau.device_id = $1
+    UNION ALL
+    SELECT dag.group_id AS assignee_id, 'user_group'::text AS assignee_kind,
+           ug.name AS assignee_name, 2 AS kind_order
+    FROM device_assigned_groups dag
+    JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+    WHERE dag.device_id = $1
+) assignees
+ORDER BY kind_order, assignee_id
+`
+
+type ListDeviceAssigneesRow struct {
+	AssigneeID   string `json:"assignee_id"`
+	AssigneeKind string `json:"assignee_kind"`
+	AssigneeName string `json:"assignee_name"`
+}
+
+func (q *Queries) ListDeviceAssignees(ctx context.Context, deviceID string) ([]ListDeviceAssigneesRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceAssignees, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceAssigneesRow{}
+	for rows.Next() {
+		var i ListDeviceAssigneesRow
+		if err := rows.Scan(&i.AssigneeID, &i.AssigneeKind, &i.AssigneeName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeviceGroupIDs = `-- name: ListDeviceGroupIDs :many
 SELECT dgm.group_id
 FROM device_group_members dgm

@@ -67,6 +67,7 @@ var nonMutatingExports = map[string]string{
 	"CountDeviceViews":       "read",
 	"ListDeviceGroupIDs":     "read",
 	"IsDeviceAssignedToUser": "read",
+	"ListDeviceAssignees":    "read",
 	"GetUser":                "read",
 	"CountUsers":             "read",
 	"GetUserEncryptionKey":   "read",

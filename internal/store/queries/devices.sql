@@ -137,6 +137,23 @@ SELECT group_id FROM device_assigned_groups WHERE device_id = $1 ORDER BY group_
 SELECT device_id, group_id FROM device_assigned_groups
 WHERE device_id = ANY($1::text[]) ORDER BY device_id, group_id;
 
+-- name: ListDeviceAssignees :many
+SELECT assignee_id, assignee_kind, assignee_name
+FROM (
+    SELECT dau.user_id AS assignee_id, 'user'::text AS assignee_kind,
+           u.email AS assignee_name, 1 AS kind_order
+    FROM device_assigned_users dau
+    JOIN users u ON u.id = dau.user_id AND u.is_deleted = FALSE
+    WHERE dau.device_id = sqlc.arg(device_id)
+    UNION ALL
+    SELECT dag.group_id AS assignee_id, 'user_group'::text AS assignee_kind,
+           ug.name AS assignee_name, 2 AS kind_order
+    FROM device_assigned_groups dag
+    JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+    WHERE dag.device_id = sqlc.arg(device_id)
+) assignees
+ORDER BY kind_order, assignee_id;
+
 -- name: IsDeviceAssignedToUser :one
 SELECT EXISTS (
     SELECT 1
