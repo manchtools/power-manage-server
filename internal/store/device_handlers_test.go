@@ -19,6 +19,7 @@ import (
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/device"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -38,20 +39,24 @@ type deviceHandlerFixture struct {
 	userGroup  string
 	scopeGroup string
 	closed     []string
+	encryptor  *pmcrypto.Encryptor
 }
 
 func newDeviceHandlerFixture(t *testing.T) *deviceHandlerFixture {
 	t.Helper()
 	st, raw := setupPostgres(t)
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	encryptor, err := pmcrypto.NewEncryptor(strings.Repeat("01", 32))
+	require.NoError(t, err)
 	f := &deviceHandlerFixture{
 		t: t, store: st, raw: raw, now: now,
 		actorID: newID(), directID: newID(), groupID: newID(), outsideID: newID(),
 		userID: newID(), userGroup: newID(), scopeGroup: newID(),
+		encryptor: encryptor,
 	}
 	fingerprint := strings.Repeat("a", 64)
 	expires := now.Add(24 * time.Hour)
-	_, err := st.WithAudit(context.Background(), mutationOp(), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+	_, err = st.WithAudit(context.Background(), mutationOp(), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
 		for id, email := range map[string]string{
 			f.actorID: "actor@example.test",
 			f.userID:  "subject@example.test",
@@ -122,9 +127,10 @@ func newDeviceHandlerFixture(t *testing.T) *deviceHandlerFixture {
 	require.NoError(t, err)
 
 	f.handlers = device.New(device.Config{
-		Store:  st,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now:    func() time.Time { return now },
+		Store:     st,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:       func() time.Time { return now },
+		Decryptor: encryptor,
 		CloseStream: func(id string) {
 			f.closed = append(f.closed, id)
 		},
@@ -164,6 +170,12 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.CancelExecution(context.Background(),
 		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceLpsPasswords(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceLpsPasswordsRequest{DeviceId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceLuksKeys(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceLuksKeysRequest{DeviceId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	_, err = f.handlers.GetDevice(context.Background(), connect.NewRequest(&pmv1.GetDeviceRequest{Id: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -190,6 +202,12 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	_, err = f.handlers.CancelExecution(context.Background(),
 		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: newID()}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceLpsPasswords(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceLpsPasswordsRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceLuksKeys(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceLuksKeysRequest{DeviceId: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
@@ -663,6 +681,84 @@ func TestDeviceHandlers_CancelExecutionIsDirectAndIdempotent(t *testing.T) {
 	assert.Equal(t, "scheduled", rolledBack.Status, "audit failure must roll the cancellation back")
 }
 
+func TestDeviceHandlers_SecretReadsDecryptAtSinkAndBoundHistory(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	lpsActionID, luksActionID := newID(), newID()
+	_, err := f.raw.Exec(context.Background(), `
+		INSERT INTO actions (id, name, action_type, params, created_by) VALUES
+			($1, 'Local admin', $2, '{}', $3),
+			($4, 'Root disk', $5, '{}', $3)`,
+		lpsActionID, int32(pmv1.ActionType_ACTION_TYPE_LPS), f.actorID,
+		luksActionID, int32(pmv1.ActionType_ACTION_TYPE_ENCRYPTION))
+	require.NoError(t, err)
+	password, err := f.encryptor.EncryptWithContext("local-secret",
+		pmcrypto.SecretAAD(f.directID, lpsActionID, "lps"))
+	require.NoError(t, err)
+	passphrase, err := f.encryptor.EncryptWithContext("disk-secret",
+		pmcrypto.SecretAAD(f.directID, luksActionID, "luks"))
+	require.NoError(t, err)
+	for i := 0; i < 5; i++ {
+		current := i == 0
+		rotatedAt := f.now.Add(-time.Duration(i) * time.Hour)
+		_, err = f.raw.Exec(context.Background(), `
+			INSERT INTO lps_passwords
+				(id, device_id, action_id, username, password, rotated_at, rotation_reason, is_current)
+			VALUES ($1, $2, $3, 'localadmin', $4, $5, 'scheduled', $6)`,
+			newID(), f.directID, lpsActionID, password, rotatedAt, current)
+		require.NoError(t, err)
+		_, err = f.raw.Exec(context.Background(), `
+			INSERT INTO luks_keys
+				(id, device_id, action_id, device_path, passphrase, rotated_at,
+				 rotation_reason, is_current, revocation_status)
+			VALUES ($1, $2, $3, '/dev/vda', $4, $5, 'initial', $6, 'dispatched')`,
+			newID(), f.directID, luksActionID, passphrase, rotatedAt, current)
+		require.NoError(t, err)
+	}
+
+	lps, err := f.handlers.GetDeviceLpsPasswords(f.actor("GetDeviceLpsPasswords"),
+		connect.NewRequest(&pmv1.GetDeviceLpsPasswordsRequest{DeviceId: f.directID}))
+	require.NoError(t, err)
+	require.Len(t, lps.Msg.Current, 1)
+	require.Len(t, lps.Msg.History, 3)
+	assert.Equal(t, "local-secret", lps.Msg.Current[0].Password)
+	assert.Equal(t, "direct", lps.Msg.History[0].DeviceHostname)
+	assert.Equal(t, "Local admin", lps.Msg.Current[0].ActionName)
+
+	luks, err := f.handlers.GetDeviceLuksKeys(f.actor("GetDeviceLuksKeys"),
+		connect.NewRequest(&pmv1.GetDeviceLuksKeysRequest{DeviceId: f.directID}))
+	require.NoError(t, err)
+	require.Len(t, luks.Msg.Current, 1)
+	require.Len(t, luks.Msg.History, 3)
+	assert.Equal(t, "disk-secret", luks.Msg.Current[0].Passphrase)
+	assert.Equal(t, "Root disk", luks.Msg.Current[0].ActionName)
+	assert.Equal(t, pmv1.LuksRevocationStatus_LUKS_REVOCATION_STATUS_DISPATCHED,
+		luks.Msg.Current[0].RevocationStatus)
+
+	assertSensitiveDeviceRead(t, f,
+		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
+		"device_lps_passwords", f.directID)
+	assertSensitiveDeviceRead(t, f,
+		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
+		"device_luks_keys", f.directID)
+
+	_, err = f.raw.Exec(context.Background(), `
+		UPDATE lps_passwords SET password = 'enc:v1:not-base64'
+		WHERE device_id = $1 AND action_id = $2 AND is_current = TRUE`,
+		f.directID, lpsActionID)
+	require.NoError(t, err)
+	_, err = f.handlers.GetDeviceLpsPasswords(f.actor("GetDeviceLpsPasswords"),
+		connect.NewRequest(&pmv1.GetDeviceLpsPasswordsRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "corrupt ciphertext must fail closed")
+	_, err = f.raw.Exec(context.Background(), `
+		UPDATE lps_passwords SET password = 'legacy-plaintext'
+		WHERE device_id = $1 AND action_id = $2 AND is_current = TRUE`,
+		f.directID, lpsActionID)
+	require.NoError(t, err)
+	_, err = f.handlers.GetDeviceLpsPasswords(f.actor("GetDeviceLpsPasswords"),
+		connect.NewRequest(&pmv1.GetDeviceLpsPasswordsRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "plaintext storage must not get a compatibility path")
+}
+
 func TestDeviceHandlers_SensitiveReadFailsClosedWhenEvidenceFails(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	_, err := f.raw.Exec(context.Background(), `
@@ -796,6 +892,8 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetExecutionProcedure,
 		powermanagev1connect.ControlServiceListExecutionsProcedure,
 		powermanagev1connect.ControlServiceCancelExecutionProcedure,
+		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
+		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
 		powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceAssignDeviceProcedure,
@@ -814,6 +912,8 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
 		powermanagev1connect.ControlServiceGetExecutionProcedure,
 		powermanagev1connect.ControlServiceListExecutionsProcedure,
+		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
+		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
 	}, device.SensitiveReadProcedures())
 	classified := append(device.MutationProcedures(), device.ReadProcedures()...)
 	classified = append(classified, device.SensitiveReadProcedures()...)

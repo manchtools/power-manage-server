@@ -1,0 +1,170 @@
+package device
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
+	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
+	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/store"
+)
+
+// GetDeviceLpsPasswords returns bounded current and historical LPS secrets.
+func (h *Handlers) GetDeviceLpsPasswords(ctx context.Context, req *connect.Request[pmv1.GetDeviceLpsPasswordsRequest]) (*connect.Response[pmv1.GetDeviceLpsPasswordsResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := h.readDevice(ctx, "GetDeviceLpsPasswords", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	currentRows, historyRows, err := h.store.ListDeviceLpsPasswords(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, h.internal(ctx, "read LPS passwords", err)
+	}
+	current, err := h.lpsPasswordsToProto(currentRows)
+	if err != nil {
+		return nil, h.internal(ctx, "decode current LPS passwords", err)
+	}
+	history, err := h.lpsPasswordsToProto(historyRows)
+	if err != nil {
+		return nil, h.internal(ctx, "decode historical LPS passwords", err)
+	}
+	if err := h.recordSensitiveRead(ctx, req, actor,
+		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
+		"GetDeviceLpsPasswords", "device_lps_passwords", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.GetDeviceLpsPasswordsResponse{Current: current, History: history}), nil
+}
+
+// GetDeviceLuksKeys returns bounded current and historical LUKS secrets.
+func (h *Handlers) GetDeviceLuksKeys(ctx context.Context, req *connect.Request[pmv1.GetDeviceLuksKeysRequest]) (*connect.Response[pmv1.GetDeviceLuksKeysResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := h.readDevice(ctx, "GetDeviceLuksKeys", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	currentRows, historyRows, err := h.store.ListDeviceLuksKeys(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, h.internal(ctx, "read LUKS keys", err)
+	}
+	current, err := h.luksKeysToProto(currentRows)
+	if err != nil {
+		return nil, h.internal(ctx, "decode current LUKS keys", err)
+	}
+	history, err := h.luksKeysToProto(historyRows)
+	if err != nil {
+		return nil, h.internal(ctx, "decode historical LUKS keys", err)
+	}
+	if err := h.recordSensitiveRead(ctx, req, actor,
+		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
+		"GetDeviceLuksKeys", "device_luks_keys", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.GetDeviceLuksKeysResponse{Current: current, History: history}), nil
+}
+
+func (h *Handlers) lpsPasswordsToProto(rows []store.LpsPasswordView) ([]*pmv1.LpsPassword, error) {
+	out := make([]*pmv1.LpsPassword, len(rows))
+	for i, row := range rows {
+		password, err := h.openStoredSecret(row.Password, crypto.SecretAAD(row.DeviceID, row.ActionID, "lps"))
+		if err != nil {
+			return nil, fmt.Errorf("open LPS password for device %s action %s: %w", row.DeviceID, row.ActionID, err)
+		}
+		reason, ok := rotationReasonFromString(row.RotationReason)
+		if !ok {
+			return nil, fmt.Errorf("invalid LPS rotation reason %q", row.RotationReason)
+		}
+		out[i] = &pmv1.LpsPassword{
+			DeviceId: row.DeviceID, DeviceHostname: row.DeviceHostname,
+			ActionId: row.ActionID, ActionName: row.ActionName,
+			Username: row.Username, Password: password,
+			RotatedAt: timestamppb.New(row.RotatedAt), RotationReason: reason,
+		}
+	}
+	return out, nil
+}
+
+func (h *Handlers) luksKeysToProto(rows []store.LuksKeyView) ([]*pmv1.LuksKey, error) {
+	out := make([]*pmv1.LuksKey, len(rows))
+	for i, row := range rows {
+		passphrase, err := h.openStoredSecret(row.Passphrase, crypto.SecretAAD(row.DeviceID, row.ActionID, "luks"))
+		if err != nil {
+			return nil, fmt.Errorf("open LUKS passphrase for device %s action %s: %w", row.DeviceID, row.ActionID, err)
+		}
+		reason, ok := rotationReasonFromString(row.RotationReason)
+		if !ok {
+			return nil, fmt.Errorf("invalid LUKS rotation reason %q", row.RotationReason)
+		}
+		key := &pmv1.LuksKey{
+			DeviceId: row.DeviceID, DeviceHostname: row.DeviceHostname,
+			ActionId: row.ActionID, ActionName: row.ActionName,
+			DevicePath: row.DevicePath, Passphrase: passphrase,
+			RotatedAt: timestamppb.New(row.RotatedAt), RotationReason: reason,
+		}
+		if row.RevocationStatus != nil {
+			status, ok := luksRevocationStatusFromString(*row.RevocationStatus)
+			if !ok {
+				return nil, fmt.Errorf("invalid LUKS revocation status %q", *row.RevocationStatus)
+			}
+			key.RevocationStatus = status
+		}
+		if row.RevocationError != nil {
+			key.RevocationError = *row.RevocationError
+		}
+		if row.RevocationAt != nil {
+			key.RevocationAt = timestamppb.New(*row.RevocationAt)
+		}
+		out[i] = key
+	}
+	return out, nil
+}
+
+func (h *Handlers) openStoredSecret(ciphertext string, aad []byte) (string, error) {
+	if !strings.HasPrefix(ciphertext, "enc:v1:") {
+		return "", fmt.Errorf("stored secret is not current ciphertext")
+	}
+	return h.decryptor.DecryptWithContext(ciphertext, aad)
+}
+
+func rotationReasonFromString(value string) (pmv1.RotationReason, bool) {
+	switch value {
+	case "initial":
+		return pmv1.RotationReason_ROTATION_REASON_INITIAL, true
+	case "scheduled":
+		return pmv1.RotationReason_ROTATION_REASON_SCHEDULED, true
+	case "auth_grace":
+		return pmv1.RotationReason_ROTATION_REASON_AUTH_GRACE, true
+	default:
+		return pmv1.RotationReason_ROTATION_REASON_UNSPECIFIED, false
+	}
+}
+
+func luksRevocationStatusFromString(value string) (pmv1.LuksRevocationStatus, bool) {
+	switch value {
+	case "none":
+		return pmv1.LuksRevocationStatus_LUKS_REVOCATION_STATUS_NONE, true
+	case "dispatched":
+		return pmv1.LuksRevocationStatus_LUKS_REVOCATION_STATUS_DISPATCHED, true
+	case "success":
+		return pmv1.LuksRevocationStatus_LUKS_REVOCATION_STATUS_SUCCESS, true
+	case "failed":
+		return pmv1.LuksRevocationStatus_LUKS_REVOCATION_STATUS_FAILED, true
+	default:
+		return pmv1.LuksRevocationStatus_LUKS_REVOCATION_STATUS_UNSPECIFIED, false
+	}
+}

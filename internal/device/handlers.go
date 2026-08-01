@@ -19,6 +19,7 @@ import (
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -36,6 +37,7 @@ type Config struct {
 	Logger      *slog.Logger
 	Now         func() time.Time
 	CloseStream func(deviceID string)
+	Decryptor   *crypto.Encryptor
 }
 
 // Handlers implements the device CRUD procedures.
@@ -44,6 +46,7 @@ type Handlers struct {
 	logger      *slog.Logger
 	now         func() time.Time
 	closeStream func(string)
+	decryptor   *crypto.Encryptor
 	validator   *validator.Validate
 }
 
@@ -62,9 +65,13 @@ func New(cfg Config) *Handlers {
 	if cfg.CloseStream == nil {
 		panic("device: stream closer is required")
 	}
+	if cfg.Decryptor == nil {
+		panic("device: secret decryptor is required")
+	}
 	return &Handlers{
 		store: cfg.Store, logger: cfg.Logger, now: cfg.Now,
-		closeStream: cfg.CloseStream, validator: sdkvalidate.NewValidator(),
+		closeStream: cfg.CloseStream, decryptor: cfg.Decryptor,
+		validator: sdkvalidate.NewValidator(),
 	}
 }
 

@@ -369,6 +369,22 @@ type ExecutionListFilter struct {
 	AssignedUserID  *string
 }
 
+// LpsPasswordView is one encrypted LPS password plus display enrichment.
+type LpsPasswordView struct {
+	ID, DeviceID, DeviceHostname, ActionID, ActionName string
+	Username, Password, RotationReason                 string
+	RotatedAt                                          time.Time
+}
+
+// LuksKeyView is one encrypted LUKS passphrase plus display enrichment.
+type LuksKeyView struct {
+	ID, DeviceID, DeviceHostname, ActionID, ActionName string
+	DevicePath, Passphrase, RotationReason             string
+	RotatedAt                                          time.Time
+	RevocationStatus, RevocationError                  *string
+	RevocationAt                                       *time.Time
+}
+
 // DefaultInventoryIntervalMinutes is the server cadence used when neither a
 // device nor any live device group supplies an inventory interval.
 const DefaultInventoryIntervalMinutes int32 = 1440
@@ -1296,6 +1312,70 @@ func executionView(row generated.GetExecutionViewRow) ExecutionView {
 		CompletedAt: row.CompletedAt, DurationMs: row.DurationMs,
 		CreatedByID: row.CreatedByID, ActionName: row.ActionName,
 	}
+}
+
+// ListDeviceLpsPasswords returns current rows and at most three historical
+// rows per action. Passwords remain ciphertext in this store layer.
+func (s *Store) ListDeviceLpsPasswords(ctx context.Context, deviceID string) ([]LpsPasswordView, []LpsPasswordView, error) {
+	currentRows, err := s.queries.ListCurrentLpsPasswords(ctx, deviceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("lps passwords: list current: %w", err)
+	}
+	historyRows, err := s.queries.ListLpsPasswordHistory(ctx, deviceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("lps passwords: list history: %w", err)
+	}
+	current := make([]LpsPasswordView, len(currentRows))
+	for i, row := range currentRows {
+		current[i] = LpsPasswordView{
+			ID: row.ID, DeviceID: row.DeviceID, DeviceHostname: row.DeviceHostname,
+			ActionID: row.ActionID, ActionName: row.ActionName, Username: row.Username,
+			Password: row.Password, RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
+		}
+	}
+	history := make([]LpsPasswordView, len(historyRows))
+	for i, row := range historyRows {
+		history[i] = LpsPasswordView{
+			ID: row.ID, DeviceID: row.DeviceID, DeviceHostname: row.DeviceHostname,
+			ActionID: row.ActionID, ActionName: row.ActionName, Username: row.Username,
+			Password: row.Password, RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
+		}
+	}
+	return current, history, nil
+}
+
+// ListDeviceLuksKeys returns current rows and at most three historical rows
+// per action. Passphrases remain ciphertext in this store layer.
+func (s *Store) ListDeviceLuksKeys(ctx context.Context, deviceID string) ([]LuksKeyView, []LuksKeyView, error) {
+	currentRows, err := s.queries.ListCurrentLuksKeys(ctx, deviceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("luks keys: list current: %w", err)
+	}
+	historyRows, err := s.queries.ListLuksKeyHistory(ctx, deviceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("luks keys: list history: %w", err)
+	}
+	current := make([]LuksKeyView, len(currentRows))
+	for i, row := range currentRows {
+		current[i] = LuksKeyView{
+			ID: row.ID, DeviceID: row.DeviceID, DeviceHostname: row.DeviceHostname,
+			ActionID: row.ActionID, ActionName: row.ActionName, DevicePath: row.DevicePath,
+			Passphrase: row.Passphrase, RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
+			RevocationStatus: row.RevocationStatus, RevocationError: row.RevocationError,
+			RevocationAt: row.RevocationAt,
+		}
+	}
+	history := make([]LuksKeyView, len(historyRows))
+	for i, row := range historyRows {
+		history[i] = LuksKeyView{
+			ID: row.ID, DeviceID: row.DeviceID, DeviceHostname: row.DeviceHostname,
+			ActionID: row.ActionID, ActionName: row.ActionName, DevicePath: row.DevicePath,
+			Passphrase: row.Passphrase, RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
+			RevocationStatus: row.RevocationStatus, RevocationError: row.RevocationError,
+			RevocationAt: row.RevocationAt,
+		}
+	}
+	return current, history, nil
 }
 
 // GetUser returns one live user. ErrNotFound when unknown or deleted.
