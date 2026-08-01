@@ -161,6 +161,9 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.GetExecution(context.Background(),
 		connect.NewRequest(&pmv1.GetExecutionRequest{Id: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.CancelExecution(context.Background(),
+		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	_, err = f.handlers.GetDevice(context.Background(), connect.NewRequest(&pmv1.GetDeviceRequest{Id: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -184,6 +187,9 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	_, err = f.handlers.ListExecutions(context.Background(),
 		connect.NewRequest(&pmv1.ListExecutionsRequest{}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.CancelExecution(context.Background(),
+		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: newID()}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
@@ -604,6 +610,59 @@ func nullJSON(value string) any {
 	return value
 }
 
+func TestDeviceHandlers_CancelExecutionIsDirectAndIdempotent(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	pendingID, terminalID, rollbackID := newID(), newID(), newID()
+	for _, row := range []struct{ id, status string }{
+		{pendingID, "pending"}, {terminalID, "success"}, {rollbackID, "scheduled"},
+	} {
+		_, err := f.raw.Exec(context.Background(), `
+			INSERT INTO executions
+				(id, device_id, action_type, desired_state, status, created_at, created_by_type, created_by_id)
+			VALUES ($1, $2, 200, 0, $3, $4, 'user', $5)`,
+			row.id, f.directID, row.status, f.now, f.actorID)
+		require.NoError(t, err)
+	}
+	ctx := f.actor("CancelExecution")
+
+	cancelled, err := f.handlers.CancelExecution(ctx,
+		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: pendingID}))
+	require.NoError(t, err)
+	assert.Equal(t, pmv1.ExecutionStatus_EXECUTION_STATUS_CANCELLED, cancelled.Msg.Execution.Status)
+	assert.NotNil(t, cancelled.Msg.Execution.CompletedAt)
+	operation, err := latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceCancelExecutionProcedure)
+	require.NoError(t, err)
+	effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, effects, 1)
+	assert.Equal(t, "execution", effects[0].ResourceType)
+	assert.Equal(t, pendingID, effects[0].ResourceID)
+	assert.Equal(t, "CANCEL", effects[0].Action)
+
+	unchanged, err := f.handlers.CancelExecution(ctx,
+		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: terminalID}))
+	require.NoError(t, err)
+	assert.Equal(t, pmv1.ExecutionStatus_EXECUTION_STATUS_SUCCESS, unchanged.Msg.Execution.Status)
+	operation, err = latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceCancelExecutionProcedure)
+	require.NoError(t, err)
+	effects, err = f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	assert.Empty(t, effects, "an idempotent no-op has no fabricated state-change effect")
+
+	_, err = f.raw.Exec(context.Background(), `
+		ALTER TABLE audit_operations ADD CONSTRAINT reject_cancel_evidence
+		CHECK (request_descriptor <> '/powermanage.v1.ControlService/CancelExecution') NOT VALID`)
+	require.NoError(t, err)
+	_, err = f.handlers.CancelExecution(ctx,
+		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: rollbackID}))
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+	rolledBack, err := f.store.GetExecution(context.Background(), rollbackID)
+	require.NoError(t, err)
+	assert.Equal(t, "scheduled", rolledBack.Status, "audit failure must roll the cancellation back")
+}
+
 func TestDeviceHandlers_SensitiveReadFailsClosedWhenEvidenceFails(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	_, err := f.raw.Exec(context.Background(), `
@@ -621,6 +680,7 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 	ctx := f.actor(
 		"SetDeviceLabel", "RemoveDeviceLabel", "AssignDevice", "UnassignDevice",
 		"ListDeviceAssignees", "SetDeviceSyncInterval", "SetDeviceInventoryInterval", "DeleteDevice",
+		"CancelExecution",
 	)
 
 	setLabel, err := f.handlers.SetDeviceLabel(ctx, connect.NewRequest(&pmv1.SetDeviceLabelRequest{
@@ -666,6 +726,16 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, int32(1440), updated.Msg.Device.InventoryIntervalMinutes)
+	executionID := newID()
+	_, err = f.raw.Exec(context.Background(), `
+		INSERT INTO executions
+			(id, device_id, action_type, desired_state, status, created_at, created_by_type, created_by_id)
+		VALUES ($1, $2, 200, 0, 'scheduled', $3, 'user', $4)`,
+		executionID, f.directID, f.now, f.actorID)
+	require.NoError(t, err)
+	_, err = f.handlers.CancelExecution(ctx,
+		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: executionID}))
+	require.NoError(t, err)
 
 	_, err = f.handlers.DeleteDevice(ctx, connect.NewRequest(&pmv1.DeleteDeviceRequest{Id: f.directID}))
 	require.NoError(t, err)
@@ -725,6 +795,7 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
 		powermanagev1connect.ControlServiceGetExecutionProcedure,
 		powermanagev1connect.ControlServiceListExecutionsProcedure,
+		powermanagev1connect.ControlServiceCancelExecutionProcedure,
 		powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceAssignDeviceProcedure,

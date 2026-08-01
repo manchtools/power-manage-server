@@ -10,6 +10,25 @@ import (
 	"time"
 )
 
+const cancelPendingExecution = `-- name: CancelPendingExecution :execrows
+UPDATE executions
+SET status = 'cancelled', completed_at = $2
+WHERE id = $1 AND status IN ('scheduled', 'pending')
+`
+
+type CancelPendingExecutionParams struct {
+	ID          string     `json:"id"`
+	CompletedAt *time.Time `json:"completed_at"`
+}
+
+func (q *Queries) CancelPendingExecution(ctx context.Context, arg CancelPendingExecutionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelPendingExecution, arg.ID, arg.CompletedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countExecutionViews = `-- name: CountExecutionViews :one
 SELECT COUNT(*)
 FROM executions e

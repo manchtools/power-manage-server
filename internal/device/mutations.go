@@ -30,6 +30,63 @@ func deviceEffect(deviceID, action string, fields ...string) store.AuditEffect {
 	}
 }
 
+// CancelExecution atomically cancels an execution that has not begun. Later
+// states are an audited idempotent no-op.
+func (h *Handlers) CancelExecution(ctx context.Context, req *connect.Request[pmv1.CancelExecutionRequest]) (*connect.Response[pmv1.CancelExecutionResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	execution, err := h.store.GetExecution(ctx, req.Msg.ExecutionId)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, errExecutionNotFound, "execution not found")
+		}
+		return nil, h.internal(ctx, "read cancel target", err)
+	}
+	if _, err := h.mutationDevice(ctx, "CancelExecution", execution.DeviceID); err != nil {
+		if connect.CodeOf(err) == connect.CodeNotFound {
+			return nil, notFound(ctx, errExecutionNotFound, "execution not found")
+		}
+		return nil, err
+	}
+
+	completedAt := h.now().UTC()
+	_, err = h.store.WithAudit(ctx, h.operation(req, actor,
+		powermanagev1connect.ControlServiceCancelExecutionProcedure, "CancelExecution"),
+		func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+			n, err := tx.CancelPendingExecution(ctx, db.CancelPendingExecutionParams{
+				ID: req.Msg.ExecutionId, CompletedAt: &completedAt,
+			})
+			if err != nil {
+				return fmt.Errorf("cancel execution: %w", err)
+			}
+			if n == 1 {
+				rec.Effect(store.AuditEffect{
+					ResourceType: "execution", ResourceID: req.Msg.ExecutionId,
+					Action: "CANCEL", Outcome: store.EffectApplied,
+					ChangedFields: []string{"completed_at", "status"},
+				})
+			}
+			return nil
+		})
+	if err != nil {
+		return nil, h.internal(ctx, "cancel execution", err)
+	}
+	updated, err := h.store.GetExecution(ctx, req.Msg.ExecutionId)
+	if err != nil {
+		return nil, h.internal(ctx, "read cancelled execution", err)
+	}
+	message, err := executionToProto(updated)
+	if err != nil {
+		return nil, h.internal(ctx, "decode cancelled execution", err)
+	}
+	return connect.NewResponse(&pmv1.CancelExecutionResponse{Execution: message}), nil
+}
+
 // SetDeviceLabel upserts one label in the same transaction as its audit effect.
 func (h *Handlers) SetDeviceLabel(ctx context.Context, req *connect.Request[pmv1.SetDeviceLabelRequest]) (*connect.Response[pmv1.UpdateDeviceResponse], error) {
 	if err := validateRequest(h, ctx, req); err != nil {

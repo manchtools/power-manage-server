@@ -36,6 +36,11 @@ JOIN devices d ON d.id = e.device_id AND d.is_deleted = FALSE
 LEFT JOIN actions a ON a.id = e.action_id AND a.is_deleted = FALSE
 WHERE e.id = $1;
 
+-- name: CancelPendingExecution :execrows
+UPDATE executions
+SET status = 'cancelled', completed_at = $2
+WHERE id = $1 AND status IN ('scheduled', 'pending');
+
 -- name: ListExecutionViews :many
 SELECT e.*, COALESCE(a.name, '')::text AS action_name
 FROM executions e
