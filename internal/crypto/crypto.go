@@ -1,9 +1,8 @@
 // Package crypto provides application-level encryption for sensitive data
-// stored in the database (LUKS passphrases, LPS passwords, IdP client
-// secrets, TOTP secrets).
+// stored in the database: LUKS passphrases, LPS passwords, IdP client secrets,
+// and per-subject audit-detail keys.
 //
-// ONE at-rest format (spec 20, closes audit F-06 / the WS10 deferral):
-// AAD-bound AES-256-GCM under the prefix "enc:v1:". Every ciphertext is
+// The at-rest format is AAD-bound AES-256-GCM under the prefix "enc:v1:". Every ciphertext is
 // bound to its row context via additional authenticated data, so a
 // DB-level attacker cannot relocate a secret from one row (or purpose)
 // to another and have it decrypt. There is deliberately NO nil-AAD API:
@@ -11,9 +10,8 @@
 // regress to unbound ciphertext (a guard test additionally pins that
 // AEAD primitives are not used outside this package).
 //
-// The encryption key is shared between the control server and gateway
-// server via environment variable (CONTROL_ENCRYPTION_KEY, mandatory
-// since WS11).
+// The encryption key is loaded by the control server from its configured secret
+// file or deployment override.
 package crypto
 
 import (
@@ -28,18 +26,14 @@ import (
 	"strings"
 )
 
-// prefix identifies AAD-bound AES-256-GCM ciphertext — the single
-// at-rest format. Values carrying any OTHER "enc:*" prefix (the retired
-// nil-AAD v1 or the pre-rename "enc:v2") fail loudly: the beta Path-A
-// migration is a reprovision, and silently passing unknown ciphertext
-// through as plaintext would be far worse than an error.
+// prefix identifies the single AAD-bound AES-256-GCM at-rest format.
+// Values carrying any other format, including plaintext, fail closed.
 const prefix = "enc:v1:"
 
 // Purpose tags for RowAAD — shared constants so the write and read
 // paths can never drift apart on the AAD purpose dimension.
 const (
 	PurposeIdPClientSecret = "idp-client-secret"
-	PurposeTOTPSecret      = "totp-secret"
 )
 
 // SecretAAD builds the additional-authenticated-data that binds a
@@ -65,10 +59,10 @@ type Encryptor struct {
 }
 
 // NewEncryptor creates a new Encryptor from a hex-encoded 32-byte key.
-// Returns nil if keyHex is empty (encryption disabled).
+// An empty key is rejected; control cannot run without at-rest encryption.
 func NewEncryptor(keyHex string) (*Encryptor, error) {
 	if keyHex == "" {
-		return nil, nil
+		return nil, errors.New("encryption key is required")
 	}
 
 	key, err := hex.DecodeString(keyHex)
@@ -96,16 +90,17 @@ func NewEncryptor(keyHex string) (*Encryptor, error) {
 // "enc:v1:<base64>" string. The aad is authenticated (not stored in the
 // ciphertext) — DecryptWithContext must be given the SAME aad to open
 // it, so a secret sealed for one row context cannot be opened in
-// another. An empty aad is refused (fail-closed): unbound ciphertext is
-// exactly the regression this package's single-format contract forbids.
-// Returns plaintext unchanged if e is nil (encryption disabled) or
-// plaintext is empty.
+// another. A missing encryptor or empty AAD is refused. Empty plaintext remains
+// empty, but non-empty plaintext always becomes ciphertext.
 func (e *Encryptor) EncryptWithContext(plaintext string, aad []byte) (string, error) {
-	if e == nil || plaintext == "" {
-		return plaintext, nil
+	if e == nil {
+		return "", errors.New("crypto: encryptor is required")
 	}
 	if len(aad) == 0 {
-		return "", errors.New("crypto: refusing to encrypt without an AAD context (nil-AAD path was removed — spec 20 / F-06)")
+		return "", errors.New("crypto: AAD context is required")
+	}
+	if plaintext == "" {
+		return "", nil
 	}
 
 	nonce := make([]byte, e.gcm.NonceSize())
@@ -121,15 +116,18 @@ func (e *Encryptor) EncryptWithContext(plaintext string, aad []byte) (string, er
 //
 //   - "enc:v1:" values open with the SAME aad they were sealed under;
 //     a mismatched aad or tampered ciphertext fails GCM authentication.
-//   - any OTHER "enc:*" prefix is a loud error: it is ciphertext from a
-//     retired format (pre-spec-20 nil-AAD v1 or "enc:v2"); the deployment
-//     must be reprovisioned (beta Path A), never silently mis-read.
-//   - a non-prefixed value is returned unchanged (pre-encryption
-//     plaintext; also the round-trip identity for the empty string).
-//   - if e is nil (encryption disabled) the input passes through.
+//   - any other "enc:*" prefix is rejected;
+//   - non-empty plaintext is rejected; and
+//   - an empty value round-trips as empty.
 func (e *Encryptor) DecryptWithContext(value string, aad []byte) (string, error) {
 	if e == nil {
-		return value, nil
+		return "", errors.New("crypto: encryptor is required")
+	}
+	if len(aad) == 0 {
+		return "", errors.New("crypto: AAD context is required")
+	}
+	if value == "" {
+		return "", nil
 	}
 	switch {
 	case strings.HasPrefix(value, prefix):
@@ -148,15 +146,13 @@ func (e *Encryptor) DecryptWithContext(value string, aad []byte) (string, error)
 		}
 		return string(plaintext), nil
 	case strings.HasPrefix(value, "enc:"):
-		// Retired wire format (nil-AAD v1 or pre-rename enc:v2). Report
-		// only the format tag, never ciphertext bytes.
+		// Report only the format tag, never ciphertext bytes.
 		tag := value
 		if i := strings.Index(value[len("enc:"):], ":"); i >= 0 {
 			tag = value[:len("enc:")+i]
 		}
-		return "", fmt.Errorf("crypto: unsupported at-rest format %q — pre-spec-20 ciphertext requires reprovisioning (beta Path A), refusing to mis-read it", tag)
+		return "", fmt.Errorf("crypto: unsupported at-rest format %q", tag)
 	default:
-		// Pre-encryption plaintext.
-		return value, nil
+		return "", errors.New("crypto: plaintext value rejected")
 	}
 }

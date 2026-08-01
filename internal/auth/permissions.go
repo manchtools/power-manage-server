@@ -2,7 +2,7 @@ package auth
 
 // PermissionTargetKind classifies the target kind a permission acts
 // on, which determines whether (and how) it can be scoped on a role
-// grant (manchtools/power-manage-server#7).
+// grant.
 //
 // Fail-closed semantic: a permission that does not explicitly
 // declare a target kind stays at the zero value (TargetUnspecified)
@@ -349,7 +349,7 @@ func registryPermissions() []permEntry {
 		// inherits from ListDevices / ListUsers / ListActions
 		// already in the actor's JWT. Search itself stays
 		// TargetUnspecified so the kind-matching invariant doesn't
-		// constrain it. See #7 Valkey-search section.
+		// constrain it.
 		{"Search", "Search", "Search across entities", TargetUnspecified},
 		{"RebuildSearchIndex", "Search", "Force rebuild search index", TargetUnspecified},
 		// Server Settings — org-tier

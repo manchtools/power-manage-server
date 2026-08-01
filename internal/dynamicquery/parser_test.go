@@ -90,6 +90,7 @@ func TestValidateDeviceQuery(t *testing.T) {
 	}{
 		{`labels.env strangeOp "x"`, "unknown operator"},
 		{`device.group startsWith "prod"`, "not valid for field"},
+		{`environment equals "prod"`, "unsupported field"},
 		{`(labels.env equals "x"`, "expected ')'"},
 	}
 	for _, tc := range invalid {

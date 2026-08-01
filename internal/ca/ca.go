@@ -143,13 +143,6 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 // actually be served on. CN = SerialNumber = id, the control peer class, and a
 // server-chosen DNS SAN when hostname is non-empty.
 //
-// This replaces IssueServerCertificateFromCSR. That entry point had no
-// production caller once the gateway was deleted — GatewayAuthService
-// enrollment and InternalService renewal were its two callers, and both went
-// with the tier — but three tests still reached for it whenever they wanted a
-// server-capable certificate, which kept a live ability to mint gateway-class
-// identities in the shipped CA for no reason other than test convenience.
-//
 // The DNS SAN is server-chosen here, never CSR-supplied: issueFromCSR rejects a
 // CSR that requests SANs of its own, so a caller cannot mint a certificate for
 // a hostname the server did not assign.
@@ -421,7 +414,7 @@ func PeerClassFromPEM(certPEM []byte) (mtls.PeerClass, error) {
 // proof-of-possession: the renewer must hold the private key bound to the cert
 // it presented, which agents do because they reuse their keypair
 // (GenerateCSRFromKey). Without it, certificates are public material — returned
-// at registration and stored in the event log — so anyone who reads a device's
+// at registration and stored with the device — so anyone who reads a device's
 // cert PEM could submit a CSR for a key they control and mint an impersonation
 // cert bound to that device id (#361).
 func AssertCSRMatchesCertKey(certPEM, csrPEM []byte) error {

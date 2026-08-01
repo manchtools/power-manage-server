@@ -37,11 +37,6 @@ const (
 	// PeerClassControl identifies the control server's own cert,
 	// issued out of band by setup.sh and presented on its agent
 	// listener.
-	//
-	// Spec 41 removed PeerClassGateway. A class is a thing that can
-	// authenticate; keeping one for a tier that cannot be deployed left
-	// the CA able to mint identities no listener would ever admit, and
-	// left a value that reads as a supported topology.
 	PeerClassControl PeerClass = "control"
 )
 
@@ -170,19 +165,12 @@ func RequirePeerClass(logger *slog.Logger, allowed ...PeerClass) func(http.Handl
 // here can consult it without importing handler — handler imports mtls, so the
 // reverse would be an import cycle.
 //
-// Spec 41 changed the shape from a cached snapshot (IsRevoked + Loaded) to a
-// direct query. The snapshot existed to amortize a Valkey round-trip per
-// handshake; revocations now live in control's own database, so the lookup is a
-// local indexed primary-key read and no cache is warranted. That matters beyond
-// cost: a refreshed snapshot is stale for up to one refresh interval, which
-// reopens exactly the window criterion 6 closes on the write side. Writing the
-// revocation atomically is pointless if the gate keeps admitting the
-// certificate until the next tick.
+// Revocation is a direct indexed database query on every handshake. A cached
+// snapshot would create a stale admission window after revocation.
 //
 // A nil checker, or a lookup that ERRORS, is FAIL-CLOSED: without an answer we
 // cannot prove the cert is unrevoked, so we reject. There is deliberately no
-// opt-out. This replaces the old "unloaded" state — there is no longer a
-// not-yet-ready condition to represent, only a query that succeeds or does not.
+// opt-out.
 type RevocationChecker interface {
 	IsRevoked(ctx context.Context, fingerprint string) (bool, error)
 }
@@ -203,7 +191,7 @@ func fingerprintFromCert(cert *x509.Certificate) string {
 // RequirePeerClassNotRevoked is RequirePeerClass plus a fail-closed CRL gate, for
 // control's agent mTLS listener. After the peer-class checks pass it consults
 // the revocation list, so a revoked cert is rejected at connect time rather
-// than usable until its natural expiry (WS12 #2). Health endpoints bypass as in
+// than usable until its natural expiry. Health endpoints bypass as in
 // RequirePeerClass.
 //
 // Revocation is ADDITIVE: a wrong-class cert is still rejected first by the

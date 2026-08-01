@@ -345,24 +345,21 @@ func TestIssueCertificateFromCSR_ForgedSignatureRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid CSR signature")
 }
 
-// TestIssueServerCertificateFromCSR_StampsGatewayClassAndValidity pins spec 31
-// AC1/AC7: a gateway cert carries CN = SerialNumber = the server gateway_id, the
-// gateway peer-class SAN (never the agent class), and a fixed 45-day validity
-// distinct from the agent-cert validity. A past clock proves NotAfter derives
-// from clock+45d, not the wall clock.
-func TestIssueServerCertificateFromCSR_StampsGatewayClassAndValidity(t *testing.T) {
+// A control server certificate carries the server identity, the control peer
+// class, its assigned DNS name, and a fixed validity distinct from agent certs.
+func TestIssueServerCertificateFromCSR_StampsControlClassAndValidity(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 	fixed := time.Date(2020, 6, 1, 12, 0, 0, 0, time.UTC)
 	// Agent validity is deliberately NOT 45d so the assertion below distinguishes
-	// the gateway validity from the CA default.
+	// the control-server validity from the CA default.
 	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour, ca.WithClock(func() time.Time { return fixed }))
 	require.NoError(t, err)
 
-	const gatewayID = "gw-01JABCDEF" // server id; CSR CN is different on purpose
-	const gatewayHost = "gw.example.com"
+	const controlID = "control-01JABCDEF" // server id; CSR CN is different on purpose
+	const controlHost = "control.example.com"
 	csrPEM := generateCSRWithSAN(t, "csr-chosen-id", func(*x509.CertificateRequest) {})
 
-	cert, err := c.IssueServerCertificateFromCSR(gatewayID, csrPEM, gatewayHost)
+	cert, err := c.IssueServerCertificateFromCSR(controlID, csrPEM, controlHost)
 	require.NoError(t, err)
 
 	block, _ := pem.Decode(cert.CertPEM)
@@ -370,35 +367,31 @@ func TestIssueServerCertificateFromCSR_StampsGatewayClassAndValidity(t *testing.
 	parsed, err := x509.ParseCertificate(block.Bytes)
 	require.NoError(t, err)
 
-	assert.Equal(t, gatewayID, parsed.Subject.CommonName, "CN must be the server gateway_id")
-	assert.Equal(t, gatewayID, parsed.Subject.SerialNumber, "SerialNumber must be the server gateway_id")
+	assert.Equal(t, controlID, parsed.Subject.CommonName)
+	assert.Equal(t, controlID, parsed.Subject.SerialNumber)
 
-	require.Len(t, parsed.URIs, 1, "a gateway cert must carry exactly one URI SAN")
+	require.Len(t, parsed.URIs, 1, "a control cert must carry exactly one URI SAN")
 	class, err := mtls.PeerClassFromCert(parsed)
 	require.NoError(t, err)
 	assert.Equal(t, mtls.PeerClassControl, class, "a server cert must carry the control peer class, never agent")
 
 	const want45d = 45 * 24 * time.Hour
 	assert.True(t, cert.NotAfter.Equal(fixed.Add(want45d)),
-		"gateway NotAfter must be clock+45d; got %s want %s", cert.NotAfter, fixed.Add(want45d))
+		"control NotAfter must be clock+45d; got %s want %s", cert.NotAfter, fixed.Add(want45d))
 
-	// A gateway cert is BOTH a client (to control's internal listener) AND the
-	// TLS server cert on its agent-facing listener, so it must carry ServerAuth
-	// in addition to ClientAuth — an agent verifies the gateway's server cert
-	// with the ServerAuth EKU, which a client-only cert would fail (spec 31).
+	// The helper can issue the control certificate used by mTLS integration tests.
 	assert.Contains(t, parsed.ExtKeyUsage, x509.ExtKeyUsageClientAuth)
 	assert.Contains(t, parsed.ExtKeyUsage, x509.ExtKeyUsageServerAuth,
-		"a gateway cert must be usable as a TLS server cert")
+		"a control cert must be usable as a TLS server cert")
 
 	// The hostname must be stamped as a DNS SAN (server-chosen), so the agent's
 	// standard TLS verification can match the gateway's public name.
-	assert.Equal(t, []string{gatewayHost}, parsed.DNSNames,
-		"the gateway hostname must be stamped as a DNS SAN")
+	assert.Equal(t, []string{controlHost}, parsed.DNSNames,
+		"the control hostname must be stamped as a DNS SAN")
 }
 
 // TestIssueCertificateFromCSR_AgentIsClientAuthOnly pins that agent certs do NOT
-// gain ServerAuth — the ServerAuth EKU is gateway-only. An agent is a mTLS
-// client to the gateway and never a server, so granting it ServerAuth would be
+// gain ServerAuth. An agent is an mTLS client and never a server, so granting it would be
 // unnecessary authority.
 func TestIssueCertificateFromCSR_AgentIsClientAuthOnly(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
@@ -415,9 +408,7 @@ func TestIssueCertificateFromCSR_AgentIsClientAuthOnly(t *testing.T) {
 		"an agent cert must be client-auth only")
 }
 
-// TestIssueServerCertificateFromCSR_RejectsSAN pins that the gateway path
-// enforces the same caller-SAN rejection as the agent path — an enrolling
-// gateway cannot request a control peer class or a server hostname.
+// The server-certificate path rejects caller-chosen SANs.
 func TestIssueServerCertificateFromCSR_RejectsSAN(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)

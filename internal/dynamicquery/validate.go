@@ -8,8 +8,7 @@ import (
 // ValidateDeviceQuery returns nil when the query parses cleanly under
 // the device-group field whitelist (labels.*, device.labels.*,
 // device.group, device.<inventory-field>). Returns a descriptive error
-// otherwise. Replaces the PL/pgSQL validate_dynamic_query function
-// called from device_group_handler.go.
+// otherwise.
 func ValidateDeviceQuery(query string) error {
 	expr, err := Parse(query)
 	if err != nil {
@@ -19,13 +18,10 @@ func ValidateDeviceQuery(query string) error {
 }
 
 // ValidateUserQuery returns nil when the query parses cleanly under
-// the user-group field whitelist (user.*). Replaces the PL/pgSQL
-// validate_user_group_query function called from user_group_handler.go.
+// the user-group field whitelist (user.*).
 //
-// Unlike the device variant, the user variant rejects an empty query —
-// PL/pgSQL returned "query must not be empty" for that case and we
-// preserve that to avoid silently turning an empty form submit into
-// a "matches every user" group.
+// Unlike the device variant, the user variant rejects an empty query to avoid
+// turning an empty form submit into a "matches every user" group.
 func ValidateUserQuery(query string) error {
 	if strings.TrimSpace(query) == "" {
 		return fmt.Errorf("query must not be empty")
@@ -75,10 +71,7 @@ func validateDeviceAtom(a *Atom) error {
 		// operator set as labels (PL/pgSQL evaluate_condition_v2).
 		return checkOpAllowed(a, labelOps)
 	default:
-		// PL/pgSQL evaluate_condition fell through to using the
-		// expression as a raw label key. Allow it for compatibility
-		// — the evaluator's lookup will simply not match.
-		return checkOpAllowed(a, labelOps)
+		return fmt.Errorf("unsupported field %q", a.Field)
 	}
 }
 
@@ -118,9 +111,7 @@ func isLabelField(field string) bool {
 	return false
 }
 
-// labelOps is the operator set the PL/pgSQL evaluate_condition function
-// recognizes for label predicates (used for both labels.* and the
-// inventory device.* fallback in evaluate_condition_v2).
+// labelOps is the operator set for label and inventory predicates.
 var labelOps = map[Op]struct{}{
 	OpExists: {}, OpNotExists: {},
 	OpEquals: {}, OpNotEquals: {},
@@ -130,10 +121,8 @@ var labelOps = map[Op]struct{}{
 	OpIn: {}, OpNotIn: {},
 }
 
-// groupOps is the operator set evaluate_condition_v2 accepts for
-// device.group predicates (no startsWith / endsWith / numeric compare —
-// group names aren't numbers, and substring prefix/suffix wasn't
-// implemented in PL/pgSQL).
+// groupOps is the operator set for device.group predicates. Group names do not
+// support prefix, suffix, or numeric comparisons.
 var groupOps = map[Op]struct{}{
 	OpExists: {}, OpNotExists: {},
 	OpEquals: {}, OpNotEquals: {},

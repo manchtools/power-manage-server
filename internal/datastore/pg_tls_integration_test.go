@@ -25,8 +25,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/datastore"
 )
 
-// buildTestCA constructs the REAL internal/ca.CA the system uses (the spec-31
-// trust root spec 32 reuses for datastore mTLS), so these integration tests
+// buildTestCA constructs the internal CA used for datastore mTLS, so the tests
 // exercise operationally-issued certs rather than a throwaway PKI.
 func buildTestCA(t *testing.T) *ca.CA {
 	t.Helper()
@@ -82,7 +81,7 @@ func genKeyCSR(t *testing.T, cn string) (keyPEM, csrPEM []byte) {
 }
 
 // caIssuedPKI issues, from the real CA, a datastore SERVER cert (ServerAuth +
-// DNS:localhost, via the gateway issuance path — the one that stamps ServerAuth
+// DNS:localhost, via the control-server issuance path that stamps ServerAuth
 // EKU + a server-chosen DNS SAN) and a component CLIENT cert (ClientAuth,
 // CN=clientRole, via the agent issuance path). This is the same CA machinery
 // setup.sh uses to mint the operational datastore/component certs.
@@ -110,7 +109,7 @@ func writeFile(t *testing.T, dir, name string, data []byte) string {
 	return p
 }
 
-// TestPostgresMutualTLS_Integration proves the spec-32 Postgres posture on a
+// TestPostgresMutualTLS_Integration proves the target PostgreSQL posture on a
 // real container using CERTS ISSUED BY THE REAL CA: hostssl + cert auth accepts
 // a valid client cert (sslmode=verify-full), and a plaintext (sslmode=disable)
 // connection is refused.

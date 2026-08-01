@@ -20,7 +20,7 @@ import (
 )
 
 // DefaultTokenTTL is the lifetime of a freshly-minted session token.
-// The web client must connect to the gateway WebSocket endpoint
+// The web client must connect to the control WebSocket endpoint
 // before this expires; the token is single-use after that and the
 // session lives until StopTerminal/TerminateTerminalSession or the
 // idle sweeper closes it.
@@ -54,11 +54,11 @@ type Session struct {
 	DeviceID string `json:"device_id"`
 	// TtyUser is the resolved dedicated TTY user
 	// (e.g. "pm-tty-pdotterer") that the agent will spawn the shell
-	// as. Carried in the session record so the gateway can pass it
+	// as. Carried in the session record so the control bridge can pass it
 	// through to the agent without re-resolving.
 	TtyUser string `json:"tty_user"`
 	// Cols and Rows are the initial window size requested by the web
-	// client. Stored alongside the session so the gateway can include
+	// client. Stored alongside the session so the control bridge can include
 	// them in the TerminalStart it sends to the agent without an
 	// extra round-trip.
 	Cols uint32 `json:"cols"`
@@ -161,8 +161,7 @@ type MintParams struct {
 }
 
 // MintResult is what the StartTerminal handler hands back to the web
-// client: the freshly-generated session_id and the plaintext bearer
-// token (which the client appends to the gateway URL as ?token=).
+// client: the freshly-generated session_id and the plaintext bearer token.
 type MintResult struct {
 	SessionID string
 	Token     string
@@ -243,8 +242,8 @@ func (s *TokenStore) Lookup(ctx context.Context, sessionID string) (*Session, er
 //
 // Distinguishes ErrTokenNotFound (expired, never minted, or already
 // consumed) from ErrTokenMismatch (bearer forgery attempt) so the
-// audit log can record forgeries separately. Used by the
-// gateway-side InternalService.ValidateTerminalToken path.
+// audit log can record forgeries separately. Used by the control WebSocket
+// bridge.
 //
 // On mismatch the session entry is re-persisted with the same
 // remaining TTL so a forged bearer cannot DoS a legitimate session

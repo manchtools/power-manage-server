@@ -10,11 +10,8 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crypto"
 )
 
-// Spec 19 stage A — per-user PII envelope encryption. A random 32-byte
-// DEK per user, KEK-wrapped at rest; PII fields (tagged pii:"true" on
-// the typed payload structs) are sealed under the subject user's DEK
-// with an AAD binding user + field, so ciphertext cannot be relocated
-// across users or across fields.
+// A random DEK per user is KEK-wrapped at rest. Audit PII detail is sealed
+// under the subject's DEK with field-bound AAD.
 
 const userA = "01JUSERAAAAAAAAAAAAAAAAAAA"
 const userB = "01JUSERBBBBBBBBBBBBBBBBBBB"
@@ -69,7 +66,7 @@ func TestDEK_SealOpenField(t *testing.T) {
 	ct, err := dek.SealField("alice@example.com", "email")
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(ct, "pii:v1:"),
-		"sealed PII carries its own distinct prefix so projectors can tell ciphertext from legacy plaintext")
+		"sealed PII carries a distinct envelope prefix")
 	assert.NotContains(t, ct, "alice", "plaintext must not survive into the sealed form")
 
 	pt, err := dek.OpenField(ct, "email")
@@ -99,7 +96,7 @@ func TestDEK_CrossUserIsolation(t *testing.T) {
 	require.Error(t, err, "one user's PII must not open under another user's DEK")
 }
 
-func TestDEK_EmptyFieldPassthrough(t *testing.T) {
+func TestDEK_EmptyField(t *testing.T) {
 	kek := newKEK(t)
 	wrapped, err := crypto.GenerateWrappedDEK(kek, userA)
 	require.NoError(t, err)
@@ -108,27 +105,22 @@ func TestDEK_EmptyFieldPassthrough(t *testing.T) {
 
 	ct, err := dek.SealField("", "email")
 	require.NoError(t, err)
-	assert.Equal(t, "", ct, "empty optional PII fields stay empty (omitempty wire compat)")
+	assert.Equal(t, "", ct, "empty optional PII fields stay empty")
 
 	pt, err := dek.OpenField("", "email")
 	require.NoError(t, err)
 	assert.Equal(t, "", pt)
 }
 
-func TestDEK_OpenLegacyPlaintextPassthrough(t *testing.T) {
-	// Events appended BEFORE envelope encryption carry plaintext PII.
-	// The projector must keep decoding them (beta stance documents no
-	// backfill for the test env), so a non-pii-prefixed value passes
-	// through unchanged.
+func TestDEK_OpenPlaintextRejected(t *testing.T) {
 	kek := newKEK(t)
 	wrapped, err := crypto.GenerateWrappedDEK(kek, userA)
 	require.NoError(t, err)
 	dek, err := crypto.UnwrapDEK(kek, userA, wrapped)
 	require.NoError(t, err)
 
-	pt, err := dek.OpenField("legacy-plain@example.com", "email")
-	require.NoError(t, err)
-	assert.Equal(t, "legacy-plain@example.com", pt)
+	_, err = dek.OpenField("plain@example.com", "email")
+	require.Error(t, err)
 }
 
 func TestDEK_TamperedFieldFails(t *testing.T) {
@@ -153,8 +145,7 @@ func TestDEK_TamperedFieldFails(t *testing.T) {
 
 func TestUnwrapDEK_CorruptWrapFails(t *testing.T) {
 	kek := newKEK(t)
-	// A present-but-unwrappable DEK row (wrong KEK / bit rot) is a FAULT,
-	// not the graceful erased state (spec 19 AC 10) — it must error.
+	// A present-but-unwrappable DEK row is a fault, not the graceful erased state.
 	_, err := crypto.UnwrapDEK(kek, userA, "enc:v1:Y29ycnVwdGVkY29ycnVwdGVk")
 	require.Error(t, err)
 

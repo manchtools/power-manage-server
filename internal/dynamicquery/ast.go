@@ -1,8 +1,6 @@
 // Package dynamicquery implements the dynamic-group query language used
-// by device groups (labels + device inventory + group membership) and
-// user groups (user attributes). The package replaces the PL/pgSQL
-// interpreter from migration 004 (tracker manchtools/power-manage-server#242,
-// Wave C of the storage-abstraction roadmap).
+// by device groups (labels + device inventory + group membership) and user
+// groups (external-identity attributes).
 //
 // The Atom shape is intentionally permissive — fields are parsed as
 // arbitrary identifier paths so the lexer / parser stays domain-agnostic.

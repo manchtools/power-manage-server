@@ -5,19 +5,13 @@ import (
 	"strings"
 )
 
-// DeviceContext is the pre-loaded device state the device-query
-// evaluator reads. Callers (per-group eval in C.3, queue drain in C.4)
-// build one of these per device before walking the AST.
+// DeviceContext is the pre-loaded state the device-query evaluator reads.
 //
 // Labels keeps the keys raw (case-preserved at write); lookups go
-// through Label() which applies the case-insensitive match the PL/pgSQL
-// `device_labels ? key` operator implicitly did (PG JSONB keys are
-// case-sensitive, but the dynamic-query string is matched
-// case-insensitively against the field path). Use Label("env") with
-// the post-extract_label_key key.
+// through Label(), which applies the query language's case-insensitive match.
 //
-// Inventory is a function rather than a map so the C.3 caller can
-// lazy-load inventory fields by name — building the full row up-front
+// Inventory is a function rather than a map so callers can lazy-load fields by
+// name; building the full row up-front
 // would be wasteful when most queries touch zero or one field.
 //
 // GroupNames is the snapshot of group memberships at evaluation time.
@@ -30,8 +24,7 @@ type DeviceContext struct {
 	GroupNames []string
 }
 
-// Label looks up a label by key, case-insensitive (PL/pgSQL did the
-// equivalent via lower() comparisons in evaluate_condition).
+// Label looks up a label by key, case-insensitive.
 func (c DeviceContext) Label(key string) (string, bool) {
 	if v, ok := c.Labels[key]; ok {
 		return v, true
@@ -44,34 +37,30 @@ func (c DeviceContext) Label(key string) (string, bool) {
 	return "", false
 }
 
-// UserContext mirrors the 7 user fields evaluate_user_condition reads.
-// Boolean fields are serialized to "true" / "false" for binary
-// operators (matches PL/pgSQL's `user_disabled::TEXT` cast).
+// UserContext contains the five external-identity fields available to dynamic
+// user-group queries. Disabled is serialized to "true" / "false" for binary
+// operators.
 type UserContext struct {
 	Email             string
 	Disabled          bool
-	TotpEnabled       bool
-	HasPassword       bool
 	DisplayName       string
 	PreferredUsername string
 	Locale            string
 }
 
-// EvaluateDevice evaluates expr against ctx. Matches the PL/pgSQL
-// evaluate_dynamic_query_v2 / evaluate_condition_v2 semantics.
+// EvaluateDevice evaluates expr against ctx.
 func EvaluateDevice(expr Expr, ctx DeviceContext) bool {
 	return walkEval(expr, func(a *Atom) bool { return evalDeviceAtom(a, ctx) })
 }
 
-// EvaluateUser evaluates expr against ctx. Matches the PL/pgSQL
-// evaluate_dynamic_user_query / evaluate_user_condition semantics.
+// EvaluateUser evaluates expr against ctx.
 func EvaluateUser(expr Expr, ctx UserContext) bool {
 	return walkEval(expr, func(a *Atom) bool { return evalUserAtom(a, ctx) })
 }
 
 // walkEval recursively evaluates a boolean expression tree, deferring
-// atom semantics to the provided closure. AND short-circuits on FALSE,
-// OR on TRUE — matches PL/pgSQL's EXIT-on-mismatch loop.
+// atom semantics to the provided closure. AND short-circuits on false and OR
+// on true.
 func walkEval(root Expr, atom func(*Atom) bool) bool {
 	switch n := root.(type) {
 	case *And:
@@ -91,8 +80,7 @@ func walkEval(root Expr, atom func(*Atom) bool) bool {
 	return false
 }
 
-// evalDeviceAtom matches evaluate_condition_v2's three-way dispatch:
-// device.group, device.<inventory>, then labels.
+// evalDeviceAtom dispatches device.group, device.<inventory>, and labels.
 func evalDeviceAtom(a *Atom, ctx DeviceContext) bool {
 	low := strings.ToLower(a.Field)
 
@@ -117,18 +105,11 @@ func evalDeviceAtom(a *Atom, ctx DeviceContext) bool {
 		}
 		return applyStringOp(a.Op, val, ok, a.Value)
 	}
-	// Fallback: treat the raw field as a label key (PL/pgSQL
-	// extract_label_key returned the unchanged expression for
-	// unrecognized prefixes; evaluate_condition then looked it up as
-	// a label key, which usually missed and returned FALSE).
-	val, ok := ctx.Label(a.Field)
-	return applyStringOp(a.Op, val, ok, a.Value)
+	return false
 }
 
 // evalDeviceGroup handles `device.group <op> <value>` against the
-// list of group names the device currently belongs to. PL/pgSQL didn't
-// implement startsWith/endsWith/numeric compare for this field —
-// neither do we.
+// list of group names the device currently belongs to.
 func evalDeviceGroup(a *Atom, groupNames []string) bool {
 	hasMembership := len(groupNames) > 0
 
@@ -201,9 +182,8 @@ func evalDeviceGroup(a *Atom, groupNames []string) bool {
 	return false
 }
 
-// evalUserAtom matches evaluate_user_condition's 7-field whitelist.
-// Booleans are converted to "true" / "false" for binary operators —
-// the PL/pgSQL `user_disabled::TEXT` cast produced lowercase strings.
+// evalUserAtom matches the validator's five-field whitelist. Booleans are
+// converted to "true" / "false" for binary operators.
 func evalUserAtom(a *Atom, ctx UserContext) bool {
 	field := strings.ToLower(a.Field)
 
@@ -212,7 +192,7 @@ func evalUserAtom(a *Atom, ctx UserContext) bool {
 		switch field {
 		case "user.email":
 			return ctx.Email != ""
-		case "user.disabled", "user.totp_enabled", "user.has_password":
+		case "user.disabled":
 			return true
 		case "user.display_name":
 			return ctx.DisplayName != ""
@@ -253,10 +233,6 @@ func userFieldValue(field string, ctx UserContext) (string, bool) {
 		return ctx.Email, true
 	case "user.disabled":
 		return strconv.FormatBool(ctx.Disabled), true
-	case "user.totp_enabled":
-		return strconv.FormatBool(ctx.TotpEnabled), true
-	case "user.has_password":
-		return strconv.FormatBool(ctx.HasPassword), true
 	case "user.display_name":
 		return ctx.DisplayName, true
 	case "user.preferred_username":
@@ -267,10 +243,8 @@ func userFieldValue(field string, ctx UserContext) (string, bool) {
 	return "", false
 }
 
-// applyStringOp implements the binary / unary semantics evaluate_condition
-// and evaluate_user_condition share. The PL/pgSQL "NULL field" branches
-// map to !present here — present=false short-circuits "negative" ops to
-// TRUE and "positive" ops to FALSE.
+// applyStringOp implements shared binary and unary semantics. A missing field
+// makes negative operators true and positive operators false.
 func applyStringOp(op Op, fieldValue string, present bool, value string) bool {
 	switch op {
 	case OpExists:

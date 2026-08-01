@@ -12,7 +12,7 @@ import (
 // RequirePostgresTLS returns an error unless connString is configured for mutual
 // TLS: sslmode=verify-full with the client-cert material (sslrootcert/sslcert/
 // sslkey) present. A sslmode=disable or absent DSN, or verify-full without the
-// cert params, is a boot-time fail-closed error — spec 32 permits no plaintext
+// cert params, is a boot-time fail-closed error; the target permits no plaintext
 // downgrade. pgx passes these libpq params through natively, so this validates
 // posture rather than rewriting the DSN.
 func RequirePostgresTLS(connString string) error {
@@ -21,7 +21,7 @@ func RequirePostgresTLS(connString string) error {
 		return errors.New("datastore: invalid PostgreSQL DSN")
 	}
 	if got := params["sslmode"]; got != "verify-full" {
-		return fmt.Errorf("datastore: Postgres sslmode=%q — spec 32 requires verify-full (mutual TLS, no plaintext fallback)", got)
+		return fmt.Errorf("datastore: Postgres sslmode=%q; verify-full mutual TLS is required", got)
 	}
 	for _, k := range []string{"sslrootcert", "sslcert", "sslkey"} {
 		if params[k] == "" {

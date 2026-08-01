@@ -65,7 +65,7 @@ func (s *TerminalSession) LastActivity() time.Time {
 }
 
 // TerminalSessionRegistry is a concurrent-safe map of active terminal
-// sessions on this gateway, keyed by session_id. The WebSocket bridge
+// sessions in control, keyed by session_id. The WebSocket bridge
 // handler registers/unregisters sessions; the agent bidi stream
 // handler routes TerminalOutput/TerminalStateChange messages through
 // it.

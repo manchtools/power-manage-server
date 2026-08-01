@@ -11,20 +11,13 @@ import (
 	"strings"
 )
 
-// Spec 19 stage A — per-user PII envelope encryption ("crypto-shred").
-//
-// Every user gets one random 32-byte data-encryption key (DEK), stored
-// KEK-wrapped in user_encryption_keys. PII fields on typed event
-// payloads (tagged pii:"true") are sealed under the SUBJECT user's DEK
-// before append; projectors unseal at projection-build time. Deleting
-// the user destroys the DEK row, which makes every copy of their PII —
-// live log, cold archives, future rebuilds — permanently unreadable at
-// once, without ever mutating the append-only event log.
+// Per-user PII envelope encryption provides crypto-shred for audit detail.
+// Every user gets one random DEK, KEK-wrapped in user_encryption_keys. Audit
+// fields classified as personal detail are sealed under that subject's DEK.
+// Deleting the user destroys the DEK row and makes retained detail unreadable.
 
 // piiPrefix tags a DEK-sealed PII field value. Distinct from the
-// at-rest "enc:v1:" tag so a projector (and a human reading an event
-// row) can tell DEK-sealed PII from KEK-sealed secrets and from
-// legacy plaintext.
+// at-rest "enc:v1:" tag so the two encryption layers cannot be confused.
 const piiPrefix = "pii:v1:"
 
 // PurposeUserDEK is the RowAAD purpose binding a wrapped DEK to its
@@ -64,8 +57,8 @@ func GenerateWrappedDEK(kek *Encryptor, userID string) (string, error) {
 
 // UnwrapDEK opens a KEK-wrapped DEK for userID. A wrap that fails to
 // open (wrong KEK, wrong user binding, corruption) is a FAULT the
-// caller must treat as such — spec 19 AC 10: only a MISSING DEK row is
-// the graceful erased state; a present-but-unwrappable one must never
+// caller must treat as such. Only a missing DEK row is the graceful erased
+// state; a present-but-unwrappable one must never
 // masquerade as erasure.
 func UnwrapDEK(kek *Encryptor, userID, wrapped string) (*DEK, error) {
 	if kek == nil {
@@ -92,8 +85,8 @@ func UnwrapDEK(kek *Encryptor, userID, wrapped string) (*DEK, error) {
 
 // SealField encrypts one PII field value under the DEK, AAD-bound to
 // the field name so a sealed value cannot be relocated to a different
-// field. Empty values pass through empty (omitempty wire compat — an
-// absent optional field must not materialise as ciphertext).
+// field. Empty values stay empty because absent detail must not materialize as
+// ciphertext.
 func (d *DEK) SealField(plaintext, field string) (string, error) {
 	if plaintext == "" {
 		return "", nil
@@ -109,13 +102,13 @@ func (d *DEK) SealField(plaintext, field string) (string, error) {
 	return piiPrefix + base64.StdEncoding.EncodeToString(ct), nil
 }
 
-// OpenField decrypts one sealed PII field value. A value without the
-// pii prefix passes through unchanged: events appended before envelope
-// encryption carry plaintext PII and must keep projecting (documented
-// beta stance — no backfill).
+// OpenField decrypts one sealed PII field value. Plaintext fails closed.
 func (d *DEK) OpenField(value, field string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
 	if !strings.HasPrefix(value, piiPrefix) {
-		return value, nil
+		return "", errors.New("crypto: plaintext PII rejected")
 	}
 	data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(value, piiPrefix))
 	if err != nil {

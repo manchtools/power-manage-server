@@ -220,7 +220,7 @@ type ActionSetListFilter struct {
 }
 
 // ActionSetView is one authored set with its member count derived from the
-// live edge rows rather than stored projector state.
+// live edge rows.
 type ActionSetView struct {
 	ActionSetRow
 	MemberCount int64
@@ -242,7 +242,7 @@ type DefinitionListFilter struct {
 }
 
 // DefinitionView is one authored definition with its member count derived
-// from live ActionSets rather than the legacy stored counter.
+// from live ActionSets.
 type DefinitionView struct {
 	DefinitionRow
 	LiveMemberCount int64
