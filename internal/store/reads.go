@@ -23,6 +23,9 @@ type AuditEffectRow = generated.AuditEffect
 // DeviceRow is one stored device.
 type DeviceRow = generated.Device
 
+// DeliveryRow is one durable manifest delivery.
+type DeliveryRow = generated.Delivery
+
 // DeviceStatusFilter selects the server-derived online state for a device
 // listing. Zero keeps both states.
 type DeviceStatusFilter int32
@@ -140,6 +143,16 @@ func (s *Store) CountDevices(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("device: count: %w", err)
 	}
 	return n, nil
+}
+
+// GetDelivery returns one durable manifest delivery. ErrNotFound when the
+// delivery id is unknown.
+func (s *Store) GetDelivery(ctx context.Context, id string) (DeliveryRow, error) {
+	row, err := s.queries.GetDelivery(ctx, id)
+	if err != nil {
+		return DeliveryRow{}, fmt.Errorf("delivery: get: %w", translateNotFound(err))
+	}
+	return row, nil
 }
 
 // GetDeviceView returns one live device with its labels and assignees.
