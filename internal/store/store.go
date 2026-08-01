@@ -164,6 +164,11 @@ func (s *Store) Close() {
 	s.pool.Close()
 }
 
+// Ping verifies that the authoritative database is reachable.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 // WithAdvisoryLock runs fn while holding a session-level advisory lock
 // on key, serialising every caller that uses the same key on this
 // database. The lock spans the whole of fn, so a read-side guard that

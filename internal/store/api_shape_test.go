@@ -52,6 +52,7 @@ var mutationCapableExports = map[string]string{
 // be classified rather than silently admitted.
 var nonMutatingExports = map[string]string{
 	"Close":                            "releases the pool",
+	"Ping":                             "read-only connectivity check",
 	"SetLogger":                        "in-process wiring",
 	"WithAdvisoryLock":                 "runs a callback holding a lock; hands it no database handle",
 	"TryWithAdvisoryLock":              "same, non-blocking",
