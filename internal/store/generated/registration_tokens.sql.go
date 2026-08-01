@@ -10,6 +10,51 @@ import (
 	"time"
 )
 
+const consumeRegistrationToken = `-- name: ConsumeRegistrationToken :one
+UPDATE tokens
+SET current_uses = current_uses + 1
+WHERE value_hash = $1
+  AND is_deleted = FALSE
+  AND disabled = FALSE
+  AND name <> $2
+  AND (expires_at IS NULL OR expires_at > $3)
+  AND (
+      (one_time = TRUE AND current_uses = 0)
+      OR
+      (one_time = FALSE AND (max_uses = 0 OR current_uses < max_uses))
+  )
+RETURNING id, value_hash, name, one_time, max_uses, current_uses, expires_at, created_at, created_by, owner_id, disabled, is_deleted
+`
+
+type ConsumeRegistrationTokenParams struct {
+	ValueHash    string     `json:"value_hash"`
+	ReservedName string     `json:"reserved_name"`
+	ConsumedAt   *time.Time `json:"consumed_at"`
+}
+
+// Consume one enrollment use atomically. The bearer digest is the only lookup
+// key and all usability predicates live in this UPDATE, so concurrent callers
+// cannot both consume the final use.
+func (q *Queries) ConsumeRegistrationToken(ctx context.Context, arg ConsumeRegistrationTokenParams) (Token, error) {
+	row := q.db.QueryRow(ctx, consumeRegistrationToken, arg.ValueHash, arg.ReservedName, arg.ConsumedAt)
+	var i Token
+	err := row.Scan(
+		&i.ID,
+		&i.ValueHash,
+		&i.Name,
+		&i.OneTime,
+		&i.MaxUses,
+		&i.CurrentUses,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.OwnerID,
+		&i.Disabled,
+		&i.IsDeleted,
+	)
+	return i, err
+}
+
 const countRegistrationTokens = `-- name: CountRegistrationTokens :one
 SELECT COUNT(*) FROM tokens
 WHERE is_deleted = FALSE

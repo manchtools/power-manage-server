@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -20,6 +21,10 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/mtls"
 )
+
+// ErrInvalidCSR marks caller-controlled certificate requests that cannot be
+// issued. Handlers use it to distinguish InvalidArgument from CA failures.
+var ErrInvalidCSR = errors.New("invalid certificate signing request")
 
 // CA is a certificate authority that issues device certificates.
 type CA struct {
@@ -167,20 +172,20 @@ func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass,
 	// Parse the CSR
 	csrBlock, _ := pem.Decode(csrPEM)
 	if csrBlock == nil {
-		return nil, fmt.Errorf("failed to decode CSR PEM")
+		return nil, fmt.Errorf("%w: failed to decode CSR PEM", ErrInvalidCSR)
 	}
 
 	csr, err := x509.ParseCertificateRequest(csrBlock.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("parse CSR: %w", err)
+		return nil, fmt.Errorf("%w: parse CSR: %v", ErrInvalidCSR, err)
 	}
 
 	// Verify the CSR signature
 	if err := csr.CheckSignature(); err != nil {
-		return nil, fmt.Errorf("invalid CSR signature: %w", err)
+		return nil, fmt.Errorf("%w: invalid CSR signature: %v", ErrInvalidCSR, err)
 	}
 	if _, ok := csr.PublicKey.(ed25519.PublicKey); !ok {
-		return nil, fmt.Errorf("unsupported CSR public key type %T: Ed25519 is required", csr.PublicKey)
+		return nil, fmt.Errorf("%w: unsupported public key type %T: Ed25519 is required", ErrInvalidCSR, csr.PublicKey)
 	}
 
 	// Reject CSRs that request Subject Alternative Names. Agent
@@ -191,7 +196,7 @@ func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass,
 	// hostnames (e.g. control-server.example.com) that downstream
 	// verifiers might then trust.
 	if len(csr.DNSNames) > 0 || len(csr.IPAddresses) > 0 || len(csr.EmailAddresses) > 0 || len(csr.URIs) > 0 {
-		return nil, fmt.Errorf("CSR must not request subject alternative names")
+		return nil, fmt.Errorf("%w: CSR must not request subject alternative names", ErrInvalidCSR)
 	}
 
 	// Generate serial number

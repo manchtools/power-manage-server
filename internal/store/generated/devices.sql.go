@@ -740,6 +740,56 @@ func (q *Queries) RemoveDeviceLabel(ctx context.Context, arg RemoveDeviceLabelPa
 	return result.RowsAffected(), nil
 }
 
+const replaceDeviceCertificate = `-- name: ReplaceDeviceCertificate :one
+UPDATE devices
+SET cert_fingerprint = $1,
+    cert_not_after = $2
+WHERE id = $3
+  AND is_deleted = FALSE
+  AND cert_fingerprint = $4
+RETURNING id, hostname, agent_version, agent_sealing_public_key, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, sync_interval_minutes, inventory_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing, search_tsv
+`
+
+type ReplaceDeviceCertificateParams struct {
+	NewFingerprint *string    `json:"new_fingerprint"`
+	NewNotAfter    *time.Time `json:"new_not_after"`
+	ID             string     `json:"id"`
+	OldFingerprint *string    `json:"old_fingerprint"`
+}
+
+// Advance the tracked certificate only when the presented fingerprint is
+// still current. This is the concurrency boundary for renewal: exactly one
+// caller can replace a given certificate.
+func (q *Queries) ReplaceDeviceCertificate(ctx context.Context, arg ReplaceDeviceCertificateParams) (Device, error) {
+	row := q.db.QueryRow(ctx, replaceDeviceCertificate,
+		arg.NewFingerprint,
+		arg.NewNotAfter,
+		arg.ID,
+		arg.OldFingerprint,
+	)
+	var i Device
+	err := row.Scan(
+		&i.ID,
+		&i.Hostname,
+		&i.AgentVersion,
+		&i.AgentSealingPublicKey,
+		&i.CertFingerprint,
+		&i.CertNotAfter,
+		&i.RegisteredAt,
+		&i.LastSeenAt,
+		&i.RegistrationTokenID,
+		&i.IsDeleted,
+		&i.SyncIntervalMinutes,
+		&i.InventoryIntervalMinutes,
+		&i.ComplianceStatus,
+		&i.ComplianceCheckedAt,
+		&i.ComplianceTotal,
+		&i.CompliancePassing,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
 const setDeviceInventoryInterval = `-- name: SetDeviceInventoryInterval :execrows
 UPDATE devices SET inventory_interval_minutes = $1
 WHERE id = $2 AND is_deleted = FALSE

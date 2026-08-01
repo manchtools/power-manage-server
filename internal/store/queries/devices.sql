@@ -13,6 +13,18 @@ SELECT * FROM devices WHERE id = $1 AND is_deleted = FALSE;
 -- name: UpdateDeviceHostname :execrows
 UPDATE devices SET hostname = $2 WHERE id = $1 AND is_deleted = FALSE;
 
+-- Advance the tracked certificate only when the presented fingerprint is
+-- still current. This is the concurrency boundary for renewal: exactly one
+-- caller can replace a given certificate.
+-- name: ReplaceDeviceCertificate :one
+UPDATE devices
+SET cert_fingerprint = sqlc.arg(new_fingerprint),
+    cert_not_after = sqlc.arg(new_not_after)
+WHERE id = sqlc.arg(id)
+  AND is_deleted = FALSE
+  AND cert_fingerprint = sqlc.arg(old_fingerprint)
+RETURNING *;
+
 -- name: ListDevices :many
 SELECT d.*
 FROM devices d

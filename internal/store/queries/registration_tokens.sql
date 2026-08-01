@@ -33,6 +33,24 @@ INSERT INTO tokens (
 )
 RETURNING *;
 
+-- Consume one enrollment use atomically. The bearer digest is the only lookup
+-- key and all usability predicates live in this UPDATE, so concurrent callers
+-- cannot both consume the final use.
+-- name: ConsumeRegistrationToken :one
+UPDATE tokens
+SET current_uses = current_uses + 1
+WHERE value_hash = sqlc.arg(value_hash)
+  AND is_deleted = FALSE
+  AND disabled = FALSE
+  AND name <> sqlc.arg(reserved_name)
+  AND (expires_at IS NULL OR expires_at > sqlc.arg(consumed_at))
+  AND (
+      (one_time = TRUE AND current_uses = 0)
+      OR
+      (one_time = FALSE AND (max_uses = 0 OR current_uses < max_uses))
+  )
+RETURNING *;
+
 -- name: RenameRegistrationToken :one
 UPDATE tokens
 SET name = sqlc.arg(name)
