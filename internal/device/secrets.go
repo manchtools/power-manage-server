@@ -2,17 +2,26 @@ package device
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
+	"github.com/oklog/ulid/v2"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
-	"github.com/manchtools/power-manage/server/internal/crypto"
+	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
+	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
+
+const luksTokenTTL = 24 * time.Hour
 
 // GetDeviceLpsPasswords returns bounded current and historical LPS secrets.
 func (h *Handlers) GetDeviceLpsPasswords(ctx context.Context, req *connect.Request[pmv1.GetDeviceLpsPasswordsRequest]) (*connect.Response[pmv1.GetDeviceLpsPasswordsResponse], error) {
@@ -81,7 +90,7 @@ func (h *Handlers) GetDeviceLuksKeys(ctx context.Context, req *connect.Request[p
 func (h *Handlers) lpsPasswordsToProto(rows []store.LpsPasswordView) ([]*pmv1.LpsPassword, error) {
 	out := make([]*pmv1.LpsPassword, len(rows))
 	for i, row := range rows {
-		password, err := h.openStoredSecret(row.Password, crypto.SecretAAD(row.DeviceID, row.ActionID, "lps"))
+		password, err := h.openStoredSecret(row.Password, pmcrypto.SecretAAD(row.DeviceID, row.ActionID, "lps"))
 		if err != nil {
 			return nil, fmt.Errorf("open LPS password for device %s action %s: %w", row.DeviceID, row.ActionID, err)
 		}
@@ -102,7 +111,7 @@ func (h *Handlers) lpsPasswordsToProto(rows []store.LpsPasswordView) ([]*pmv1.Lp
 func (h *Handlers) luksKeysToProto(rows []store.LuksKeyView) ([]*pmv1.LuksKey, error) {
 	out := make([]*pmv1.LuksKey, len(rows))
 	for i, row := range rows {
-		passphrase, err := h.openStoredSecret(row.Passphrase, crypto.SecretAAD(row.DeviceID, row.ActionID, "luks"))
+		passphrase, err := h.openStoredSecret(row.Passphrase, pmcrypto.SecretAAD(row.DeviceID, row.ActionID, "luks"))
 		if err != nil {
 			return nil, fmt.Errorf("open LUKS passphrase for device %s action %s: %w", row.DeviceID, row.ActionID, err)
 		}
@@ -132,6 +141,90 @@ func (h *Handlers) luksKeysToProto(rows []store.LuksKeyView) ([]*pmv1.LuksKey, e
 		out[i] = key
 	}
 	return out, nil
+}
+
+// CreateLuksToken atomically persists a hash of a one-time owner token with
+// its audit evidence. The plaintext is returned exactly once.
+func (h *Handlers) CreateLuksToken(ctx context.Context, req *connect.Request[pmv1.CreateLuksTokenRequest]) (*connect.Response[pmv1.CreateLuksTokenResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := h.mutationDevice(ctx, "CreateLuksToken", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	owned, err := h.store.IsDeviceDirectlyAssignedToUser(ctx, req.Msg.DeviceId, actor.ID)
+	if err != nil {
+		return nil, h.internal(ctx, "check LUKS token owner", err)
+	}
+	if !owned {
+		return nil, rpcError(ctx, errPermissionDenied, connect.CodePermissionDenied,
+			"only the directly assigned device owner can create a LUKS passphrase token")
+	}
+	action, err := h.store.GetManifestAction(ctx, req.Msg.ActionId)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, errActionNotFound, "action not found")
+		}
+		return nil, h.internal(ctx, "read LUKS token action", err)
+	}
+	if pmv1.ActionType(action.ActionType) != pmv1.ActionType_ACTION_TYPE_ENCRYPTION {
+		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument,
+			"action is not an encryption action")
+	}
+	var params pmv1.EncryptionParams
+	if err := protojson.Unmarshal(action.Params, &params); err != nil {
+		return nil, h.internal(ctx, "decode encryption action params", err)
+	}
+	minLength := params.UserPassphraseMinLength
+	if minLength < 16 {
+		minLength = 16
+	}
+	if _, ok := pmv1.LpsPasswordComplexity_name[int32(params.UserPassphraseComplexity)]; !ok {
+		return nil, h.internal(ctx, "decode encryption action params",
+			fmt.Errorf("invalid passphrase complexity %d", params.UserPassphraseComplexity))
+	}
+
+	issuedAt := h.now().UTC()
+	tokenID, err := ulid.New(ulid.Timestamp(issuedAt), rand.Reader)
+	if err != nil {
+		return nil, h.internal(ctx, "generate LUKS token", err)
+	}
+	token := tokenID.String()
+	hash := sha256.Sum256([]byte(token))
+	expiresAt := issuedAt.Add(luksTokenTTL)
+	rowID := ulid.Make().String()
+	_, err = h.store.WithAudit(ctx, h.operation(req, actor,
+		powermanagev1connect.ControlServiceCreateLuksTokenProcedure, "CreateLuksToken"),
+		func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+			if _, err := tx.InsertLuksToken(ctx, db.InsertLuksTokenParams{
+				ID: rowID, DeviceID: req.Msg.DeviceId, ActionID: req.Msg.ActionId,
+				Token: hex.EncodeToString(hash[:]), MinLength: minLength,
+				Complexity: int32(params.UserPassphraseComplexity),
+				CreatedAt:  issuedAt, ExpiresAt: expiresAt,
+			}); err != nil {
+				return fmt.Errorf("insert LUKS token: %w", err)
+			}
+			rec.Effect(store.AuditEffect{
+				ResourceType: "luks_token", ResourceID: rowID,
+				Action: "CREATE", Outcome: store.EffectApplied,
+				ChangedFields: []string{
+					"action_id", "complexity", "device_id", "expires_at", "min_length",
+				},
+			})
+			return nil
+		})
+	if err != nil {
+		return nil, h.internal(ctx, "create LUKS token", err)
+	}
+	return connect.NewResponse(&pmv1.CreateLuksTokenResponse{
+		Token:      token,
+		Uri:        "power-manage://luks/set-passphrase?token=" + token,
+		CliCommand: "sudo power-manage-agent luks set-passphrase --token " + token,
+	}), nil
 }
 
 func (h *Handlers) openStoredSecret(ciphertext string, aad []byte) (string, error) {

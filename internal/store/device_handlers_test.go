@@ -3,6 +3,8 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -176,6 +179,9 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.GetDeviceLuksKeys(context.Background(),
 		connect.NewRequest(&pmv1.GetDeviceLuksKeysRequest{DeviceId: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.CreateLuksToken(context.Background(),
+		connect.NewRequest(&pmv1.CreateLuksTokenRequest{DeviceId: "bad", ActionId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	_, err = f.handlers.GetDevice(context.Background(), connect.NewRequest(&pmv1.GetDeviceRequest{Id: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -208,6 +214,9 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	_, err = f.handlers.GetDeviceLuksKeys(context.Background(),
 		connect.NewRequest(&pmv1.GetDeviceLuksKeysRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.CreateLuksToken(context.Background(),
+		connect.NewRequest(&pmv1.CreateLuksTokenRequest{DeviceId: f.directID, ActionId: newID()}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
@@ -759,6 +768,79 @@ func TestDeviceHandlers_SecretReadsDecryptAtSinkAndBoundHistory(t *testing.T) {
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "plaintext storage must not get a compatibility path")
 }
 
+func TestDeviceHandlers_CreateLuksTokenIsOwnerOnlyHashedAndAudited(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	actionID := newID()
+	_, err := f.raw.Exec(context.Background(), `
+		INSERT INTO actions (id, name, action_type, params, created_by)
+		VALUES ($1, 'Encryption', $2,
+			'{"userPassphraseMinLength":24,"userPassphraseComplexity":"LPS_PASSWORD_COMPLEXITY_COMPLEX"}', $3)`,
+		actionID, int32(pmv1.ActionType_ACTION_TYPE_ENCRYPTION), f.actorID)
+	require.NoError(t, err)
+	ctx := f.actor("CreateLuksToken")
+
+	issued, err := f.handlers.CreateLuksToken(ctx, connect.NewRequest(&pmv1.CreateLuksTokenRequest{
+		DeviceId: f.directID, ActionId: actionID,
+	}))
+	require.NoError(t, err)
+	_, err = ulid.ParseStrict(issued.Msg.Token)
+	require.NoError(t, err)
+	assert.Contains(t, issued.Msg.Uri, issued.Msg.Token)
+	assert.Contains(t, issued.Msg.CliCommand, issued.Msg.Token)
+	hash := sha256.Sum256([]byte(issued.Msg.Token))
+	var storedHash string
+	var minLength, complexity int32
+	var expiresAt time.Time
+	err = f.raw.QueryRow(context.Background(), `
+		SELECT token, min_length, complexity, expires_at
+		FROM luks_tokens WHERE device_id = $1 AND action_id = $2`,
+		f.directID, actionID).Scan(&storedHash, &minLength, &complexity, &expiresAt)
+	require.NoError(t, err)
+	assert.Equal(t, hex.EncodeToString(hash[:]), storedHash)
+	assert.NotEqual(t, issued.Msg.Token, storedHash)
+	assert.Equal(t, int32(24), minLength)
+	assert.Equal(t, int32(pmv1.LpsPasswordComplexity_LPS_PASSWORD_COMPLEXITY_COMPLEX), complexity)
+	assert.True(t, expiresAt.Equal(f.now.Add(24*time.Hour)))
+	operation, err := latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceCreateLuksTokenProcedure)
+	require.NoError(t, err)
+	effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, effects, 1)
+	assert.Equal(t, "luks_token", effects[0].ResourceType)
+	assert.NotContains(t, strings.Join(effects[0].ChangedFields, ","), "token")
+
+	_, err = f.handlers.CreateLuksToken(ctx, connect.NewRequest(&pmv1.CreateLuksTokenRequest{
+		DeviceId: f.groupID, ActionId: actionID,
+	}))
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"group-derived visibility is not direct device ownership")
+
+	_, err = f.raw.Exec(context.Background(), `UPDATE actions SET params = '"corrupt"' WHERE id = $1`, actionID)
+	require.NoError(t, err)
+	_, err = f.handlers.CreateLuksToken(ctx, connect.NewRequest(&pmv1.CreateLuksTokenRequest{
+		DeviceId: f.directID, ActionId: actionID,
+	}))
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "corrupt policy must not fall back")
+	_, err = f.raw.Exec(context.Background(), `UPDATE actions SET params = '{}' WHERE id = $1`, actionID)
+	require.NoError(t, err)
+
+	_, err = f.raw.Exec(context.Background(), `
+		ALTER TABLE audit_operations ADD CONSTRAINT reject_luks_token_audit
+		CHECK (request_descriptor <> '/powermanage.v1.ControlService/CreateLuksToken') NOT VALID`)
+	require.NoError(t, err)
+	_, err = f.handlers.CreateLuksToken(ctx, connect.NewRequest(&pmv1.CreateLuksTokenRequest{
+		DeviceId: f.directID, ActionId: actionID,
+	}))
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+	var tokenCount int
+	err = f.raw.QueryRow(context.Background(), `
+		SELECT COUNT(*) FROM luks_tokens WHERE device_id = $1 AND action_id = $2`,
+		f.directID, actionID).Scan(&tokenCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, tokenCount, "audit failure must roll the token insert back")
+}
+
 func TestDeviceHandlers_SensitiveReadFailsClosedWhenEvidenceFails(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	_, err := f.raw.Exec(context.Background(), `
@@ -776,7 +858,7 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 	ctx := f.actor(
 		"SetDeviceLabel", "RemoveDeviceLabel", "AssignDevice", "UnassignDevice",
 		"ListDeviceAssignees", "SetDeviceSyncInterval", "SetDeviceInventoryInterval", "DeleteDevice",
-		"CancelExecution",
+		"CancelExecution", "CreateLuksToken",
 	)
 
 	setLabel, err := f.handlers.SetDeviceLabel(ctx, connect.NewRequest(&pmv1.SetDeviceLabelRequest{
@@ -831,6 +913,17 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 	require.NoError(t, err)
 	_, err = f.handlers.CancelExecution(ctx,
 		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: executionID}))
+	require.NoError(t, err)
+	encryptionActionID := newID()
+	_, err = f.raw.Exec(context.Background(), `
+		INSERT INTO actions (id, name, action_type, params, created_by)
+		VALUES ($1, 'Encryption', $2, '{}', $3)`,
+		encryptionActionID, int32(pmv1.ActionType_ACTION_TYPE_ENCRYPTION), f.actorID)
+	require.NoError(t, err)
+	_, err = f.handlers.CreateLuksToken(ctx,
+		connect.NewRequest(&pmv1.CreateLuksTokenRequest{
+			DeviceId: f.directID, ActionId: encryptionActionID,
+		}))
 	require.NoError(t, err)
 
 	_, err = f.handlers.DeleteDevice(ctx, connect.NewRequest(&pmv1.DeleteDeviceRequest{Id: f.directID}))
@@ -894,6 +987,7 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceCancelExecutionProcedure,
 		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
 		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
+		powermanagev1connect.ControlServiceCreateLuksTokenProcedure,
 		powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceAssignDeviceProcedure,

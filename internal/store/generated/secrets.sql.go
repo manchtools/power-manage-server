@@ -10,6 +10,53 @@ import (
 	"time"
 )
 
+const insertLuksToken = `-- name: InsertLuksToken :one
+INSERT INTO luks_tokens (
+    id, device_id, action_id, token, min_length, complexity, created_at, expires_at
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7, $8
+)
+RETURNING id, device_id, action_id, token, min_length, complexity, created_at, expires_at, used
+`
+
+type InsertLuksTokenParams struct {
+	ID         string    `json:"id"`
+	DeviceID   string    `json:"device_id"`
+	ActionID   string    `json:"action_id"`
+	Token      string    `json:"token"`
+	MinLength  int32     `json:"min_length"`
+	Complexity int32     `json:"complexity"`
+	CreatedAt  time.Time `json:"created_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+func (q *Queries) InsertLuksToken(ctx context.Context, arg InsertLuksTokenParams) (LuksToken, error) {
+	row := q.db.QueryRow(ctx, insertLuksToken,
+		arg.ID,
+		arg.DeviceID,
+		arg.ActionID,
+		arg.Token,
+		arg.MinLength,
+		arg.Complexity,
+		arg.CreatedAt,
+		arg.ExpiresAt,
+	)
+	var i LuksToken
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.ActionID,
+		&i.Token,
+		&i.MinLength,
+		&i.Complexity,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.Used,
+	)
+	return i, err
+}
+
 const listCurrentLpsPasswords = `-- name: ListCurrentLpsPasswords :many
 
 SELECT p.id, p.device_id, d.hostname AS device_hostname,

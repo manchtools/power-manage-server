@@ -30,6 +30,15 @@ FROM (
 WHERE history_position <= 3
 ORDER BY rotated_at DESC, id DESC;
 
+-- name: InsertLuksToken :one
+INSERT INTO luks_tokens (
+    id, device_id, action_id, token, min_length, complexity, created_at, expires_at
+) VALUES (
+    sqlc.arg(id), sqlc.arg(device_id), sqlc.arg(action_id), sqlc.arg(token),
+    sqlc.arg(min_length), sqlc.arg(complexity), sqlc.arg(created_at), sqlc.arg(expires_at)
+)
+RETURNING *;
+
 -- name: ListCurrentLuksKeys :many
 SELECT k.id, k.device_id, d.hostname AS device_hostname,
        k.action_id, COALESCE(a.name, '')::text AS action_name,

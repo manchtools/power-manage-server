@@ -20,6 +20,7 @@ const (
 	errDeviceNotFound     = "device_not_found"
 	errQueryResultMissing = "query_result_not_found"
 	errExecutionNotFound  = "execution_not_found"
+	errActionNotFound     = "action_not_found"
 	errUserNotFound       = "user_not_found"
 	errUserGroupMissing   = "user_group_not_found"
 )

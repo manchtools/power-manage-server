@@ -178,6 +178,16 @@ SELECT EXISTS (
       )
 );
 
+-- name: IsDeviceDirectlyAssignedToUser :one
+SELECT EXISTS (
+    SELECT 1
+    FROM device_assigned_users dau
+    JOIN devices d ON d.id = dau.device_id AND d.is_deleted = FALSE
+    JOIN users u ON u.id = dau.user_id AND u.is_deleted = FALSE
+    WHERE dau.device_id = sqlc.arg(device_id)
+      AND dau.user_id = sqlc.arg(user_id)
+);
+
 -- name: ListDeviceInventoryFreshness :many
 SELECT
     d.id AS device_id,

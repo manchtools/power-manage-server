@@ -1189,6 +1189,19 @@ func (s *Store) IsDeviceAssignedToUser(ctx context.Context, deviceID, userID str
 	return assigned, nil
 }
 
+// IsDeviceDirectlyAssignedToUser reports whether the user is a direct owner;
+// group-derived visibility is intentionally excluded.
+func (s *Store) IsDeviceDirectlyAssignedToUser(ctx context.Context, deviceID, userID string) (bool, error) {
+	assigned, err := s.queries.IsDeviceDirectlyAssignedToUser(ctx, generated.IsDeviceDirectlyAssignedToUserParams{
+		DeviceID: deviceID,
+		UserID:   userID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("device: check direct user assignment: %w", err)
+	}
+	return assigned, nil
+}
+
 // ListDeviceAssignees returns all live user and group assignees in one read.
 func (s *Store) ListDeviceAssignees(ctx context.Context, deviceID string) ([]DeviceAssigneeView, error) {
 	if _, err := s.GetDevice(ctx, deviceID); err != nil {

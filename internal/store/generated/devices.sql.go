@@ -272,6 +272,29 @@ func (q *Queries) IsDeviceAssignedToUser(ctx context.Context, arg IsDeviceAssign
 	return exists, err
 }
 
+const isDeviceDirectlyAssignedToUser = `-- name: IsDeviceDirectlyAssignedToUser :one
+SELECT EXISTS (
+    SELECT 1
+    FROM device_assigned_users dau
+    JOIN devices d ON d.id = dau.device_id AND d.is_deleted = FALSE
+    JOIN users u ON u.id = dau.user_id AND u.is_deleted = FALSE
+    WHERE dau.device_id = $1
+      AND dau.user_id = $2
+)
+`
+
+type IsDeviceDirectlyAssignedToUserParams struct {
+	DeviceID string `json:"device_id"`
+	UserID   string `json:"user_id"`
+}
+
+func (q *Queries) IsDeviceDirectlyAssignedToUser(ctx context.Context, arg IsDeviceDirectlyAssignedToUserParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isDeviceDirectlyAssignedToUser, arg.DeviceID, arg.UserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listDeviceAssignedGroupIDs = `-- name: ListDeviceAssignedGroupIDs :many
 SELECT group_id FROM device_assigned_groups WHERE device_id = $1 ORDER BY group_id
 `
