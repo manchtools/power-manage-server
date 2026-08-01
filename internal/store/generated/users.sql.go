@@ -68,7 +68,7 @@ func (q *Queries) GetNextLinuxUID(ctx context.Context) (int32, error) {
 }
 
 const getServerSettings = `-- name: GetServerSettings :one
-SELECT id, user_provisioning_enabled, ssh_access_for_all, updated_at FROM server_settings WHERE id = 'global'
+SELECT id, user_provisioning_enabled, ssh_access_for_all, updated_at FROM server_settings WHERE id = '00000000000000000000000003'
 `
 
 func (q *Queries) GetServerSettings(ctx context.Context) (ServerSetting, error) {
@@ -386,6 +386,33 @@ func (q *Queries) TouchUserLastLogin(ctx context.Context, arg TouchUserLastLogin
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const updateServerSettings = `-- name: UpdateServerSettings :one
+UPDATE server_settings
+SET user_provisioning_enabled = $1,
+    ssh_access_for_all = $2,
+    updated_at = $3
+WHERE id = '00000000000000000000000003'
+RETURNING id, user_provisioning_enabled, ssh_access_for_all, updated_at
+`
+
+type UpdateServerSettingsParams struct {
+	UserProvisioningEnabled bool      `json:"user_provisioning_enabled"`
+	SshAccessForAll         bool      `json:"ssh_access_for_all"`
+	UpdatedAt               time.Time `json:"updated_at"`
+}
+
+func (q *Queries) UpdateServerSettings(ctx context.Context, arg UpdateServerSettingsParams) (ServerSetting, error) {
+	row := q.db.QueryRow(ctx, updateServerSettings, arg.UserProvisioningEnabled, arg.SshAccessForAll, arg.UpdatedAt)
+	var i ServerSetting
+	err := row.Scan(
+		&i.ID,
+		&i.UserProvisioningEnabled,
+		&i.SshAccessForAll,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const updateUserEmail = `-- name: UpdateUserEmail :execrows

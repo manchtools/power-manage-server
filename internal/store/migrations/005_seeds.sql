@@ -10,7 +10,7 @@
 -- +goose Up
 
 INSERT INTO public.server_settings (id, updated_at)
-VALUES ('global', '2026-01-01 00:00:00+00')
+VALUES ('00000000000000000000000003', '2026-01-01 00:00:00+00')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO public.roles (id, name, description, permissions, is_system, created_at, updated_at)

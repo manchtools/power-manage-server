@@ -49,6 +49,7 @@ type Store interface {
 	ListRoles(ctx context.Context, after string, limit int32) ([]store.RoleRow, error)
 	CountRoles(ctx context.Context) (int64, error)
 	CountRoleHolders(ctx context.Context, roleID string) (int64, error)
+	GetServerSettings(ctx context.Context) (store.ServerSettingsRow, error)
 
 	GetIdentityProvider(ctx context.Context, id string) (store.IdentityProviderRow, error)
 	GetIdentityProviderBySlug(ctx context.Context, slug string) (store.IdentityProviderRow, error)

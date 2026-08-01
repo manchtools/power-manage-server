@@ -172,6 +172,12 @@ var authenticatedMutations = map[string]call{
 		}, token))
 		return err
 	},
+	powermanagev1connect.ControlServiceUpdateServerSettingsProcedure: func(f *fixture, token string) error {
+		_, err := f.client.UpdateServerSettings(f.ctx(), authed(&pmv1.UpdateServerSettingsRequest{
+			UserProvisioningEnabled: true,
+		}, token))
+		return err
+	},
 	powermanagev1connect.ControlServiceCreateRoleProcedure: func(f *fixture, token string) error {
 		_, err := f.client.CreateRole(f.ctx(), authed(&pmv1.CreateRoleRequest{
 			Name: "Auditors", Permissions: []string{"ListUsers"},

@@ -23,7 +23,7 @@ func TestNew_RunsMigrations(t *testing.T) {
 
 	// The seeds the server assumes exist on first boot.
 	var settings int64
-	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM public.server_settings WHERE id = 'global'`).Scan(&settings))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM public.server_settings WHERE id = '00000000000000000000000003'`).Scan(&settings))
 	assert.Equal(t, int64(1), settings)
 
 	var roles int64

@@ -138,6 +138,12 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	register(powermanagev1connect.ControlServiceListPermissionsProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListPermissionsProcedure, h.ListPermissions, opts...))
 
+	// Fleet settings.
+	register(powermanagev1connect.ControlServiceGetServerSettingsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetServerSettingsProcedure, h.GetServerSettings, opts...))
+	register(powermanagev1connect.ControlServiceUpdateServerSettingsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceUpdateServerSettingsProcedure, h.UpdateServerSettings, opts...))
+
 	return mounted
 }
 
@@ -184,6 +190,7 @@ func MutationProcedures() []string {
 		powermanagev1connect.ControlServiceRevokeRoleFromUserProcedure,
 		powermanagev1connect.ControlServiceAssignRoleToUserGroupProcedure,
 		powermanagev1connect.ControlServiceRevokeRoleFromUserGroupProcedure,
+		powermanagev1connect.ControlServiceUpdateServerSettingsProcedure,
 	}
 }
 
@@ -205,5 +212,6 @@ func ReadProcedures() []string {
 		powermanagev1connect.ControlServiceGetRoleProcedure,
 		powermanagev1connect.ControlServiceListRolesProcedure,
 		powermanagev1connect.ControlServiceListPermissionsProcedure,
+		powermanagev1connect.ControlServiceGetServerSettingsProcedure,
 	}
 }

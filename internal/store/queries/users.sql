@@ -89,4 +89,12 @@ SELECT COUNT(*) FROM users WHERE is_deleted = FALSE;
 SELECT nextval('linux_uid_seq')::INTEGER;
 
 -- name: GetServerSettings :one
-SELECT * FROM server_settings WHERE id = 'global';
+SELECT * FROM server_settings WHERE id = '00000000000000000000000003';
+
+-- name: UpdateServerSettings :one
+UPDATE server_settings
+SET user_provisioning_enabled = sqlc.arg(user_provisioning_enabled),
+    ssh_access_for_all = sqlc.arg(ssh_access_for_all),
+    updated_at = sqlc.arg(updated_at)
+WHERE id = '00000000000000000000000003'
+RETURNING *;

@@ -720,7 +720,8 @@ CREATE INDEX idx_compliance_device ON public.compliance_results USING btree (dev
 -- Server settings
 -- ===========================================================================
 
--- Singleton row, id = 'global'.
+-- Singleton row. Its stable ULID is seeded in 005_seeds.sql so audit
+-- effects can reference it without a special non-ULID exception.
 CREATE TABLE public.server_settings (
     id                        text PRIMARY KEY,
     user_provisioning_enabled boolean DEFAULT false NOT NULL,

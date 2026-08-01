@@ -59,6 +59,9 @@ const (
 
 	PermListIdentityLinks = "ListIdentityLinks"
 	PermUnlinkIdentity    = "UnlinkIdentity"
+
+	PermGetServerSettings    = "GetServerSettings"
+	PermUpdateServerSettings = "UpdateServerSettings"
 )
 
 // gatedPermissions is every permission key this package gates on,
@@ -82,6 +85,7 @@ var gatedPermissions = []string{
 	PermUpdateIdentityProvider, PermDeleteIdentityProvider,
 	PermEnableSCIM, PermDisableSCIM, PermRotateSCIMToken,
 	PermListIdentityLinks, PermUnlinkIdentity,
+	PermGetServerSettings, PermUpdateServerSettings,
 }
 
 // GatedPermissions returns every permission key this package gates on.
