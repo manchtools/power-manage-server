@@ -58,6 +58,8 @@ var nonMutatingExports = map[string]string{
 	"ListAuditCheckpoints":             "read",
 	"GetAuditOperation":                "read",
 	"ListAuditEffects":                 "read",
+	"ListAuditEventRows":               "read",
+	"CountAuditEventRows":              "read",
 	"AuditChainTipOf":                  "read",
 	"CountAuditOperations":             "read",
 	"GetDevice":                        "read",

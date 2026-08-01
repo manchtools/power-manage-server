@@ -8,6 +8,8 @@ package generated
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const advanceAuditChainHead = `-- name: AdvanceAuditChainHead :exec
@@ -62,6 +64,52 @@ type CountAuditEffectsStrandedByBoundaryParams struct {
 // operation from its evidence and must be refused.
 func (q *Queries) CountAuditEffectsStrandedByBoundary(ctx context.Context, arg CountAuditEffectsStrandedByBoundaryParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countAuditEffectsStrandedByBoundary, arg.Stream, arg.ChainSeq)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countAuditEventRows = `-- name: CountAuditEventRows :one
+WITH audit_event_rows AS (
+    SELECT
+        e.resource_type AS stream_type,
+        e.action AS event_type,
+        o.actor_id,
+        e.occurred_at
+    FROM audit_effects e
+    JOIN audit_operations o ON o.operation_id = e.operation_id
+    WHERE e.stream = 'control'
+
+    UNION ALL
+
+    SELECT
+        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
+             THEN 'authentication' ELSE 'operation' END AS stream_type,
+        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
+             THEN 'AUTHENTICATION_REJECTED' ELSE o.operation_class END AS event_type,
+        o.actor_id,
+        o.occurred_at
+    FROM audit_operations o
+    WHERE o.stream = 'control'
+      AND NOT EXISTS (
+          SELECT 1 FROM audit_effects e WHERE e.operation_id = o.operation_id
+      )
+)
+SELECT COUNT(*)
+FROM audit_event_rows ev
+WHERE ($1::text = '' OR ev.actor_id = $1)
+  AND (cardinality($2::text[]) = 0 OR ev.stream_type = ANY($2::text[]))
+  AND ($3::text = '' OR strpos(lower(ev.event_type), lower($3)) > 0)
+`
+
+type CountAuditEventRowsParams struct {
+	ActorID     string   `json:"actor_id"`
+	StreamTypes []string `json:"stream_types"`
+	EventType   string   `json:"event_type"`
+}
+
+func (q *Queries) CountAuditEventRows(ctx context.Context, arg CountAuditEventRowsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAuditEventRows, arg.ActorID, arg.StreamTypes, arg.EventType)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -750,6 +798,195 @@ func (q *Queries) ListAuditEffectsForOperation(ctx context.Context, operationID 
 			&i.OccurredAt,
 			&i.PrevHash,
 			&i.RowHash,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAuditEventRows = `-- name: ListAuditEventRows :many
+WITH audit_event_rows AS (
+    SELECT
+        e.effect_id AS id,
+        e.chain_seq,
+        e.resource_type AS stream_type,
+        e.resource_id AS stream_id,
+        e.action AS event_type,
+        o.operation_id,
+        o.operation_class,
+        o.actor_type,
+        o.actor_id,
+        o.actor_fingerprint,
+        o.origin,
+        o.origin_fingerprint,
+        o.request_descriptor,
+        o.authorization_outcome,
+        o.authorization_detail,
+        o.result,
+        o.result_code,
+        e.outcome AS effect_outcome,
+        e.changed_fields,
+        e.before_ref,
+        e.after_ref,
+        e.before_flag,
+        e.after_flag,
+        e.before_count,
+        e.after_count,
+        e.evidence_kind,
+        e.evidence_fingerprint,
+        e.occurred_at
+    FROM audit_effects e
+    JOIN audit_operations o ON o.operation_id = e.operation_id
+    WHERE e.stream = 'control'
+
+    UNION ALL
+
+    SELECT
+        o.operation_id AS id,
+        o.chain_seq,
+        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
+             THEN 'authentication' ELSE 'operation' END AS stream_type,
+        o.operation_id AS stream_id,
+        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
+             THEN 'AUTHENTICATION_REJECTED' ELSE o.operation_class END AS event_type,
+        o.operation_id,
+        o.operation_class,
+        o.actor_type,
+        o.actor_id,
+        o.actor_fingerprint,
+        o.origin,
+        o.origin_fingerprint,
+        o.request_descriptor,
+        o.authorization_outcome,
+        o.authorization_detail,
+        o.result,
+        o.result_code,
+        ''::text AS effect_outcome,
+        '{}'::text[] AS changed_fields,
+        NULL::text AS before_ref,
+        NULL::text AS after_ref,
+        NULL::boolean AS before_flag,
+        NULL::boolean AS after_flag,
+        NULL::bigint AS before_count,
+        NULL::bigint AS after_count,
+        ''::text AS evidence_kind,
+        ''::text AS evidence_fingerprint,
+        o.occurred_at
+    FROM audit_operations o
+    WHERE o.stream = 'control'
+      AND NOT EXISTS (
+          SELECT 1 FROM audit_effects e WHERE e.operation_id = o.operation_id
+      )
+)
+SELECT id, chain_seq, stream_type, stream_id, event_type, operation_id, operation_class, actor_type, actor_id, actor_fingerprint, origin, origin_fingerprint, request_descriptor, authorization_outcome, authorization_detail, result, result_code, effect_outcome, changed_fields, before_ref, after_ref, before_flag, after_flag, before_count, after_count, evidence_kind, evidence_fingerprint, occurred_at
+FROM audit_event_rows ev
+WHERE ($1::text = '' OR ev.actor_id = $1)
+  AND (cardinality($2::text[]) = 0 OR ev.stream_type = ANY($2::text[]))
+  AND ($3::text = '' OR strpos(lower(ev.event_type), lower($3)) > 0)
+  AND ev.occurred_at >= $4::timestamptz
+  AND ev.occurred_at <= $5::timestamptz
+  AND ($6::bigint = 0 OR ev.chain_seq < $6)
+ORDER BY ev.chain_seq DESC
+LIMIT $7
+`
+
+type ListAuditEventRowsParams struct {
+	ActorID      string             `json:"actor_id"`
+	StreamTypes  []string           `json:"stream_types"`
+	EventType    string             `json:"event_type"`
+	OccurredFrom pgtype.Timestamptz `json:"occurred_from"`
+	OccurredTo   pgtype.Timestamptz `json:"occurred_to"`
+	BeforeSeq    int64              `json:"before_seq"`
+	RowLimit     int32              `json:"row_limit"`
+}
+
+type ListAuditEventRowsRow struct {
+	ID                   string    `json:"id"`
+	ChainSeq             int64     `json:"chain_seq"`
+	StreamType           string    `json:"stream_type"`
+	StreamID             string    `json:"stream_id"`
+	EventType            string    `json:"event_type"`
+	OperationID          string    `json:"operation_id"`
+	OperationClass       string    `json:"operation_class"`
+	ActorType            string    `json:"actor_type"`
+	ActorID              string    `json:"actor_id"`
+	ActorFingerprint     string    `json:"actor_fingerprint"`
+	Origin               string    `json:"origin"`
+	OriginFingerprint    string    `json:"origin_fingerprint"`
+	RequestDescriptor    string    `json:"request_descriptor"`
+	AuthorizationOutcome string    `json:"authorization_outcome"`
+	AuthorizationDetail  string    `json:"authorization_detail"`
+	Result               string    `json:"result"`
+	ResultCode           string    `json:"result_code"`
+	EffectOutcome        string    `json:"effect_outcome"`
+	ChangedFields        []string  `json:"changed_fields"`
+	BeforeRef            *string   `json:"before_ref"`
+	AfterRef             *string   `json:"after_ref"`
+	BeforeFlag           *bool     `json:"before_flag"`
+	AfterFlag            *bool     `json:"after_flag"`
+	BeforeCount          *int64    `json:"before_count"`
+	AfterCount           *int64    `json:"after_count"`
+	EvidenceKind         string    `json:"evidence_kind"`
+	EvidenceFingerprint  string    `json:"evidence_fingerprint"`
+	OccurredAt           time.Time `json:"occurred_at"`
+}
+
+// The retained AuditEvent wire shape represents each resource effect. An
+// operation with no effects is still evidence (most importantly a rejected
+// authentication attempt), so it contributes one operation-only row instead
+// of disappearing from the API. Operation rows that do have effects are not
+// duplicated in the result.
+func (q *Queries) ListAuditEventRows(ctx context.Context, arg ListAuditEventRowsParams) ([]ListAuditEventRowsRow, error) {
+	rows, err := q.db.Query(ctx, listAuditEventRows,
+		arg.ActorID,
+		arg.StreamTypes,
+		arg.EventType,
+		arg.OccurredFrom,
+		arg.OccurredTo,
+		arg.BeforeSeq,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAuditEventRowsRow{}
+	for rows.Next() {
+		var i ListAuditEventRowsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChainSeq,
+			&i.StreamType,
+			&i.StreamID,
+			&i.EventType,
+			&i.OperationID,
+			&i.OperationClass,
+			&i.ActorType,
+			&i.ActorID,
+			&i.ActorFingerprint,
+			&i.Origin,
+			&i.OriginFingerprint,
+			&i.RequestDescriptor,
+			&i.AuthorizationOutcome,
+			&i.AuthorizationDetail,
+			&i.Result,
+			&i.ResultCode,
+			&i.EffectOutcome,
+			&i.ChangedFields,
+			&i.BeforeRef,
+			&i.AfterRef,
+			&i.BeforeFlag,
+			&i.AfterFlag,
+			&i.BeforeCount,
+			&i.AfterCount,
+			&i.EvidenceKind,
+			&i.EvidenceFingerprint,
+			&i.OccurredAt,
 		); err != nil {
 			return nil, err
 		}

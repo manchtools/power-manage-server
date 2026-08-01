@@ -97,6 +97,128 @@ SELECT * FROM audit_effects
 WHERE operation_id = $1
 ORDER BY effect_seq;
 
+-- name: ListAuditEventRows :many
+-- The retained AuditEvent wire shape represents each resource effect. An
+-- operation with no effects is still evidence (most importantly a rejected
+-- authentication attempt), so it contributes one operation-only row instead
+-- of disappearing from the API. Operation rows that do have effects are not
+-- duplicated in the result.
+WITH audit_event_rows AS (
+    SELECT
+        e.effect_id AS id,
+        e.chain_seq,
+        e.resource_type AS stream_type,
+        e.resource_id AS stream_id,
+        e.action AS event_type,
+        o.operation_id,
+        o.operation_class,
+        o.actor_type,
+        o.actor_id,
+        o.actor_fingerprint,
+        o.origin,
+        o.origin_fingerprint,
+        o.request_descriptor,
+        o.authorization_outcome,
+        o.authorization_detail,
+        o.result,
+        o.result_code,
+        e.outcome AS effect_outcome,
+        e.changed_fields,
+        e.before_ref,
+        e.after_ref,
+        e.before_flag,
+        e.after_flag,
+        e.before_count,
+        e.after_count,
+        e.evidence_kind,
+        e.evidence_fingerprint,
+        e.occurred_at
+    FROM audit_effects e
+    JOIN audit_operations o ON o.operation_id = e.operation_id
+    WHERE e.stream = 'control'
+
+    UNION ALL
+
+    SELECT
+        o.operation_id AS id,
+        o.chain_seq,
+        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
+             THEN 'authentication' ELSE 'operation' END AS stream_type,
+        o.operation_id AS stream_id,
+        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
+             THEN 'AUTHENTICATION_REJECTED' ELSE o.operation_class END AS event_type,
+        o.operation_id,
+        o.operation_class,
+        o.actor_type,
+        o.actor_id,
+        o.actor_fingerprint,
+        o.origin,
+        o.origin_fingerprint,
+        o.request_descriptor,
+        o.authorization_outcome,
+        o.authorization_detail,
+        o.result,
+        o.result_code,
+        ''::text AS effect_outcome,
+        '{}'::text[] AS changed_fields,
+        NULL::text AS before_ref,
+        NULL::text AS after_ref,
+        NULL::boolean AS before_flag,
+        NULL::boolean AS after_flag,
+        NULL::bigint AS before_count,
+        NULL::bigint AS after_count,
+        ''::text AS evidence_kind,
+        ''::text AS evidence_fingerprint,
+        o.occurred_at
+    FROM audit_operations o
+    WHERE o.stream = 'control'
+      AND NOT EXISTS (
+          SELECT 1 FROM audit_effects e WHERE e.operation_id = o.operation_id
+      )
+)
+SELECT *
+FROM audit_event_rows ev
+WHERE (sqlc.arg(actor_id)::text = '' OR ev.actor_id = sqlc.arg(actor_id))
+  AND (cardinality(sqlc.arg(stream_types)::text[]) = 0 OR ev.stream_type = ANY(sqlc.arg(stream_types)::text[]))
+  AND (sqlc.arg(event_type)::text = '' OR strpos(lower(ev.event_type), lower(sqlc.arg(event_type))) > 0)
+  AND ev.occurred_at >= sqlc.arg(occurred_from)::timestamptz
+  AND ev.occurred_at <= sqlc.arg(occurred_to)::timestamptz
+  AND (sqlc.arg(before_seq)::bigint = 0 OR ev.chain_seq < sqlc.arg(before_seq))
+ORDER BY ev.chain_seq DESC
+LIMIT sqlc.arg(row_limit);
+
+-- name: CountAuditEventRows :one
+WITH audit_event_rows AS (
+    SELECT
+        e.resource_type AS stream_type,
+        e.action AS event_type,
+        o.actor_id,
+        e.occurred_at
+    FROM audit_effects e
+    JOIN audit_operations o ON o.operation_id = e.operation_id
+    WHERE e.stream = 'control'
+
+    UNION ALL
+
+    SELECT
+        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
+             THEN 'authentication' ELSE 'operation' END AS stream_type,
+        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
+             THEN 'AUTHENTICATION_REJECTED' ELSE o.operation_class END AS event_type,
+        o.actor_id,
+        o.occurred_at
+    FROM audit_operations o
+    WHERE o.stream = 'control'
+      AND NOT EXISTS (
+          SELECT 1 FROM audit_effects e WHERE e.operation_id = o.operation_id
+      )
+)
+SELECT COUNT(*)
+FROM audit_event_rows ev
+WHERE (sqlc.arg(actor_id)::text = '' OR ev.actor_id = sqlc.arg(actor_id))
+  AND (cardinality(sqlc.arg(stream_types)::text[]) = 0 OR ev.stream_type = ANY(sqlc.arg(stream_types)::text[]))
+  AND (sqlc.arg(event_type)::text = '' OR strpos(lower(ev.event_type), lower(sqlc.arg(event_type))) > 0);
+
 -- ---------------------------------------------------------------------------
 -- Anchors
 -- ---------------------------------------------------------------------------

@@ -274,7 +274,8 @@ func TestMutationMatrix_CoversEveryMutationProcedure(t *testing.T) {
 	assert.Empty(t, stale, "the matrix names procedures that are not mutations: %v", stale)
 }
 
-// Every mounted procedure is classified as a mutation or a read, and
+// Every mounted procedure is classified as a mutation, ordinary read or
+// sensitive read, and
 // every classified procedure is mounted. Without this the audit
 // coverage tests could silently skip a procedure.
 func TestProcedureClassification_MatchesTheMountedSurface(t *testing.T) {
@@ -292,12 +293,18 @@ func TestProcedureClassification_MatchesTheMountedSurface(t *testing.T) {
 		}
 		classified[p] = "read"
 	}
+	for _, p := range identity.SensitiveReadProcedures() {
+		if prior, dup := classified[p]; dup {
+			t.Errorf("procedure %s is classified both as %s and as a sensitive read", p, prior)
+		}
+		classified[p] = "sensitive read"
+	}
 
 	mountedSet := make(map[string]bool, len(f.mounted))
 	for _, p := range f.mounted {
 		mountedSet[p] = true
 		if _, ok := classified[p]; !ok {
-			t.Errorf("mounted procedure %s is neither a mutation nor a read", p)
+			t.Errorf("mounted procedure %s is not classified", p)
 		}
 	}
 	for p := range classified {

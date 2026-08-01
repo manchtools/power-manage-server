@@ -50,6 +50,8 @@ type Store interface {
 	CountRoles(ctx context.Context) (int64, error)
 	CountRoleHolders(ctx context.Context, roleID string) (int64, error)
 	GetServerSettings(ctx context.Context) (store.ServerSettingsRow, error)
+	ListAuditEventRows(ctx context.Context, filter store.AuditEventFilter) ([]store.AuditEventRow, error)
+	CountAuditEventRows(ctx context.Context, filter store.AuditEventFilter) (int64, error)
 
 	GetIdentityProvider(ctx context.Context, id string) (store.IdentityProviderRow, error)
 	GetIdentityProviderBySlug(ctx context.Context, slug string) (store.IdentityProviderRow, error)

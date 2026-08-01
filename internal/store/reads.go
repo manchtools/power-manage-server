@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
@@ -19,6 +21,22 @@ type AuditOperationRow = generated.AuditOperation
 
 // AuditEffectRow is one stored effect row.
 type AuditEffectRow = generated.AuditEffect
+
+// AuditEventRow is one safe read-side projection of the append-only audit
+// evidence. Its query deliberately cannot select either sealed-detail column.
+type AuditEventRow = generated.ListAuditEventRowsRow
+
+// AuditEventFilter is the common keyset/filter surface used by list and
+// export. Empty bounds cover the full supported PostgreSQL timestamp range.
+type AuditEventFilter struct {
+	ActorID      string
+	StreamTypes  []string
+	EventType    string
+	OccurredFrom time.Time
+	OccurredTo   time.Time
+	BeforeSeq    int64
+	Limit        int32
+}
 
 // DeviceRow is one stored device.
 type DeviceRow = generated.Device
@@ -324,6 +342,57 @@ func (s *Store) ListAuditEffects(ctx context.Context, operationID string) ([]Aud
 		return nil, fmt.Errorf("audit: list effects: %w", err)
 	}
 	return rows, nil
+}
+
+// ListAuditEventRows returns newest-first effect evidence plus operation-only
+// evidence. The SQL projection is allowlisted and never reads sealed detail.
+func (s *Store) ListAuditEventRows(ctx context.Context, filter AuditEventFilter) ([]AuditEventRow, error) {
+	if filter.Limit < 1 || filter.Limit > 1001 {
+		return nil, fmt.Errorf("audit: list limit must be between 1 and 1001")
+	}
+	if filter.BeforeSeq < 0 {
+		return nil, fmt.Errorf("audit: list cursor must not be negative")
+	}
+	if filter.OccurredFrom.IsZero() {
+		filter.OccurredFrom = time.Unix(0, 0).UTC()
+	}
+	if filter.OccurredTo.IsZero() {
+		filter.OccurredTo = time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC)
+	}
+	if filter.OccurredFrom.After(filter.OccurredTo) {
+		return nil, fmt.Errorf("audit: occurred-from must not follow occurred-to")
+	}
+	if filter.StreamTypes == nil {
+		filter.StreamTypes = []string{}
+	}
+	rows, err := s.queries.ListAuditEventRows(ctx, generated.ListAuditEventRowsParams{
+		ActorID:      filter.ActorID,
+		StreamTypes:  filter.StreamTypes,
+		EventType:    filter.EventType,
+		OccurredFrom: pgtype.Timestamptz{Time: filter.OccurredFrom, Valid: true},
+		OccurredTo:   pgtype.Timestamptz{Time: filter.OccurredTo, Valid: true},
+		BeforeSeq:    filter.BeforeSeq,
+		RowLimit:     filter.Limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("audit: list event rows: %w", err)
+	}
+	return rows, nil
+}
+
+// CountAuditEventRows counts the same actor/resource/action selection as the
+// list RPC. Export does not need a count and applies its date range directly.
+func (s *Store) CountAuditEventRows(ctx context.Context, filter AuditEventFilter) (int64, error) {
+	if filter.StreamTypes == nil {
+		filter.StreamTypes = []string{}
+	}
+	n, err := s.queries.CountAuditEventRows(ctx, generated.CountAuditEventRowsParams{
+		ActorID: filter.ActorID, StreamTypes: filter.StreamTypes, EventType: filter.EventType,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("audit: count event rows: %w", err)
+	}
+	return n, nil
 }
 
 // AuditChainTipOf returns the stream's current head without locking it.

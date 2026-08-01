@@ -144,6 +144,12 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	register(powermanagev1connect.ControlServiceUpdateServerSettingsProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceUpdateServerSettingsProcedure, h.UpdateServerSettings, opts...))
 
+	// Append-only audit evidence.
+	register(powermanagev1connect.ControlServiceListAuditEventsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListAuditEventsProcedure, h.ListAuditEvents, opts...))
+	register(powermanagev1connect.ControlServiceExportAuditEventsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceExportAuditEventsProcedure, h.ExportAuditEvents, opts...))
+
 	return mounted
 }
 
@@ -213,5 +219,14 @@ func ReadProcedures() []string {
 		powermanagev1connect.ControlServiceListRolesProcedure,
 		powermanagev1connect.ControlServiceListPermissionsProcedure,
 		powermanagev1connect.ControlServiceGetServerSettingsProcedure,
+		powermanagev1connect.ControlServiceListAuditEventsProcedure,
+	}
+}
+
+// SensitiveReadProcedures is the exact read surface that must append audit
+// evidence before returning protected material.
+func SensitiveReadProcedures() []string {
+	return []string{
+		powermanagev1connect.ControlServiceExportAuditEventsProcedure,
 	}
 }
