@@ -13,7 +13,7 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	if mux == nil {
 		panic("device: mux is required")
 	}
-	mounted := make([]string, 0, 22)
+	mounted := make([]string, 0, 25)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -46,6 +46,12 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceCreateLuksTokenProcedure, h.CreateLuksToken, opts...))
 	register(powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure, h.RevokeLuksDeviceKey, opts...))
+	register(powermanagev1connect.ControlServiceDispatchOSQueryProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceDispatchOSQueryProcedure, h.DispatchOSQuery, opts...))
+	register(powermanagev1connect.ControlServiceRefreshDeviceInventoryProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRefreshDeviceInventoryProcedure, h.RefreshDeviceInventory, opts...))
+	register(powermanagev1connect.ControlServiceQueryDeviceLogsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceQueryDeviceLogsProcedure, h.QueryDeviceLogs, opts...))
 	register(powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetDeviceLabelProcedure, h.SetDeviceLabel, opts...))
 	register(powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
@@ -78,6 +84,9 @@ func MutationProcedures() []string {
 		powermanagev1connect.ControlServiceCancelExecutionProcedure,
 		powermanagev1connect.ControlServiceCreateLuksTokenProcedure,
 		powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure,
+		powermanagev1connect.ControlServiceDispatchOSQueryProcedure,
+		powermanagev1connect.ControlServiceRefreshDeviceInventoryProcedure,
+		powermanagev1connect.ControlServiceQueryDeviceLogsProcedure,
 	}
 }
 

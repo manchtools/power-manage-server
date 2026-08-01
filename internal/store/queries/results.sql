@@ -3,10 +3,63 @@ SELECT query_id, device_id, completed, success, error, rows, created_at
 FROM osquery_results
 WHERE query_id = $1;
 
+-- name: InsertPendingOSQueryResult :exec
+INSERT INTO osquery_results (
+    query_id, device_id, table_name, completed, success, error, rows, created_at
+) VALUES (
+    sqlc.arg(query_id), sqlc.arg(device_id), sqlc.arg(table_name),
+    FALSE, FALSE, '', '[]'::jsonb, sqlc.arg(created_at)
+);
+
+-- name: FailPendingOSQueryResult :execrows
+UPDATE osquery_results
+SET completed = TRUE, success = FALSE, error = sqlc.arg(error),
+    rows = '[]'::jsonb, completed_at = sqlc.arg(completed_at)
+WHERE query_id = sqlc.arg(query_id)
+  AND device_id = sqlc.arg(device_id)
+  AND completed = FALSE;
+
+-- name: CompleteOSQueryResult :execrows
+UPDATE osquery_results
+SET completed = TRUE, success = sqlc.arg(success), error = sqlc.arg(error),
+    rows = sqlc.arg(rows), completed_at = sqlc.arg(completed_at)
+WHERE query_id = sqlc.arg(query_id)
+  AND device_id = sqlc.arg(device_id)
+  AND completed = FALSE;
+
 -- name: GetDeviceLogResult :one
 SELECT query_id, device_id, completed, success, error, logs, created_at
 FROM log_query_results
 WHERE query_id = $1;
+
+-- name: InsertPendingLogQueryResult :exec
+INSERT INTO log_query_results (
+    query_id, device_id, completed, success, error, logs, created_at
+) VALUES (
+    sqlc.arg(query_id), sqlc.arg(device_id), FALSE, FALSE, '', '', sqlc.arg(created_at)
+);
+
+-- name: FailPendingLogQueryResult :execrows
+UPDATE log_query_results
+SET completed = TRUE, success = FALSE, error = sqlc.arg(error),
+    logs = '', completed_at = sqlc.arg(completed_at)
+WHERE query_id = sqlc.arg(query_id)
+  AND device_id = sqlc.arg(device_id)
+  AND completed = FALSE;
+
+-- name: CompleteLogQueryResult :execrows
+UPDATE log_query_results
+SET completed = TRUE, success = sqlc.arg(success), error = sqlc.arg(error),
+    logs = sqlc.arg(logs), completed_at = sqlc.arg(completed_at)
+WHERE query_id = sqlc.arg(query_id)
+  AND device_id = sqlc.arg(device_id)
+  AND completed = FALSE;
+
+-- name: UpsertDeviceInventoryTable :exec
+INSERT INTO device_inventory (device_id, table_name, rows, collected_at)
+VALUES (sqlc.arg(device_id), sqlc.arg(table_name), sqlc.arg(rows), sqlc.arg(collected_at))
+ON CONFLICT (device_id, table_name) DO UPDATE
+SET rows = EXCLUDED.rows, collected_at = EXCLUDED.collected_at;
 
 -- name: ListDeviceComplianceResults :many
 SELECT cr.action_id, a.name AS action_name, cr.compliant,

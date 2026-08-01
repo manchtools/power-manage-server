@@ -199,6 +199,18 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.RevokeLuksDeviceKey(context.Background(),
 		connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{DeviceId: "bad", ActionId: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.DispatchOSQuery(context.Background(),
+		connect.NewRequest(&pmv1.DispatchOSQueryRequest{DeviceId: "bad", Table: "packages"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.QueryDeviceLogs(context.Background(),
+		connect.NewRequest(&pmv1.QueryDeviceLogsRequest{DeviceId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.RefreshDeviceInventory(context.Background(),
+		connect.NewRequest(&pmv1.RefreshDeviceInventoryRequest{DeviceId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.DispatchOSQuery(context.Background(),
+		connect.NewRequest(&pmv1.DispatchOSQueryRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "custom shape validation must precede authentication")
 
 	_, err = f.handlers.GetDevice(context.Background(), connect.NewRequest(&pmv1.GetDeviceRequest{Id: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -237,6 +249,15 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	_, err = f.handlers.RevokeLuksDeviceKey(context.Background(),
 		connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{DeviceId: f.directID, ActionId: newID()}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.DispatchOSQuery(context.Background(),
+		connect.NewRequest(&pmv1.DispatchOSQueryRequest{DeviceId: f.directID, Table: "packages"}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.QueryDeviceLogs(context.Background(),
+		connect.NewRequest(&pmv1.QueryDeviceLogsRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.RefreshDeviceInventory(context.Background(),
+		connect.NewRequest(&pmv1.RefreshDeviceInventoryRequest{DeviceId: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
@@ -1002,6 +1023,195 @@ func seedCurrentLuksKeys(t *testing.T, f *deviceHandlerFixture, actionID string,
 	}
 }
 
+func TestDeviceHandlers_InstantQueriesUseDirectStreamAndPostgresResults(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	ctx := f.actor("DispatchOSQuery", "QueryDeviceLogs", "RefreshDeviceInventory")
+
+	osquery, err := f.handlers.DispatchOSQuery(ctx, connect.NewRequest(&pmv1.DispatchOSQueryRequest{
+		DeviceId: f.directID, Table: "packages", Columns: []string{"name"}, Limit: 25,
+	}))
+	require.NoError(t, err)
+	require.Len(t, f.sender.messages, 1)
+	queryFrame := f.sender.messages[0]
+	assert.Equal(t, osquery.Msg.QueryId, queryFrame.Id)
+	require.NotNil(t, queryFrame.GetQuery())
+	assert.Equal(t, "packages", queryFrame.GetQuery().Table)
+	assert.Equal(t, []string{"name"}, queryFrame.GetQuery().Columns)
+	var osCompleted, osSuccess bool
+	var osTable string
+	err = f.raw.QueryRow(context.Background(), `
+		SELECT table_name, completed, success FROM osquery_results WHERE query_id = $1`,
+		osquery.Msg.QueryId).Scan(&osTable, &osCompleted, &osSuccess)
+	require.NoError(t, err)
+	assert.Equal(t, "packages", osTable)
+	assert.False(t, osCompleted)
+	assert.False(t, osSuccess)
+
+	logs, err := f.handlers.QueryDeviceLogs(ctx, connect.NewRequest(&pmv1.QueryDeviceLogsRequest{
+		DeviceId: f.directID, Lines: 100, Unit: "sshd.service", Priority: "warning",
+	}))
+	require.NoError(t, err)
+	require.Len(t, f.sender.messages, 2)
+	logFrame := f.sender.messages[1]
+	assert.Equal(t, logs.Msg.QueryId, logFrame.Id)
+	require.NotNil(t, logFrame.GetLogQuery())
+	assert.Equal(t, "sshd.service", logFrame.GetLogQuery().Unit)
+	var logCompleted bool
+	require.NoError(t, f.raw.QueryRow(context.Background(), `
+		SELECT completed FROM log_query_results WHERE query_id = $1`, logs.Msg.QueryId).Scan(&logCompleted))
+	assert.False(t, logCompleted)
+
+	_, err = f.handlers.RefreshDeviceInventory(ctx,
+		connect.NewRequest(&pmv1.RefreshDeviceInventoryRequest{DeviceId: f.directID}))
+	require.NoError(t, err)
+	require.Len(t, f.sender.messages, 3)
+	refreshFrame := f.sender.messages[2]
+	require.NotNil(t, refreshFrame.GetRequestInventory())
+	assert.Equal(t, refreshFrame.Id, refreshFrame.GetRequestInventory().QueryId)
+
+	for _, procedure := range []string{
+		powermanagev1connect.ControlServiceDispatchOSQueryProcedure,
+		powermanagev1connect.ControlServiceQueryDeviceLogsProcedure,
+		powermanagev1connect.ControlServiceRefreshDeviceInventoryProcedure,
+	} {
+		operation, err := latestOperationFor(t, f.store, f.raw, procedure)
+		require.NoError(t, err, procedure)
+		effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+		require.NoError(t, err, procedure)
+		assert.NotEmpty(t, effects, procedure)
+	}
+
+	_, err = f.handlers.DispatchOSQuery(ctx, connect.NewRequest(&pmv1.DispatchOSQueryRequest{
+		DeviceId: f.directID, Table: "packages", RawSql: "select 1",
+	}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestDeviceHandlers_InstantQuerySendFailureIsTerminalAndGeneric(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	f.sender.err = errors.New("write tcp 10.0.0.1: secret transport detail")
+	ctx := f.actor("DispatchOSQuery", "QueryDeviceLogs", "RefreshDeviceInventory")
+
+	_, err := f.handlers.DispatchOSQuery(ctx, connect.NewRequest(&pmv1.DispatchOSQueryRequest{
+		DeviceId: f.directID, RawSql: "select version from os_version",
+	}))
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+	require.Len(t, f.sender.messages, 1)
+	osID := f.sender.messages[0].GetQuery().QueryId
+	var completed, success bool
+	var storedError, tableName string
+	err = f.raw.QueryRow(context.Background(), `
+		SELECT completed, success, error, table_name FROM osquery_results WHERE query_id = $1`, osID).
+		Scan(&completed, &success, &storedError, &tableName)
+	require.NoError(t, err)
+	assert.True(t, completed)
+	assert.False(t, success)
+	assert.Equal(t, "device unavailable", storedError)
+	assert.Equal(t, "raw_sql", tableName)
+
+	_, err = f.handlers.QueryDeviceLogs(ctx, connect.NewRequest(&pmv1.QueryDeviceLogsRequest{
+		DeviceId: f.directID,
+	}))
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+	require.Len(t, f.sender.messages, 2)
+	logID := f.sender.messages[1].GetLogQuery().QueryId
+	err = f.raw.QueryRow(context.Background(), `
+		SELECT completed, success, error FROM log_query_results WHERE query_id = $1`, logID).
+		Scan(&completed, &success, &storedError)
+	require.NoError(t, err)
+	assert.True(t, completed)
+	assert.False(t, success)
+	assert.Equal(t, "device unavailable", storedError)
+
+	_, err = f.handlers.RefreshDeviceInventory(ctx,
+		connect.NewRequest(&pmv1.RefreshDeviceInventoryRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+	refreshOperation, err := latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceRefreshDeviceInventoryProcedure)
+	require.NoError(t, err)
+	refreshEffects, err := f.store.ListAuditEffects(context.Background(), refreshOperation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, refreshEffects, 2)
+	assert.Equal(t, string(store.EffectFailed), refreshEffects[1].Outcome)
+}
+
+func TestDeviceHandlers_AgentQueryResultsAndInventoryCommitDirectly(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	ctx := f.actor("DispatchOSQuery", "QueryDeviceLogs")
+	osquery, err := f.handlers.DispatchOSQuery(ctx, connect.NewRequest(&pmv1.DispatchOSQueryRequest{
+		DeviceId: f.directID, Table: "packages",
+	}))
+	require.NoError(t, err)
+	logs, err := f.handlers.QueryDeviceLogs(ctx, connect.NewRequest(&pmv1.QueryDeviceLogsRequest{
+		DeviceId: f.directID, Lines: 10,
+	}))
+	require.NoError(t, err)
+
+	// A result from another authenticated device cannot claim this query.
+	require.NoError(t, f.handlers.CompleteOSQueryResult(context.Background(), f.outsideID,
+		&pmv1.OSQueryResult{QueryId: osquery.Msg.QueryId, Success: true}))
+	var completed bool
+	require.NoError(t, f.raw.QueryRow(context.Background(), `
+		SELECT completed FROM osquery_results WHERE query_id = $1`, osquery.Msg.QueryId).Scan(&completed))
+	assert.False(t, completed)
+
+	require.NoError(t, f.handlers.CompleteOSQueryResult(context.Background(), f.directID,
+		&pmv1.OSQueryResult{
+			QueryId: osquery.Msg.QueryId, Success: true,
+			Rows: []*pmv1.OSQueryRow{{Data: map[string]string{"name": "bash"}}},
+		}))
+	var rowsJSON []byte
+	var success bool
+	require.NoError(t, f.raw.QueryRow(context.Background(), `
+		SELECT completed, success, rows FROM osquery_results WHERE query_id = $1`, osquery.Msg.QueryId).
+		Scan(&completed, &success, &rowsJSON))
+	assert.True(t, completed)
+	assert.True(t, success)
+	assert.JSONEq(t, `[{"name":"bash"}]`, string(rowsJSON))
+
+	require.NoError(t, f.handlers.CompleteLogQueryResult(context.Background(), f.directID,
+		&pmv1.LogQueryResult{QueryId: logs.Msg.QueryId, Success: true, Logs: "service started\n"}))
+	var storedLogs string
+	require.NoError(t, f.raw.QueryRow(context.Background(), `
+		SELECT completed, success, logs FROM log_query_results WHERE query_id = $1`, logs.Msg.QueryId).
+		Scan(&completed, &success, &storedLogs))
+	assert.True(t, completed)
+	assert.True(t, success)
+	assert.Equal(t, "service started\n", storedLogs)
+
+	require.NoError(t, f.handlers.StoreDeviceInventory(context.Background(), f.directID,
+		&pmv1.DeviceInventory{Tables: []*pmv1.InventoryTable{
+			{TableName: "os_version", Rows: []*pmv1.OSQueryRow{{Data: map[string]string{"name": "Debian"}}}},
+			{TableName: "system_info", Rows: []*pmv1.OSQueryRow{{Data: map[string]string{"hostname": "direct"}}}},
+		}}))
+	var inventoryCount int
+	require.NoError(t, f.raw.QueryRow(context.Background(), `
+		SELECT count(*) FROM device_inventory WHERE device_id = $1 AND collected_at = $2`,
+		f.directID, f.now).Scan(&inventoryCount))
+	assert.Equal(t, 2, inventoryCount)
+
+	err = f.handlers.StoreDeviceInventory(context.Background(), f.directID,
+		&pmv1.DeviceInventory{Tables: []*pmv1.InventoryTable{
+			{TableName: "os_version"}, {TableName: "os_version"},
+		}})
+	assert.Error(t, err, "duplicate table names must not create order-dependent state")
+}
+
+func TestDeviceHandlers_OSQueryAuditFailurePreventsSendAndPendingRow(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	_, err := f.raw.Exec(context.Background(), `
+		ALTER TABLE audit_operations ADD CONSTRAINT reject_osquery_audit
+		CHECK (request_descriptor <> '/powermanage.v1.ControlService/DispatchOSQuery') NOT VALID`)
+	require.NoError(t, err)
+	_, err = f.handlers.DispatchOSQuery(f.actor("DispatchOSQuery"),
+		connect.NewRequest(&pmv1.DispatchOSQueryRequest{DeviceId: f.directID, Table: "packages"}))
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+	assert.Empty(t, f.sender.messages)
+	var count int
+	require.NoError(t, f.raw.QueryRow(context.Background(), `SELECT count(*) FROM osquery_results`).Scan(&count))
+	assert.Zero(t, count)
+}
+
 func TestDeviceHandlers_SensitiveReadFailsClosedWhenEvidenceFails(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	_, err := f.raw.Exec(context.Background(), `
@@ -1019,7 +1229,8 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 	ctx := f.actor(
 		"SetDeviceLabel", "RemoveDeviceLabel", "AssignDevice", "UnassignDevice",
 		"ListDeviceAssignees", "SetDeviceSyncInterval", "SetDeviceInventoryInterval", "DeleteDevice",
-		"CancelExecution", "CreateLuksToken", "RevokeLuksDeviceKey",
+		"CancelExecution", "CreateLuksToken", "RevokeLuksDeviceKey", "DispatchOSQuery",
+		"QueryDeviceLogs", "RefreshDeviceInventory",
 	)
 
 	setLabel, err := f.handlers.SetDeviceLabel(ctx, connect.NewRequest(&pmv1.SetDeviceLabelRequest{
@@ -1092,6 +1303,15 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 			DeviceId: f.directID, ActionId: encryptionActionID,
 		}))
 	require.NoError(t, err)
+	_, err = f.handlers.DispatchOSQuery(ctx,
+		connect.NewRequest(&pmv1.DispatchOSQueryRequest{DeviceId: f.directID, Table: "packages"}))
+	require.NoError(t, err)
+	_, err = f.handlers.QueryDeviceLogs(ctx,
+		connect.NewRequest(&pmv1.QueryDeviceLogsRequest{DeviceId: f.directID, Lines: 10}))
+	require.NoError(t, err)
+	_, err = f.handlers.RefreshDeviceInventory(ctx,
+		connect.NewRequest(&pmv1.RefreshDeviceInventoryRequest{DeviceId: f.directID}))
+	require.NoError(t, err)
 
 	_, err = f.handlers.DeleteDevice(ctx, connect.NewRequest(&pmv1.DeleteDeviceRequest{Id: f.directID}))
 	require.NoError(t, err)
@@ -1156,6 +1376,9 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
 		powermanagev1connect.ControlServiceCreateLuksTokenProcedure,
 		powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure,
+		powermanagev1connect.ControlServiceDispatchOSQueryProcedure,
+		powermanagev1connect.ControlServiceRefreshDeviceInventoryProcedure,
+		powermanagev1connect.ControlServiceQueryDeviceLogsProcedure,
 		powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceAssignDeviceProcedure,

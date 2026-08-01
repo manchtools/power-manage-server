@@ -29,6 +29,72 @@ func (q *Queries) CancelPendingExecution(ctx context.Context, arg CancelPendingE
 	return result.RowsAffected(), nil
 }
 
+const completeLogQueryResult = `-- name: CompleteLogQueryResult :execrows
+UPDATE log_query_results
+SET completed = TRUE, success = $1, error = $2,
+    logs = $3, completed_at = $4
+WHERE query_id = $5
+  AND device_id = $6
+  AND completed = FALSE
+`
+
+type CompleteLogQueryResultParams struct {
+	Success     bool       `json:"success"`
+	Error       string     `json:"error"`
+	Logs        string     `json:"logs"`
+	CompletedAt *time.Time `json:"completed_at"`
+	QueryID     string     `json:"query_id"`
+	DeviceID    string     `json:"device_id"`
+}
+
+func (q *Queries) CompleteLogQueryResult(ctx context.Context, arg CompleteLogQueryResultParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeLogQueryResult,
+		arg.Success,
+		arg.Error,
+		arg.Logs,
+		arg.CompletedAt,
+		arg.QueryID,
+		arg.DeviceID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const completeOSQueryResult = `-- name: CompleteOSQueryResult :execrows
+UPDATE osquery_results
+SET completed = TRUE, success = $1, error = $2,
+    rows = $3, completed_at = $4
+WHERE query_id = $5
+  AND device_id = $6
+  AND completed = FALSE
+`
+
+type CompleteOSQueryResultParams struct {
+	Success     bool       `json:"success"`
+	Error       string     `json:"error"`
+	Rows        []byte     `json:"rows"`
+	CompletedAt *time.Time `json:"completed_at"`
+	QueryID     string     `json:"query_id"`
+	DeviceID    string     `json:"device_id"`
+}
+
+func (q *Queries) CompleteOSQueryResult(ctx context.Context, arg CompleteOSQueryResultParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeOSQueryResult,
+		arg.Success,
+		arg.Error,
+		arg.Rows,
+		arg.CompletedAt,
+		arg.QueryID,
+		arg.DeviceID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countExecutionViews = `-- name: CountExecutionViews :one
 SELECT COUNT(*)
 FROM executions e
@@ -91,6 +157,64 @@ func (q *Queries) CountExecutionViews(ctx context.Context, arg CountExecutionVie
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const failPendingLogQueryResult = `-- name: FailPendingLogQueryResult :execrows
+UPDATE log_query_results
+SET completed = TRUE, success = FALSE, error = $1,
+    logs = '', completed_at = $2
+WHERE query_id = $3
+  AND device_id = $4
+  AND completed = FALSE
+`
+
+type FailPendingLogQueryResultParams struct {
+	Error       string     `json:"error"`
+	CompletedAt *time.Time `json:"completed_at"`
+	QueryID     string     `json:"query_id"`
+	DeviceID    string     `json:"device_id"`
+}
+
+func (q *Queries) FailPendingLogQueryResult(ctx context.Context, arg FailPendingLogQueryResultParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failPendingLogQueryResult,
+		arg.Error,
+		arg.CompletedAt,
+		arg.QueryID,
+		arg.DeviceID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const failPendingOSQueryResult = `-- name: FailPendingOSQueryResult :execrows
+UPDATE osquery_results
+SET completed = TRUE, success = FALSE, error = $1,
+    rows = '[]'::jsonb, completed_at = $2
+WHERE query_id = $3
+  AND device_id = $4
+  AND completed = FALSE
+`
+
+type FailPendingOSQueryResultParams struct {
+	Error       string     `json:"error"`
+	CompletedAt *time.Time `json:"completed_at"`
+	QueryID     string     `json:"query_id"`
+	DeviceID    string     `json:"device_id"`
+}
+
+func (q *Queries) FailPendingOSQueryResult(ctx context.Context, arg FailPendingOSQueryResultParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failPendingOSQueryResult,
+		arg.Error,
+		arg.CompletedAt,
+		arg.QueryID,
+		arg.DeviceID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getDeviceLogResult = `-- name: GetDeviceLogResult :one
@@ -290,6 +414,51 @@ func (q *Queries) InsertExecution(ctx context.Context, arg InsertExecutionParams
 		&i.SearchTsv,
 	)
 	return i, err
+}
+
+const insertPendingLogQueryResult = `-- name: InsertPendingLogQueryResult :exec
+INSERT INTO log_query_results (
+    query_id, device_id, completed, success, error, logs, created_at
+) VALUES (
+    $1, $2, FALSE, FALSE, '', '', $3
+)
+`
+
+type InsertPendingLogQueryResultParams struct {
+	QueryID   string    `json:"query_id"`
+	DeviceID  string    `json:"device_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (q *Queries) InsertPendingLogQueryResult(ctx context.Context, arg InsertPendingLogQueryResultParams) error {
+	_, err := q.db.Exec(ctx, insertPendingLogQueryResult, arg.QueryID, arg.DeviceID, arg.CreatedAt)
+	return err
+}
+
+const insertPendingOSQueryResult = `-- name: InsertPendingOSQueryResult :exec
+INSERT INTO osquery_results (
+    query_id, device_id, table_name, completed, success, error, rows, created_at
+) VALUES (
+    $1, $2, $3,
+    FALSE, FALSE, '', '[]'::jsonb, $4
+)
+`
+
+type InsertPendingOSQueryResultParams struct {
+	QueryID   string    `json:"query_id"`
+	DeviceID  string    `json:"device_id"`
+	TableName string    `json:"table_name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (q *Queries) InsertPendingOSQueryResult(ctx context.Context, arg InsertPendingOSQueryResultParams) error {
+	_, err := q.db.Exec(ctx, insertPendingOSQueryResult,
+		arg.QueryID,
+		arg.DeviceID,
+		arg.TableName,
+		arg.CreatedAt,
+	)
+	return err
 }
 
 const listDeviceComplianceEvaluations = `-- name: ListDeviceComplianceEvaluations :many
@@ -525,4 +694,28 @@ func (q *Queries) ListExecutionViews(ctx context.Context, arg ListExecutionViews
 		return nil, err
 	}
 	return items, nil
+}
+
+const upsertDeviceInventoryTable = `-- name: UpsertDeviceInventoryTable :exec
+INSERT INTO device_inventory (device_id, table_name, rows, collected_at)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (device_id, table_name) DO UPDATE
+SET rows = EXCLUDED.rows, collected_at = EXCLUDED.collected_at
+`
+
+type UpsertDeviceInventoryTableParams struct {
+	DeviceID    string    `json:"device_id"`
+	TableName   string    `json:"table_name"`
+	Rows        []byte    `json:"rows"`
+	CollectedAt time.Time `json:"collected_at"`
+}
+
+func (q *Queries) UpsertDeviceInventoryTable(ctx context.Context, arg UpsertDeviceInventoryTableParams) error {
+	_, err := q.db.Exec(ctx, upsertDeviceInventoryTable,
+		arg.DeviceID,
+		arg.TableName,
+		arg.Rows,
+		arg.CollectedAt,
+	)
+	return err
 }
