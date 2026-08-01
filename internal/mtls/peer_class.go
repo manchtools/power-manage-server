@@ -188,7 +188,7 @@ func fingerprintFromCert(cert *x509.Certificate) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// RequirePeerClassNotRevoked is RequirePeerClass plus a fail-closed CRL gate, for
+// RequirePeerClassNotRevoked is RequirePeerClass plus a fail-closed database gate for
 // control's agent mTLS listener. After the peer-class checks pass it consults
 // the revocation list, so a revoked cert is rejected at connect time rather
 // than usable until its natural expiry. Health endpoints bypass as in

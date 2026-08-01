@@ -12,7 +12,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-// docref: begin explicit-definition-rpcs
 
 // CreateDefinition writes one independently scheduled definition.
 func (h *Handlers) CreateDefinition(ctx context.Context, req *connect.Request[pmv1.CreateDefinitionRequest]) (*connect.Response[pmv1.CreateDefinitionResponse], error) {
@@ -253,7 +252,6 @@ func (h *Handlers) ReorderActionSetInDefinition(ctx context.Context, req *connec
 	return connect.NewResponse(&pmv1.ReorderActionSetInDefinitionResponse{Definition: definition}), nil
 }
 
-// docref: end explicit-definition-rpcs
 
 func (h *Handlers) definitionError(ctx context.Context, operation string, err error) error {
 	switch {

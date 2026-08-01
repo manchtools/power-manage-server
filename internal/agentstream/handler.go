@@ -127,7 +127,6 @@ func New(cfg Config) *Handler {
 }
 
 // Stream owns one authenticated device connection.
-// docref: begin direct-agent-stream
 func (h *Handler) Stream(ctx context.Context, stream *connect.BidiStream[pmv1.AgentMessage, pmv1.ServerMessage]) error {
 	deviceID, ok := DeviceIDFromContext(ctx)
 	if !ok || !validID(deviceID) {
@@ -223,7 +222,6 @@ func (h *Handler) Stream(ctx context.Context, stream *connect.BidiStream[pmv1.Ag
 	}
 }
 
-// docref: end direct-agent-stream
 
 func (h *Handler) handleAgentMessage(ctx context.Context, agent *connection.Agent, message *pmv1.AgentMessage) error {
 	deviceID := agent.DeviceID

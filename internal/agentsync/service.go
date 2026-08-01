@@ -48,7 +48,6 @@ func New(cfg Config) *Service {
 
 // Sync returns each still-sendable delivery and marks the response against the
 // same live connection epoch used by unsolicited stream pushes.
-// docref: begin durable-agent-sync
 func (s *Service) Sync(ctx context.Context, deviceID string) (*pmv1.SyncState, error) {
 	if ctx == nil || !validID(deviceID) {
 		return nil, ErrInvalidInput
@@ -100,7 +99,6 @@ func (s *Service) Sync(ctx context.Context, deviceID string) (*pmv1.SyncState, e
 	}, nil
 }
 
-// docref: end durable-agent-sync
 
 func unionMaintenanceWindows(rows [][]byte) (*pmv1.MaintenanceWindow, error) {
 	windows := make([]*pmv1.MaintenanceWindow, 0, len(rows))

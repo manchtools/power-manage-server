@@ -80,7 +80,6 @@ type Runtime struct {
 }
 
 // New wires every retained RPC to its direct domain owner.
-// docref: begin single-control-runtime
 func New(cfg Config) *Runtime {
 	if cfg.Store == nil || cfg.CA == nil || cfg.JWT == nil || cfg.AtRest == nil || cfg.ControlSealingPrivateKey == nil {
 		panic("controlruntime: store, CA, JWT, at-rest cipher, and sealing key are required")
@@ -190,7 +189,6 @@ func New(cfg Config) *Runtime {
 	}
 }
 
-// docref: end single-control-runtime
 
 // Run blocks until ctx is cancelled while the durable delivery sweep runs.
 func (r *Runtime) Run(ctx context.Context) error {

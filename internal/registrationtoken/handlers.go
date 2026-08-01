@@ -109,7 +109,6 @@ func tokenEffect(id, action string, fields ...string) store.AuditEffect {
 	}
 }
 
-// docref: begin audited-registration-token-crud
 
 // CreateToken mints a bearer value once and stores only its SHA-256 digest.
 func (h *Handlers) CreateToken(ctx context.Context, req *connect.Request[pmv1.CreateTokenRequest]) (*connect.Response[pmv1.CreateTokenResponse], error) {
@@ -356,7 +355,6 @@ func (h *Handlers) DeleteToken(ctx context.Context, req *connect.Request[pmv1.De
 	return connect.NewResponse(&pmv1.DeleteTokenResponse{}), nil
 }
 
-// docref: end audited-registration-token-crud
 
 func (h *Handlers) writeError(ctx context.Context, operation string, err error) error {
 	if store.IsNotFound(err) {

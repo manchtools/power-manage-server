@@ -1,14 +1,8 @@
 #!/usr/bin/env bash
 # The control server's canonical verification gate.
 #
-# The one thing this adds over the generic gate verify-stamp.sh would otherwise
-# run: GOWORK=off. The workspace go.work replaces the pinned SDK with the local
-# sibling checkout, so a branch whose go.mod still points at a pre-change SDK
-# builds and tests perfectly here and cannot compile anywhere else. CI checks
-# out this repo alone, and that is what it sees.
-#
-# That is not hypothetical — spec 41 shipped eleven green commits in exactly
-# that state. Every gate passed; the branch could not build in CI at all.
+# GOWORK=off verifies the standalone module against the SDK version pinned in
+# go.mod, matching the repository's CI checkout.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

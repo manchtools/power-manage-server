@@ -66,7 +66,6 @@ func New(cfg Config) *Service {
 }
 
 // ValidateLuksToken consumes one device-bound token and returns its policy.
-// docref: begin sealed-agent-secret-sinks
 func (s *Service) ValidateLuksToken(ctx context.Context, deviceID string, request *pmv1.ValidateLuksTokenRequest) (*pmv1.ValidateLuksTokenResponse, error) {
 	if ctx == nil || !validID(deviceID) || request == nil || s.validator.Struct(request) != nil {
 		return nil, ErrInvalidInput
@@ -274,7 +273,6 @@ func (s *Service) StoreLpsPasswords(ctx context.Context, deviceID string, reques
 	return &pmv1.StoreLpsPasswordsResponse{Success: true}, nil
 }
 
-// docref: end sealed-agent-secret-sinks
 
 func (s *Service) openAgentField(value *pmv1.SealedValue, message, field string, bindings ...string) ([]byte, error) {
 	if value == nil || value.Version != sealedFieldVersion {

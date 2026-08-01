@@ -12,7 +12,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-// docref: begin explicit-action-set-rpcs
 
 // CreateActionSet writes one independently scheduled and failure-governed set.
 func (h *Handlers) CreateActionSet(ctx context.Context, req *connect.Request[pmv1.CreateActionSetRequest]) (*connect.Response[pmv1.CreateActionSetResponse], error) {
@@ -260,7 +259,6 @@ func (h *Handlers) ReorderActionInSet(ctx context.Context, req *connect.Request[
 	return connect.NewResponse(&pmv1.ReorderActionInSetResponse{Set: set}), nil
 }
 
-// docref: end explicit-action-set-rpcs
 
 func (h *Handlers) actionSetError(ctx context.Context, operation string, err error) error {
 	switch {

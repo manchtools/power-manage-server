@@ -80,7 +80,6 @@ func New(cfg Config) *Handler {
 
 // ServeHTTP redeems one short-lived token and owns the bridge until either
 // endpoint closes. No terminal bytes are logged or copied into audit records.
-// docref: begin direct-terminal-bridge
 func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	sessionID := request.URL.Query().Get("session_id")
 	token, subprotocol := terminalToken(request)
@@ -185,7 +184,6 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	_ = ws.Close(status, message)
 }
 
-// docref: end direct-terminal-bridge
 
 func terminalToken(request *http.Request) (string, string) {
 	for _, raw := range request.Header.Values("Sec-WebSocket-Protocol") {

@@ -111,7 +111,6 @@ func (h *Handlers) recordRejected(ctx context.Context, req connect.AnyRequest, p
 	return err
 }
 
-// docref: begin direct-device-enrollment
 
 // Register binds one token use, one Ed25519 identity and one X25519 recipient
 // key into a device row in the same audited transaction.
@@ -283,5 +282,3 @@ func (h *Handlers) rejectCertificate(ctx context.Context, req *connect.Request[p
 	}
 	return rpcError(ctx, errPermissionDenied, connect.CodePermissionDenied, "certificate not recognized")
 }
-
-// docref: end direct-device-enrollment

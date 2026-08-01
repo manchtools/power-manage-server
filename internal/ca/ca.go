@@ -345,9 +345,8 @@ func FingerprintFromPEM(certPEM []byte) (string, error) {
 	return hex.EncodeToString(fingerprint[:]), nil
 }
 
-// NotAfterFromPEM returns the expiry of a PEM-encoded certificate. Used to set
-// the CRL entry's TTL to the revoked cert's own lifetime — a revoked cert never
-// needs to outlive its expiry on the list (mTLS rejects an expired cert anyway).
+// NotAfterFromPEM returns the expiry of a PEM-encoded certificate. Revocation
+// rows need not outlive the certificate because mTLS already rejects expiry.
 func NotAfterFromPEM(certPEM []byte) (time.Time, error) {
 	block, _ := pem.Decode(certPEM)
 	if block == nil {

@@ -26,7 +26,6 @@ type CreateDefinitionParams struct {
 	Schedule    *pmv1.ActionSchedule
 }
 
-// docref: begin audited-definition-crud
 
 // CreateDefinition inserts one independently scheduled authored definition.
 func (s *Service) CreateDefinition(ctx context.Context, op store.AuditOperation, p CreateDefinitionParams) (store.DefinitionRow, error) {
@@ -224,7 +223,6 @@ func (s *Service) DeleteDefinition(ctx context.Context, op store.AuditOperation,
 	return translateNotFound(err)
 }
 
-// docref: end audited-definition-crud
 
 func definitionEffect(id, action string, fields ...string) store.AuditEffect {
 	return store.AuditEffect{

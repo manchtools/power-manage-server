@@ -62,7 +62,6 @@ func New(cfg Config) *Service {
 
 // ApplyActionResult advances one authored occurrence. Replaying the same
 // terminal result is a successful no-op; a different result is rejected.
-// docref: begin direct-execution-results
 func (s *Service) ApplyActionResult(ctx context.Context, deviceID string, result *pmv1.ActionResult) error {
 	if ctx == nil || !validID(deviceID) || result == nil || result.ActionId == nil ||
 		!validID(result.ActionId.Value) || !validID(result.DeliveryId) || !validID(result.OccurrenceId) {
@@ -246,7 +245,6 @@ func (s *Service) AppendOutputChunk(ctx context.Context, deviceID string, chunk 
 	return err
 }
 
-// docref: end direct-execution-results
 
 func validID(id string) bool {
 	_, err := ulid.ParseStrict(id)

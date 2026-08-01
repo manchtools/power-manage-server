@@ -83,7 +83,6 @@ type UpdateActionParams struct {
 	AllowSystem    bool
 }
 
-// docref: begin audited-action-crud
 
 // CreateAction inserts one ordinary authored row and its audit effect.
 func (s *Service) CreateAction(ctx context.Context, op store.AuditOperation, p CreateActionParams) (store.ActionRow, error) {
@@ -263,7 +262,6 @@ func (s *Service) DeleteAction(ctx context.Context, op store.AuditOperation, id 
 	return s.classifyWriteError(ctx, id, allowSystem, err)
 }
 
-// docref: end audited-action-crud
 
 func validateActionData(id string, actionType pmv1.ActionType, desired pmv1.DesiredState, timeout int32, schedule *pmv1.ActionSchedule, raw []byte) ([]byte, error) {
 	if _, ok := pmv1.ActionType_name[int32(actionType)]; !ok || actionType == pmv1.ActionType_ACTION_TYPE_UNSPECIFIED {

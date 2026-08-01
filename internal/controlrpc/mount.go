@@ -35,7 +35,6 @@ type Handlers struct {
 }
 
 // Mount registers the complete retained ControlService surface.
-// docref: begin direct-control-rpc-surface
 func (h Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []string {
 	if mux == nil || h.Identity == nil || h.Enrollment == nil || h.Authoring == nil ||
 		h.Assignments == nil || h.DeviceGroups == nil || h.Devices == nil ||
@@ -57,5 +56,3 @@ func (h Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []str
 	mounted = append(mounted, h.Search.Mount(mux, opts...)...)
 	return mounted
 }
-
-// docref: end direct-control-rpc-surface
