@@ -13,7 +13,7 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	if mux == nil {
 		panic("device: mux is required")
 	}
-	mounted := make([]string, 0, 25)
+	mounted := make([]string, 0, 29)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -52,6 +52,14 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRefreshDeviceInventoryProcedure, h.RefreshDeviceInventory, opts...))
 	register(powermanagev1connect.ControlServiceQueryDeviceLogsProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceQueryDeviceLogsProcedure, h.QueryDeviceLogs, opts...))
+	register(powermanagev1connect.ControlServiceStartTerminalProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceStartTerminalProcedure, h.StartTerminal, opts...))
+	register(powermanagev1connect.ControlServiceStopTerminalProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceStopTerminalProcedure, h.StopTerminal, opts...))
+	register(powermanagev1connect.ControlServiceListActiveTerminalSessionsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListActiveTerminalSessionsProcedure, h.ListActiveTerminalSessions, opts...))
+	register(powermanagev1connect.ControlServiceTerminateTerminalSessionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceTerminateTerminalSessionProcedure, h.TerminateTerminalSession, opts...))
 	register(powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetDeviceLabelProcedure, h.SetDeviceLabel, opts...))
 	register(powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
@@ -87,6 +95,9 @@ func MutationProcedures() []string {
 		powermanagev1connect.ControlServiceDispatchOSQueryProcedure,
 		powermanagev1connect.ControlServiceRefreshDeviceInventoryProcedure,
 		powermanagev1connect.ControlServiceQueryDeviceLogsProcedure,
+		powermanagev1connect.ControlServiceStartTerminalProcedure,
+		powermanagev1connect.ControlServiceStopTerminalProcedure,
+		powermanagev1connect.ControlServiceTerminateTerminalSessionProcedure,
 	}
 }
 
@@ -112,5 +123,6 @@ func SensitiveReadProcedures() []string {
 		powermanagev1connect.ControlServiceListExecutionsProcedure,
 		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
 		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
+		powermanagev1connect.ControlServiceListActiveTerminalSessionsProcedure,
 	}
 }

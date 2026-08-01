@@ -389,6 +389,10 @@ type LuksKeyView struct {
 // action without exposing their encrypted passphrases.
 type LuksRevocationTarget = generated.GetLuksRevocationTargetRow
 
+// OpenTerminalSession is durable metadata for a session control still regards
+// as open. Live transport activity remains in the process-local registry.
+type OpenTerminalSession = generated.GetOpenTerminalSessionRow
+
 // DefaultInventoryIntervalMinutes is the server cadence used when neither a
 // device nor any live device group supplies an inventory interval.
 const DefaultInventoryIntervalMinutes int32 = 1440
@@ -1403,6 +1407,15 @@ func (s *Store) GetLuksRevocationTarget(ctx context.Context, deviceID, actionID 
 	})
 	if err != nil {
 		return LuksRevocationTarget{}, fmt.Errorf("luks revocation target: %w", err)
+	}
+	return row, nil
+}
+
+// GetOpenTerminalSession returns one not-yet-stopped terminal session.
+func (s *Store) GetOpenTerminalSession(ctx context.Context, sessionID string) (OpenTerminalSession, error) {
+	row, err := s.queries.GetOpenTerminalSession(ctx, sessionID)
+	if err != nil {
+		return OpenTerminalSession{}, fmt.Errorf("terminal session: get open: %w", translateNotFound(err))
 	}
 	return row, nil
 }

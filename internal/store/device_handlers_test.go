@@ -24,10 +24,12 @@ import (
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/connection"
 	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/device"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/terminal"
 )
 
 type deviceHandlerFixture struct {
@@ -46,6 +48,9 @@ type deviceHandlerFixture struct {
 	closed     []string
 	encryptor  *pmcrypto.Encryptor
 	sender     *fakeAgentSender
+	tokens     *terminal.TokenStore
+	sessions   *connection.TerminalSessionRegistry
+	connected  map[string]bool
 }
 
 type fakeAgentSender struct {
@@ -69,7 +74,11 @@ func newDeviceHandlerFixture(t *testing.T) *deviceHandlerFixture {
 		actorID: newID(), directID: newID(), groupID: newID(), outsideID: newID(),
 		userID: newID(), userGroup: newID(), scopeGroup: newID(),
 		encryptor: encryptor, sender: &fakeAgentSender{},
+		sessions: connection.NewTerminalSessionRegistry(), connected: make(map[string]bool),
 	}
+	f.tokens = terminal.NewTokenStore(terminal.NewFakeBackend(func() time.Time { return now }),
+		terminal.WithClock(func() time.Time { return now }))
+	f.connected[f.directID], f.connected[f.groupID], f.connected[f.outsideID] = true, true, true
 	fingerprint := strings.Repeat("a", 64)
 	expires := now.Add(24 * time.Hour)
 	_, err = st.WithAudit(context.Background(), mutationOp(), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
@@ -143,11 +152,15 @@ func newDeviceHandlerFixture(t *testing.T) *deviceHandlerFixture {
 	require.NoError(t, err)
 
 	f.handlers = device.New(device.Config{
-		Store:       st,
-		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now:         func() time.Time { return now },
-		Decryptor:   encryptor,
-		AgentSender: f.sender,
+		Store:            st,
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:              func() time.Time { return now },
+		Decryptor:        encryptor,
+		AgentSender:      f.sender,
+		TerminalTokens:   f.tokens,
+		TerminalSessions: f.sessions,
+		TerminalURL:      "wss://control.example.test/terminal",
+		IsConnected:      func(id string) bool { return f.connected[id] },
 		CloseStream: func(id string) {
 			f.closed = append(f.closed, id)
 		},
@@ -208,6 +221,18 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.RefreshDeviceInventory(context.Background(),
 		connect.NewRequest(&pmv1.RefreshDeviceInventoryRequest{DeviceId: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.StartTerminal(context.Background(),
+		connect.NewRequest(&pmv1.StartTerminalRequest{DeviceId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.StopTerminal(context.Background(),
+		connect.NewRequest(&pmv1.StopTerminalRequest{SessionId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.TerminateTerminalSession(context.Background(),
+		connect.NewRequest(&pmv1.TerminateTerminalSessionRequest{SessionId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.ListActiveTerminalSessions(context.Background(),
+		connect.NewRequest(&pmv1.ListActiveTerminalSessionsRequest{PageToken: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	_, err = f.handlers.DispatchOSQuery(context.Background(),
 		connect.NewRequest(&pmv1.DispatchOSQueryRequest{DeviceId: f.directID}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "custom shape validation must precede authentication")
@@ -258,6 +283,18 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	_, err = f.handlers.RefreshDeviceInventory(context.Background(),
 		connect.NewRequest(&pmv1.RefreshDeviceInventoryRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.StartTerminal(context.Background(),
+		connect.NewRequest(&pmv1.StartTerminalRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.StopTerminal(context.Background(),
+		connect.NewRequest(&pmv1.StopTerminalRequest{SessionId: newID()}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.TerminateTerminalSession(context.Background(),
+		connect.NewRequest(&pmv1.TerminateTerminalSessionRequest{SessionId: newID()}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.ListActiveTerminalSessions(context.Background(),
+		connect.NewRequest(&pmv1.ListActiveTerminalSessionsRequest{}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
@@ -1212,6 +1249,191 @@ func TestDeviceHandlers_OSQueryAuditFailurePreventsSendAndPendingRow(t *testing.
 	assert.Zero(t, count)
 }
 
+func TestDeviceHandlers_TerminalLifecycleUsesInProcessSessionTruth(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	startCtx := f.actor("StartTerminal")
+
+	_, err := f.handlers.StartTerminal(f.actor(), connect.NewRequest(&pmv1.StartTerminalRequest{
+		DeviceId: f.directID,
+	}))
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	f.connected[f.directID] = false
+	_, err = f.handlers.StartTerminal(startCtx, connect.NewRequest(&pmv1.StartTerminalRequest{
+		DeviceId: f.directID,
+	}))
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	f.connected[f.directID] = true
+
+	started, err := f.handlers.StartTerminal(startCtx, connect.NewRequest(&pmv1.StartTerminalRequest{
+		DeviceId: f.directID,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "wss://control.example.test/terminal", started.Msg.TerminalUrl)
+	assert.Equal(t, "pm-tty-test", started.Msg.TtyUser)
+	assert.Empty(t, f.sender.messages, "the PTY starts only after the browser redeems its token")
+	stored, err := f.store.GetOpenTerminalSession(context.Background(), started.Msg.SessionId)
+	require.NoError(t, err)
+	assert.Equal(t, int32(80), stored.Cols)
+	assert.Equal(t, int32(24), stored.Rows)
+
+	validated, err := f.tokens.Validate(context.Background(), started.Msg.SessionId, started.Msg.SessionToken)
+	require.NoError(t, err)
+	assert.Equal(t, f.directID, validated.DeviceID)
+	_, err = f.tokens.Validate(context.Background(), started.Msg.SessionId, started.Msg.SessionToken)
+	assert.ErrorIs(t, err, terminal.ErrTokenNotFound, "the browser bearer must be single-use")
+	f.sessions.Register(connection.NewTerminalSession(
+		started.Msg.SessionId, validated.DeviceID, validated.UserID, validated.TtyUser,
+		validated.Cols, validated.Rows,
+	))
+
+	listed, err := f.handlers.ListActiveTerminalSessions(f.actor("ListActiveTerminalSessions"),
+		connect.NewRequest(&pmv1.ListActiveTerminalSessionsRequest{}))
+	require.NoError(t, err)
+	require.Len(t, listed.Msg.Sessions, 1)
+	assert.Equal(t, started.Msg.SessionId, listed.Msg.Sessions[0].SessionId)
+	assert.Equal(t, "actor@example.test", listed.Msg.Sessions[0].UserEmail)
+	assert.Equal(t, "direct", listed.Msg.Sessions[0].DeviceHostname)
+	assert.Equal(t, int32(1), listed.Msg.TotalCount)
+	operation, err := latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceListActiveTerminalSessionsProcedure)
+	require.NoError(t, err)
+	assert.Equal(t, string(store.ClassSensitiveRead), operation.OperationClass)
+
+	nonOwner := auth.WithUser(context.Background(), &auth.UserContext{
+		ID: f.userID, Kind: auth.PrincipalUser, Permissions: []string{"StopTerminal"},
+	})
+	_, err = f.handlers.StopTerminal(nonOwner,
+		connect.NewRequest(&pmv1.StopTerminalRequest{SessionId: started.Msg.SessionId}))
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	_, err = f.handlers.StopTerminal(f.actor("StopTerminal"),
+		connect.NewRequest(&pmv1.StopTerminalRequest{SessionId: started.Msg.SessionId}))
+	require.NoError(t, err)
+	require.Len(t, f.sender.messages, 1)
+	require.NotNil(t, f.sender.messages[0].GetTerminalStop())
+	assert.Equal(t, started.Msg.SessionId, f.sender.messages[0].GetTerminalStop().SessionId)
+	assert.Zero(t, f.sessions.Count())
+	_, err = f.store.GetOpenTerminalSession(context.Background(), started.Msg.SessionId)
+	assert.True(t, store.IsNotFound(err))
+
+	_, err = f.handlers.StopTerminal(f.actor("StopTerminal"),
+		connect.NewRequest(&pmv1.StopTerminalRequest{SessionId: started.Msg.SessionId}))
+	require.NoError(t, err)
+	assert.Len(t, f.sender.messages, 1, "the idempotent replay must not send another frame")
+}
+
+func TestDeviceHandlers_TerminalListFiltersScopesAndPagesLiveRegistry(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	startCtx := f.actor("StartTerminal")
+	ids := make([]string, 0, 3)
+	for _, deviceID := range []string{f.directID, f.groupID, f.outsideID} {
+		started, err := f.handlers.StartTerminal(startCtx,
+			connect.NewRequest(&pmv1.StartTerminalRequest{DeviceId: deviceID, Cols: 120, Rows: 40}))
+		require.NoError(t, err)
+		ids = append(ids, started.Msg.SessionId)
+		f.sessions.Register(connection.NewTerminalSession(
+			started.Msg.SessionId, deviceID, f.actorID, started.Msg.TtyUser, 120, 40,
+		))
+	}
+
+	ctx := f.actor("ListActiveTerminalSessions")
+	page1, err := f.handlers.ListActiveTerminalSessions(ctx,
+		connect.NewRequest(&pmv1.ListActiveTerminalSessionsRequest{PageSize: 1}))
+	require.NoError(t, err)
+	require.Len(t, page1.Msg.Sessions, 1)
+	assert.Equal(t, int32(3), page1.Msg.TotalCount)
+	assert.NotEmpty(t, page1.Msg.NextPageToken)
+	page2, err := f.handlers.ListActiveTerminalSessions(ctx,
+		connect.NewRequest(&pmv1.ListActiveTerminalSessionsRequest{
+			PageSize: 1, PageToken: page1.Msg.NextPageToken,
+		}))
+	require.NoError(t, err)
+	require.Len(t, page2.Msg.Sessions, 1)
+	assert.NotEqual(t, page1.Msg.Sessions[0].SessionId, page2.Msg.Sessions[0].SessionId)
+
+	filtered, err := f.handlers.ListActiveTerminalSessions(ctx,
+		connect.NewRequest(&pmv1.ListActiveTerminalSessionsRequest{DeviceId: f.directID}))
+	require.NoError(t, err)
+	require.Len(t, filtered.Msg.Sessions, 1)
+	assert.Equal(t, f.directID, filtered.Msg.Sessions[0].DeviceId)
+
+	scoped := auth.WithUser(context.Background(), &auth.UserContext{
+		ID: f.actorID, Kind: auth.PrincipalUser,
+		Permissions: []string{"ListActiveTerminalSessions"},
+		ScopedGrants: []auth.ScopedGrant{{
+			Permission: "ListActiveTerminalSessions", ScopeKind: auth.ScopeKindDeviceGroup, ScopeID: f.scopeGroup,
+		}},
+	})
+	scopedList, err := f.handlers.ListActiveTerminalSessions(scoped,
+		connect.NewRequest(&pmv1.ListActiveTerminalSessionsRequest{}))
+	require.NoError(t, err)
+	require.Len(t, scopedList.Msg.Sessions, 1)
+	assert.Equal(t, f.groupID, scopedList.Msg.Sessions[0].DeviceId)
+	assert.Equal(t, int32(1), scopedList.Msg.TotalCount)
+	assert.Len(t, ids, 3)
+}
+
+func TestDeviceHandlers_StartTerminalAppliesScopeBeforeExistence(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	ctx := auth.WithUser(context.Background(), &auth.UserContext{
+		ID: f.actorID, Kind: auth.PrincipalUser,
+		Permissions: []string{"StartTerminal"},
+		ScopedGrants: []auth.ScopedGrant{{
+			Permission: "StartTerminal", ScopeKind: auth.ScopeKindDeviceGroup, ScopeID: f.scopeGroup,
+		}},
+	})
+	_, err := f.handlers.StartTerminal(ctx,
+		connect.NewRequest(&pmv1.StartTerminalRequest{DeviceId: f.groupID}))
+	require.NoError(t, err)
+	_, err = f.handlers.StartTerminal(ctx,
+		connect.NewRequest(&pmv1.StartTerminalRequest{DeviceId: f.outsideID}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "scope misses must not disclose device existence")
+	_, err = f.handlers.StartTerminal(ctx,
+		connect.NewRequest(&pmv1.StartTerminalRequest{DeviceId: newID()}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "unknown and out-of-scope devices must look alike")
+}
+
+func TestDeviceHandlers_TerminateTerminalSurfacesSendFailureThenCommitsRetry(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	started, err := f.handlers.StartTerminal(f.actor("StartTerminal"),
+		connect.NewRequest(&pmv1.StartTerminalRequest{DeviceId: f.directID}))
+	require.NoError(t, err)
+	_, err = f.tokens.Validate(context.Background(), started.Msg.SessionId, started.Msg.SessionToken)
+	require.NoError(t, err)
+	f.sessions.Register(connection.NewTerminalSession(
+		started.Msg.SessionId, f.directID, f.actorID, started.Msg.TtyUser, 80, 24,
+	))
+	f.sender.err = errors.New("agent disconnected")
+	_, err = f.handlers.TerminateTerminalSession(f.actor("TerminateTerminalSession"),
+		connect.NewRequest(&pmv1.TerminateTerminalSessionRequest{
+			SessionId: started.Msg.SessionId, Reason: "incident response",
+		}))
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+	_, err = f.store.GetOpenTerminalSession(context.Background(), started.Msg.SessionId)
+	require.NoError(t, err, "failed delivery must not claim the privileged shell is closed")
+	assert.Equal(t, 1, f.sessions.Count())
+
+	f.sender.err = nil
+	_, err = f.handlers.TerminateTerminalSession(f.actor("TerminateTerminalSession"),
+		connect.NewRequest(&pmv1.TerminateTerminalSessionRequest{
+			SessionId: started.Msg.SessionId, Reason: "incident response",
+		}))
+	require.NoError(t, err)
+	assert.Zero(t, f.sessions.Count())
+	var reason string
+	var terminatedBy *string
+	require.NoError(t, f.raw.QueryRow(context.Background(), `
+		SELECT exit_reason, terminated_by FROM terminal_sessions WHERE session_id = $1`,
+		started.Msg.SessionId).Scan(&reason, &terminatedBy))
+	assert.Equal(t, "incident response", reason)
+	require.NotNil(t, terminatedBy)
+	assert.Equal(t, f.actorID, *terminatedBy)
+
+	_, err = f.handlers.TerminateTerminalSession(f.actor("TerminateTerminalSession"),
+		connect.NewRequest(&pmv1.TerminateTerminalSessionRequest{SessionId: newID()}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
 func TestDeviceHandlers_SensitiveReadFailsClosedWhenEvidenceFails(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	_, err := f.raw.Exec(context.Background(), `
@@ -1230,7 +1452,8 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 		"SetDeviceLabel", "RemoveDeviceLabel", "AssignDevice", "UnassignDevice",
 		"ListDeviceAssignees", "SetDeviceSyncInterval", "SetDeviceInventoryInterval", "DeleteDevice",
 		"CancelExecution", "CreateLuksToken", "RevokeLuksDeviceKey", "DispatchOSQuery",
-		"QueryDeviceLogs", "RefreshDeviceInventory",
+		"QueryDeviceLogs", "RefreshDeviceInventory", "StartTerminal", "StopTerminal",
+		"TerminateTerminalSession",
 	)
 
 	setLabel, err := f.handlers.SetDeviceLabel(ctx, connect.NewRequest(&pmv1.SetDeviceLabelRequest{
@@ -1312,6 +1535,18 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 	_, err = f.handlers.RefreshDeviceInventory(ctx,
 		connect.NewRequest(&pmv1.RefreshDeviceInventoryRequest{DeviceId: f.directID}))
 	require.NoError(t, err)
+	graceful, err := f.handlers.StartTerminal(ctx,
+		connect.NewRequest(&pmv1.StartTerminalRequest{DeviceId: f.directID}))
+	require.NoError(t, err)
+	_, err = f.handlers.StopTerminal(ctx,
+		connect.NewRequest(&pmv1.StopTerminalRequest{SessionId: graceful.Msg.SessionId}))
+	require.NoError(t, err)
+	forced, err := f.handlers.StartTerminal(ctx,
+		connect.NewRequest(&pmv1.StartTerminalRequest{DeviceId: f.directID}))
+	require.NoError(t, err)
+	_, err = f.handlers.TerminateTerminalSession(ctx,
+		connect.NewRequest(&pmv1.TerminateTerminalSessionRequest{SessionId: forced.Msg.SessionId}))
+	require.NoError(t, err)
 
 	_, err = f.handlers.DeleteDevice(ctx, connect.NewRequest(&pmv1.DeleteDeviceRequest{Id: f.directID}))
 	require.NoError(t, err)
@@ -1379,6 +1614,10 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceDispatchOSQueryProcedure,
 		powermanagev1connect.ControlServiceRefreshDeviceInventoryProcedure,
 		powermanagev1connect.ControlServiceQueryDeviceLogsProcedure,
+		powermanagev1connect.ControlServiceStartTerminalProcedure,
+		powermanagev1connect.ControlServiceStopTerminalProcedure,
+		powermanagev1connect.ControlServiceListActiveTerminalSessionsProcedure,
+		powermanagev1connect.ControlServiceTerminateTerminalSessionProcedure,
 		powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceAssignDeviceProcedure,
@@ -1399,6 +1638,7 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceListExecutionsProcedure,
 		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
 		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
+		powermanagev1connect.ControlServiceListActiveTerminalSessionsProcedure,
 	}, device.SensitiveReadProcedures())
 	classified := append(device.MutationProcedures(), device.ReadProcedures()...)
 	classified = append(classified, device.SensitiveReadProcedures()...)

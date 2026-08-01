@@ -19,8 +19,10 @@ import (
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/terminal"
 )
 
 const (
@@ -33,12 +35,16 @@ const (
 // Config supplies the direct PostgreSQL store and process-local seams used by
 // the device handlers.
 type Config struct {
-	Store       *store.Store
-	Logger      *slog.Logger
-	Now         func() time.Time
-	CloseStream func(deviceID string)
-	AgentSender AgentSender
-	Decryptor   *crypto.Encryptor
+	Store            *store.Store
+	Logger           *slog.Logger
+	Now              func() time.Time
+	CloseStream      func(deviceID string)
+	AgentSender      AgentSender
+	Decryptor        *crypto.Encryptor
+	TerminalTokens   *terminal.TokenStore
+	TerminalSessions *connection.TerminalSessionRegistry
+	TerminalURL      string
+	IsConnected      func(deviceID string) bool
 }
 
 // AgentSender is the only outbound transport capability an instant device
@@ -49,13 +55,17 @@ type AgentSender interface {
 
 // Handlers implements the device CRUD procedures.
 type Handlers struct {
-	store       *store.Store
-	logger      *slog.Logger
-	now         func() time.Time
-	closeStream func(string)
-	agentSender AgentSender
-	decryptor   *crypto.Encryptor
-	validator   *validator.Validate
+	store            *store.Store
+	logger           *slog.Logger
+	now              func() time.Time
+	closeStream      func(string)
+	agentSender      AgentSender
+	decryptor        *crypto.Encryptor
+	terminalTokens   *terminal.TokenStore
+	terminalSessions *connection.TerminalSessionRegistry
+	terminalURL      string
+	isConnected      func(string) bool
+	validator        *validator.Validate
 }
 
 // New constructs the device handlers. A missing store is a boot-time wiring
@@ -79,9 +89,18 @@ func New(cfg Config) *Handlers {
 	if cfg.Decryptor == nil {
 		panic("device: secret decryptor is required")
 	}
+	if cfg.TerminalTokens == nil || cfg.TerminalSessions == nil || cfg.IsConnected == nil {
+		panic("device: terminal transport is required")
+	}
+	terminalURL := normalizeTerminalURL(cfg.TerminalURL)
+	if terminalURL == "" {
+		panic("device: secure terminal URL is required")
+	}
 	return &Handlers{
 		store: cfg.Store, logger: cfg.Logger, now: cfg.Now,
 		closeStream: cfg.CloseStream, agentSender: cfg.AgentSender, decryptor: cfg.Decryptor,
+		terminalTokens: cfg.TerminalTokens, terminalSessions: cfg.TerminalSessions,
+		terminalURL: terminalURL, isConnected: cfg.IsConnected,
 		validator: sdkvalidate.NewValidator(),
 	}
 }
@@ -123,7 +142,13 @@ func (h *Handlers) internal(ctx context.Context, operation string, err error) *c
 type scopeResolver struct{ store *store.Store }
 
 func (r scopeResolver) DeviceGroupsForDevice(ctx context.Context, deviceID string) ([]string, error) {
-	return r.store.ListDeviceGroupIDs(ctx, deviceID)
+	ids, err := r.store.ListDeviceGroupIDs(ctx, deviceID)
+	if store.IsNotFound(err) {
+		// Scope checks run before existence lookups. Unknown and out-of-scope
+		// identifiers must therefore both reduce to "not in an allowed group".
+		return nil, nil
+	}
+	return ids, err
 }
 
 func (scopeResolver) UserGroupsForUser(context.Context, string) ([]string, error) {
