@@ -75,6 +75,87 @@ RETURNING *;
 SELECT * FROM action_sets
 WHERE id = $1 AND is_deleted = FALSE;
 
+-- name: CountActionSets :one
+SELECT COUNT(*) FROM action_sets
+WHERE is_deleted = FALSE;
+
+-- name: InsertAuthoringActionSet :one
+INSERT INTO action_sets (
+    id, name, description, schedule, on_failure, created_at, created_by
+) VALUES (
+    sqlc.arg(id), sqlc.arg(name), sqlc.arg(description), sqlc.arg(schedule),
+    sqlc.arg(on_failure), sqlc.arg(created_at), sqlc.arg(created_by)
+)
+RETURNING *;
+
+-- name: RenameAuthoringActionSet :one
+UPDATE action_sets
+SET name = sqlc.arg(name), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND is_deleted = FALSE
+RETURNING *;
+
+-- name: UpdateAuthoringActionSetDescription :one
+UPDATE action_sets
+SET description = sqlc.arg(description), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND is_deleted = FALSE
+RETURNING *;
+
+-- name: UpdateAuthoringActionSetPolicy :one
+UPDATE action_sets
+SET schedule = sqlc.arg(schedule),
+    on_failure = sqlc.arg(on_failure),
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND is_deleted = FALSE
+RETURNING *;
+
+-- name: AddAuthoringActionSetMember :one
+INSERT INTO action_set_members (set_id, action_id, sort_order, added_at)
+SELECT sqlc.arg(set_id), sqlc.arg(action_id), sqlc.arg(sort_order), sqlc.arg(added_at)
+WHERE EXISTS (
+    SELECT 1 FROM action_sets
+    WHERE id = sqlc.arg(set_id) AND is_deleted = FALSE
+)
+AND EXISTS (
+    SELECT 1 FROM actions
+    WHERE id = sqlc.arg(action_id) AND is_deleted = FALSE AND is_system = FALSE
+)
+ON CONFLICT (set_id, action_id) DO NOTHING
+RETURNING *;
+
+-- name: RemoveAuthoringActionSetMember :one
+DELETE FROM action_set_members
+WHERE set_id = sqlc.arg(set_id) AND action_id = sqlc.arg(action_id)
+RETURNING *;
+
+-- name: ReorderAuthoringActionSetMember :one
+UPDATE action_set_members
+SET sort_order = sqlc.arg(sort_order)
+WHERE set_id = sqlc.arg(set_id) AND action_id = sqlc.arg(action_id)
+RETURNING *;
+
+-- name: ListActionSetMembers :many
+SELECT m.action_id, m.sort_order, a.name AS action_name, a.action_type
+FROM action_set_members m
+JOIN actions a ON a.id = m.action_id AND a.is_deleted = FALSE
+WHERE m.set_id = $1
+ORDER BY m.sort_order, m.action_id;
+
+-- name: DeleteAuthoringActionSetMembers :many
+DELETE FROM action_set_members
+WHERE set_id = $1
+RETURNING action_id;
+
+-- name: DeleteDefinitionMembershipsForActionSet :many
+DELETE FROM definition_members
+WHERE action_set_id = $1
+RETURNING definition_id;
+
+-- name: SoftDeleteAuthoringActionSet :one
+UPDATE action_sets
+SET is_deleted = TRUE, updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND is_deleted = FALSE
+RETURNING *;
+
 -- name: ListManifestActionSetActions :many
 SELECT a.*
 FROM action_set_members m

@@ -74,6 +74,8 @@ var nonMutatingExports = map[string]string{
 	"ListManifestDefinitionActions":    "read",
 	"CountDevices":                     "read",
 	"CountActions":                     "read",
+	"CountActionSets":                  "read",
+	"ListActionSetMembers":             "read",
 	"GetDeviceView":                    "read",
 	"ListDeviceViews":                  "read",
 	"CountDeviceViews":                 "read",

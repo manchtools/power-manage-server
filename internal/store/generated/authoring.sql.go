@@ -10,6 +10,57 @@ import (
 	"time"
 )
 
+const addAuthoringActionSetMember = `-- name: AddAuthoringActionSetMember :one
+INSERT INTO action_set_members (set_id, action_id, sort_order, added_at)
+SELECT $1, $2, $3, $4
+WHERE EXISTS (
+    SELECT 1 FROM action_sets
+    WHERE id = $1 AND is_deleted = FALSE
+)
+AND EXISTS (
+    SELECT 1 FROM actions
+    WHERE id = $2 AND is_deleted = FALSE AND is_system = FALSE
+)
+ON CONFLICT (set_id, action_id) DO NOTHING
+RETURNING set_id, action_id, sort_order, added_at
+`
+
+type AddAuthoringActionSetMemberParams struct {
+	SetID     string     `json:"set_id"`
+	ActionID  string     `json:"action_id"`
+	SortOrder int32      `json:"sort_order"`
+	AddedAt   *time.Time `json:"added_at"`
+}
+
+func (q *Queries) AddAuthoringActionSetMember(ctx context.Context, arg AddAuthoringActionSetMemberParams) (ActionSetMember, error) {
+	row := q.db.QueryRow(ctx, addAuthoringActionSetMember,
+		arg.SetID,
+		arg.ActionID,
+		arg.SortOrder,
+		arg.AddedAt,
+	)
+	var i ActionSetMember
+	err := row.Scan(
+		&i.SetID,
+		&i.ActionID,
+		&i.SortOrder,
+		&i.AddedAt,
+	)
+	return i, err
+}
+
+const countActionSets = `-- name: CountActionSets :one
+SELECT COUNT(*) FROM action_sets
+WHERE is_deleted = FALSE
+`
+
+func (q *Queries) CountActionSets(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countActionSets)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countActions = `-- name: CountActions :one
 SELECT COUNT(*) FROM actions
 WHERE is_deleted = FALSE AND is_system = FALSE
@@ -41,6 +92,58 @@ func (q *Queries) DeleteActionMemberships(ctx context.Context, actionID string) 
 			return nil, err
 		}
 		items = append(items, set_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const deleteAuthoringActionSetMembers = `-- name: DeleteAuthoringActionSetMembers :many
+DELETE FROM action_set_members
+WHERE set_id = $1
+RETURNING action_id
+`
+
+func (q *Queries) DeleteAuthoringActionSetMembers(ctx context.Context, setID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, deleteAuthoringActionSetMembers, setID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var action_id string
+		if err := rows.Scan(&action_id); err != nil {
+			return nil, err
+		}
+		items = append(items, action_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const deleteDefinitionMembershipsForActionSet = `-- name: DeleteDefinitionMembershipsForActionSet :many
+DELETE FROM definition_members
+WHERE action_set_id = $1
+RETURNING definition_id
+`
+
+func (q *Queries) DeleteDefinitionMembershipsForActionSet(ctx context.Context, actionSetID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, deleteDefinitionMembershipsForActionSet, actionSetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var definition_id string
+		if err := rows.Scan(&definition_id); err != nil {
+			return nil, err
+		}
+		items = append(items, definition_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -80,7 +183,7 @@ func (q *Queries) GetManifestAction(ctx context.Context, id string) (Action, err
 }
 
 const getManifestActionSet = `-- name: GetManifestActionSet :one
-SELECT id, name, description, member_count, schedule, on_failure, created_at, created_by, updated_at, is_deleted, search_tsv FROM action_sets
+SELECT id, name, description, schedule, on_failure, created_at, created_by, updated_at, is_deleted, search_tsv FROM action_sets
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -91,7 +194,6 @@ func (q *Queries) GetManifestActionSet(ctx context.Context, id string) (ActionSe
 		&i.ID,
 		&i.Name,
 		&i.Description,
-		&i.MemberCount,
 		&i.Schedule,
 		&i.OnFailure,
 		&i.CreatedAt,
@@ -191,6 +293,92 @@ func (q *Queries) InsertAuthoringAction(ctx context.Context, arg InsertAuthoring
 	return i, err
 }
 
+const insertAuthoringActionSet = `-- name: InsertAuthoringActionSet :one
+INSERT INTO action_sets (
+    id, name, description, schedule, on_failure, created_at, created_by
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7
+)
+RETURNING id, name, description, schedule, on_failure, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type InsertAuthoringActionSetParams struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Schedule    []byte     `json:"schedule"`
+	OnFailure   int32      `json:"on_failure"`
+	CreatedAt   *time.Time `json:"created_at"`
+	CreatedBy   string     `json:"created_by"`
+}
+
+func (q *Queries) InsertAuthoringActionSet(ctx context.Context, arg InsertAuthoringActionSetParams) (ActionSet, error) {
+	row := q.db.QueryRow(ctx, insertAuthoringActionSet,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.Schedule,
+		arg.OnFailure,
+		arg.CreatedAt,
+		arg.CreatedBy,
+	)
+	var i ActionSet
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Schedule,
+		&i.OnFailure,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const listActionSetMembers = `-- name: ListActionSetMembers :many
+SELECT m.action_id, m.sort_order, a.name AS action_name, a.action_type
+FROM action_set_members m
+JOIN actions a ON a.id = m.action_id AND a.is_deleted = FALSE
+WHERE m.set_id = $1
+ORDER BY m.sort_order, m.action_id
+`
+
+type ListActionSetMembersRow struct {
+	ActionID   string `json:"action_id"`
+	SortOrder  int32  `json:"sort_order"`
+	ActionName string `json:"action_name"`
+	ActionType int32  `json:"action_type"`
+}
+
+func (q *Queries) ListActionSetMembers(ctx context.Context, setID string) ([]ListActionSetMembersRow, error) {
+	rows, err := q.db.Query(ctx, listActionSetMembers, setID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListActionSetMembersRow{}
+	for rows.Next() {
+		var i ListActionSetMembersRow
+		if err := rows.Scan(
+			&i.ActionID,
+			&i.SortOrder,
+			&i.ActionName,
+			&i.ActionType,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listManifestActionSetActions = `-- name: ListManifestActionSetActions :many
 SELECT a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.params_canonical, a.timeout_seconds, a.schedule, a.is_system, a.created_at, a.created_by, a.updated_at, a.is_deleted, a.search_tsv
 FROM action_set_members m
@@ -236,7 +424,7 @@ func (q *Queries) ListManifestActionSetActions(ctx context.Context, setID string
 }
 
 const listManifestDefinitionActionSets = `-- name: ListManifestDefinitionActionSets :many
-SELECT s.id, s.name, s.description, s.member_count, s.schedule, s.on_failure, s.created_at, s.created_by, s.updated_at, s.is_deleted, s.search_tsv
+SELECT s.id, s.name, s.description, s.schedule, s.on_failure, s.created_at, s.created_by, s.updated_at, s.is_deleted, s.search_tsv
 FROM definition_members m
 JOIN action_sets s ON s.id = m.action_set_id AND s.is_deleted = FALSE
 WHERE m.definition_id = $1
@@ -256,7 +444,6 @@ func (q *Queries) ListManifestDefinitionActionSets(ctx context.Context, definiti
 			&i.ID,
 			&i.Name,
 			&i.Description,
-			&i.MemberCount,
 			&i.Schedule,
 			&i.OnFailure,
 			&i.CreatedAt,
@@ -341,6 +528,29 @@ func (q *Queries) ListManifestDefinitionActions(ctx context.Context, definitionI
 	return items, nil
 }
 
+const removeAuthoringActionSetMember = `-- name: RemoveAuthoringActionSetMember :one
+DELETE FROM action_set_members
+WHERE set_id = $1 AND action_id = $2
+RETURNING set_id, action_id, sort_order, added_at
+`
+
+type RemoveAuthoringActionSetMemberParams struct {
+	SetID    string `json:"set_id"`
+	ActionID string `json:"action_id"`
+}
+
+func (q *Queries) RemoveAuthoringActionSetMember(ctx context.Context, arg RemoveAuthoringActionSetMemberParams) (ActionSetMember, error) {
+	row := q.db.QueryRow(ctx, removeAuthoringActionSetMember, arg.SetID, arg.ActionID)
+	var i ActionSetMember
+	err := row.Scan(
+		&i.SetID,
+		&i.ActionID,
+		&i.SortOrder,
+		&i.AddedAt,
+	)
+	return i, err
+}
+
 const renameAuthoringAction = `-- name: RenameAuthoringAction :one
 UPDATE actions
 SET name = $1, updated_at = $2
@@ -385,6 +595,62 @@ func (q *Queries) RenameAuthoringAction(ctx context.Context, arg RenameAuthoring
 	return i, err
 }
 
+const renameAuthoringActionSet = `-- name: RenameAuthoringActionSet :one
+UPDATE action_sets
+SET name = $1, updated_at = $2
+WHERE id = $3 AND is_deleted = FALSE
+RETURNING id, name, description, schedule, on_failure, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type RenameAuthoringActionSetParams struct {
+	Name      string     `json:"name"`
+	UpdatedAt *time.Time `json:"updated_at"`
+	ID        string     `json:"id"`
+}
+
+func (q *Queries) RenameAuthoringActionSet(ctx context.Context, arg RenameAuthoringActionSetParams) (ActionSet, error) {
+	row := q.db.QueryRow(ctx, renameAuthoringActionSet, arg.Name, arg.UpdatedAt, arg.ID)
+	var i ActionSet
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Schedule,
+		&i.OnFailure,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const reorderAuthoringActionSetMember = `-- name: ReorderAuthoringActionSetMember :one
+UPDATE action_set_members
+SET sort_order = $1
+WHERE set_id = $2 AND action_id = $3
+RETURNING set_id, action_id, sort_order, added_at
+`
+
+type ReorderAuthoringActionSetMemberParams struct {
+	SortOrder int32  `json:"sort_order"`
+	SetID     string `json:"set_id"`
+	ActionID  string `json:"action_id"`
+}
+
+func (q *Queries) ReorderAuthoringActionSetMember(ctx context.Context, arg ReorderAuthoringActionSetMemberParams) (ActionSetMember, error) {
+	row := q.db.QueryRow(ctx, reorderAuthoringActionSetMember, arg.SortOrder, arg.SetID, arg.ActionID)
+	var i ActionSetMember
+	err := row.Scan(
+		&i.SetID,
+		&i.ActionID,
+		&i.SortOrder,
+		&i.AddedAt,
+	)
+	return i, err
+}
+
 const softDeleteAuthoringAction = `-- name: SoftDeleteAuthoringAction :one
 UPDATE actions
 SET is_deleted = TRUE, updated_at = $1
@@ -414,6 +680,36 @@ func (q *Queries) SoftDeleteAuthoringAction(ctx context.Context, arg SoftDeleteA
 		&i.TimeoutSeconds,
 		&i.Schedule,
 		&i.IsSystem,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const softDeleteAuthoringActionSet = `-- name: SoftDeleteAuthoringActionSet :one
+UPDATE action_sets
+SET is_deleted = TRUE, updated_at = $1
+WHERE id = $2 AND is_deleted = FALSE
+RETURNING id, name, description, schedule, on_failure, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type SoftDeleteAuthoringActionSetParams struct {
+	UpdatedAt *time.Time `json:"updated_at"`
+	ID        string     `json:"id"`
+}
+
+func (q *Queries) SoftDeleteAuthoringActionSet(ctx context.Context, arg SoftDeleteAuthoringActionSetParams) (ActionSet, error) {
+	row := q.db.QueryRow(ctx, softDeleteAuthoringActionSet, arg.UpdatedAt, arg.ID)
+	var i ActionSet
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Schedule,
+		&i.OnFailure,
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.UpdatedAt,
@@ -526,6 +822,76 @@ func (q *Queries) UpdateAuthoringActionParams(ctx context.Context, arg UpdateAut
 		&i.TimeoutSeconds,
 		&i.Schedule,
 		&i.IsSystem,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const updateAuthoringActionSetDescription = `-- name: UpdateAuthoringActionSetDescription :one
+UPDATE action_sets
+SET description = $1, updated_at = $2
+WHERE id = $3 AND is_deleted = FALSE
+RETURNING id, name, description, schedule, on_failure, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type UpdateAuthoringActionSetDescriptionParams struct {
+	Description string     `json:"description"`
+	UpdatedAt   *time.Time `json:"updated_at"`
+	ID          string     `json:"id"`
+}
+
+func (q *Queries) UpdateAuthoringActionSetDescription(ctx context.Context, arg UpdateAuthoringActionSetDescriptionParams) (ActionSet, error) {
+	row := q.db.QueryRow(ctx, updateAuthoringActionSetDescription, arg.Description, arg.UpdatedAt, arg.ID)
+	var i ActionSet
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Schedule,
+		&i.OnFailure,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const updateAuthoringActionSetPolicy = `-- name: UpdateAuthoringActionSetPolicy :one
+UPDATE action_sets
+SET schedule = $1,
+    on_failure = $2,
+    updated_at = $3
+WHERE id = $4 AND is_deleted = FALSE
+RETURNING id, name, description, schedule, on_failure, created_at, created_by, updated_at, is_deleted, search_tsv
+`
+
+type UpdateAuthoringActionSetPolicyParams struct {
+	Schedule  []byte     `json:"schedule"`
+	OnFailure int32      `json:"on_failure"`
+	UpdatedAt *time.Time `json:"updated_at"`
+	ID        string     `json:"id"`
+}
+
+func (q *Queries) UpdateAuthoringActionSetPolicy(ctx context.Context, arg UpdateAuthoringActionSetPolicyParams) (ActionSet, error) {
+	row := q.db.QueryRow(ctx, updateAuthoringActionSetPolicy,
+		arg.Schedule,
+		arg.OnFailure,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i ActionSet
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Schedule,
+		&i.OnFailure,
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.UpdatedAt,

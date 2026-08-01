@@ -35,6 +35,9 @@ type ActionRow = generated.Action
 // ActionSetRow is one live authored action set used to compile agent manifests.
 type ActionSetRow = generated.ActionSet
 
+// ActionSetMemberView is one live action edge in authored execution order.
+type ActionSetMemberView = generated.ListActionSetMembersRow
+
 // DefinitionRow is one live authored definition used to compile agent manifests.
 type DefinitionRow = generated.Definition
 
@@ -171,6 +174,24 @@ func (s *Store) CountActions(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("action: count: %w", err)
 	}
 	return n, nil
+}
+
+// CountActionSets returns the number of live authored sets.
+func (s *Store) CountActionSets(ctx context.Context) (int64, error) {
+	n, err := s.queries.CountActionSets(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("action set: count: %w", err)
+	}
+	return n, nil
+}
+
+// ListActionSetMembers returns live action members in authored order.
+func (s *Store) ListActionSetMembers(ctx context.Context, id string) ([]ActionSetMemberView, error) {
+	rows, err := s.queries.ListActionSetMembers(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("action set: list members: %w", err)
+	}
+	return rows, nil
 }
 
 // GetDelivery returns one durable manifest delivery. ErrNotFound when the

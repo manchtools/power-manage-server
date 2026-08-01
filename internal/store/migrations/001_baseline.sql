@@ -565,7 +565,6 @@ CREATE TABLE public.action_sets (
     id           text PRIMARY KEY,
     name         text NOT NULL,
     description  text DEFAULT ''::text NOT NULL,
-    member_count integer DEFAULT 0 NOT NULL,
     -- Sets keep independent schedules and failure policies, which is
     -- why assigning a Definition produces one manifest per set.
     schedule     jsonb DEFAULT '{}'::jsonb NOT NULL,
