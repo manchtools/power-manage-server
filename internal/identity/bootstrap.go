@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 
@@ -257,5 +258,6 @@ func BootstrapPermissions() []string {
 
 func (b *Bootstrapper) setupURL(token string) string {
 	base := strings.TrimSuffix(b.baseURL, "/")
-	return base + "/setup?bootstrap_token=" + token
+	fragment := url.Values{"bootstrap_token": {token}}.Encode()
+	return base + "/setup#" + fragment
 }

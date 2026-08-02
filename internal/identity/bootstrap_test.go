@@ -1,6 +1,7 @@
 package identity_test
 
 import (
+	"net/url"
 	"testing"
 	"time"
 
@@ -23,6 +24,12 @@ func TestBootstrapToken_AdmitsTheReservedPrincipalExactlyOnce(t *testing.T) {
 	require.NotEmpty(t, issued.Token)
 	assert.Contains(t, issued.URL, issued.Token, "the operator is handed a URL they can open")
 	assert.Equal(t, f.now.Add(identity.DefaultBootstrapTokenTTL), issued.ExpiresAt)
+	setupURL, err := url.Parse(issued.URL)
+	require.NoError(t, err)
+	assert.Empty(t, setupURL.RawQuery, "the bearer token must not enter proxy logs through the query string")
+	fragment, err := url.ParseQuery(setupURL.Fragment)
+	require.NoError(t, err)
+	assert.Equal(t, issued.Token, fragment.Get("bootstrap_token"))
 
 	// Only the digest is stored; the printed value is not recoverable.
 	var storedHash string

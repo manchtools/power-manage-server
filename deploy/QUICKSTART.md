@@ -40,10 +40,13 @@ metadata remain available without recording query-string credentials.
 Run `docker compose up -d --wait`, then inspect the result with
 `docker compose ps`.
 
-<!-- docref: begin src=cmd/control/bootstrap_admin.go#runBootstrapAdmin:c20952b3 -->
+<!-- docref: begin src=cmd/control/bootstrap_admin.go#runBootstrapAdmin:c20952b3,internal/identity/bootstrap.go#Bootstrapper.setupURL:417b204e -->
 Create a host-authorized, single-use administrator setup URL:
 
 Run `docker compose exec control control bootstrap-admin`.
+
+The bearer token is placed in the URL fragment, which browsers do not send to
+control or Traefik access logs.
 <!-- docref: end -->
 
 Use that session to configure OIDC and SCIM. There is no local password or TOTP

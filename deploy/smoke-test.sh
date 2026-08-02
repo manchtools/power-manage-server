@@ -68,7 +68,7 @@ fts="$(compose exec -T postgres psql -U powermanage -d powermanage -Atc \
 [[ "$fts" == t ]] || { printf 'PostgreSQL FTS probe failed\n' >&2; exit 1; }
 
 bootstrap="$(compose exec -T control control bootstrap-admin)"
-[[ "$bootstrap" == *"https://manage.example.test/setup?bootstrap_token="* ]] || {
+[[ "$bootstrap" == *"https://manage.example.test/setup#bootstrap_token="* ]] || {
     printf 'bootstrap-admin did not issue the expected setup URL\n' >&2
     exit 1
 }
