@@ -9,19 +9,39 @@ import (
 // Search documents are derived application state. The audit primitive calls
 // this after the domain callback and before commit, so an owning-row mutation
 // and its searchable form cannot diverge.
-func refreshSearchDocumentsForEffects(ctx context.Context, tx *sql.Tx, effects []AuditEffect) error {
-	seen := make(map[string]struct{}, len(effects))
+type searchTouch struct {
+	resourceType string
+	resourceID   string
+}
+
+func refreshSearchDocumentsForEffects(ctx context.Context, tx *sql.Tx, effects []AuditEffect, touches []searchTouch) error {
+	seen := make(map[string]struct{}, len(effects)+len(touches))
+	refresh := func(resourceType, resourceID string) error {
+		if resourceID == "" {
+			return fmt.Errorf("refresh search document: empty %s resource id", resourceType)
+		}
+		scope := searchScopeForResource(resourceType)
+		if scope == "" {
+			return fmt.Errorf("refresh search document: unknown resource type %q", resourceType)
+		}
+		key := scope + "\x00" + resourceID
+		if _, ok := seen[key]; ok {
+			return nil
+		}
+		seen[key] = struct{}{}
+		return refreshSearchDocument(ctx, tx, scope, resourceID)
+	}
 	for _, effect := range effects {
 		scope := searchScopeForResource(effect.ResourceType)
 		if scope == "" {
 			continue
 		}
-		key := scope + "\x00" + effect.ResourceID
-		if _, ok := seen[key]; ok {
-			continue
+		if err := refresh(effect.ResourceType, effect.ResourceID); err != nil {
+			return err
 		}
-		seen[key] = struct{}{}
-		if err := refreshSearchDocument(ctx, tx, scope, effect.ResourceID); err != nil {
+	}
+	for _, touch := range touches {
+		if err := refresh(touch.resourceType, touch.resourceID); err != nil {
 			return err
 		}
 	}
@@ -128,13 +148,13 @@ FROM definitions d WHERE d.is_deleted = false AND (? = '' OR d.id = ?)`,
 	"compliance_policies": `
 INSERT INTO search_documents (scope, entity_id, primary_text, description, related_text, sort_text, member_count, fields)
 SELECT 'compliance_policies', p.id, p.name, p.description,
-       COALESCE((SELECT group_concat(COALESCE(NULLIF(r.action_name, ''), a.name) || ' ' || COALESCE(a.description, ''), ' ') FROM compliance_policy_rules r JOIN actions a ON a.id = r.action_id WHERE r.policy_id = p.id), ''),
+	       COALESCE((SELECT group_concat(a.name || ' ' || COALESCE(a.description, ''), ' ') FROM compliance_policy_rules r JOIN actions a ON a.id = r.action_id WHERE r.policy_id = p.id), ''),
        lower(p.name),
        (SELECT count(*) FROM compliance_policy_rules r WHERE r.policy_id = p.id),
        json_object(
          'rule_count', CAST((SELECT count(*) FROM compliance_policy_rules r WHERE r.policy_id = p.id) AS TEXT),
          'assigned', CASE WHEN EXISTS (SELECT 1 FROM assignments x WHERE x.source_type = 'compliance_policy' AND x.source_id = p.id AND x.is_deleted = false) THEN 'true' ELSE 'false' END,
-         'action_names', COALESCE((SELECT group_concat(COALESCE(NULLIF(r.action_name, ''), a.name), ', ') FROM compliance_policy_rules r JOIN actions a ON a.id = r.action_id WHERE r.policy_id = p.id), ''),
+	         'action_names', COALESCE((SELECT group_concat(a.name, ', ') FROM compliance_policy_rules r JOIN actions a ON a.id = r.action_id WHERE r.policy_id = p.id), ''),
          'created_at', COALESCE(strftime('%s', p.created_at), '0'))
 FROM compliance_policies p WHERE p.is_deleted = false AND (? = '' OR p.id = ?)`,
 
@@ -176,14 +196,14 @@ SELECT 'users', u.id, CASE WHEN u.display_name <> '' THEN u.display_name ELSE u.
        u.id || ' ' || u.given_name || ' ' || u.family_name || ' ' || u.preferred_username || ' ' || u.linux_username || ' ' ||
        COALESCE((SELECT group_concat(name, ' ') FROM (
          SELECT r.name AS name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.is_deleted = false
-         UNION SELECT r.name FROM user_group_members gm JOIN user_group_roles gr ON gr.group_id = gm.group_id JOIN roles r ON r.id = gr.role_id WHERE gm.user_id = u.id AND r.is_deleted = false)), ''),
+         UNION SELECT r.name FROM user_group_members gm JOIN user_groups g ON g.id = gm.group_id AND g.is_deleted = false JOIN user_group_roles gr ON gr.group_id = gm.group_id JOIN roles r ON r.id = gr.role_id WHERE gm.user_id = u.id AND r.is_deleted = false)), ''),
        lower(CASE WHEN u.display_name <> '' THEN u.display_name ELSE u.email END),
        json_object(
          'email', u.email, 'display_name', u.display_name, 'linux_username', u.linux_username,
          'disabled', CASE WHEN u.disabled THEN 'true' ELSE 'false' END,
          'role', COALESCE((SELECT group_concat(name, ', ') FROM (
            SELECT r.name AS name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.is_deleted = false
-           UNION SELECT r.name FROM user_group_members gm JOIN user_group_roles gr ON gr.group_id = gm.group_id JOIN roles r ON r.id = gr.role_id WHERE gm.user_id = u.id AND r.is_deleted = false)), ''),
+           UNION SELECT r.name FROM user_group_members gm JOIN user_groups g ON g.id = gm.group_id AND g.is_deleted = false JOIN user_group_roles gr ON gr.group_id = gm.group_id JOIN roles r ON r.id = gr.role_id WHERE gm.user_id = u.id AND r.is_deleted = false)), ''),
          'created_at', COALESCE(strftime('%s', u.created_at), '0'),
          'last_login_at', COALESCE(strftime('%s', u.last_login_at), '0'))
 FROM users u WHERE u.is_deleted = false AND (? = '' OR u.id = ?)`,

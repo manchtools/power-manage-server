@@ -510,6 +510,7 @@ func (h *Handler) addMember(
 		Outcome:      store.EffectApplied,
 		AfterRef:     &userID,
 	})
+	rec.RefreshSearch("user_group", groupID)
 	return h.invalidateSubjectSessions(ctx, tx, rec, userID, at)
 }
 
@@ -538,6 +539,7 @@ func (h *Handler) removeMember(
 		Outcome:      store.EffectApplied,
 		BeforeRef:    &userID,
 	})
+	rec.RefreshSearch("user_group", groupID)
 	return h.invalidateSubjectSessions(ctx, tx, rec, userID, at)
 }
 

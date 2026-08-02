@@ -9,6 +9,7 @@ import (
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
+	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 func TestUserGroups_DirectCRUDMembershipAndAudit(t *testing.T) {
@@ -36,6 +37,14 @@ func TestUserGroups_DirectCRUDMembershipAndAudit(t *testing.T) {
 		GroupId: groupID, UserId: member.ID, UserIds: []string{member.ID},
 	}, operator.Token))
 	require.NoError(t, err)
+	rows, total, err := f.store.Search(f.ctx(), store.SearchParams{
+		Scope: "user_groups", Query: groupID, Limit: 50,
+		TagFilters: map[string][]string{"member_count": {"1"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, rows, 1)
+	assert.Equal(t, groupID, rows[0].ID)
 
 	got, err := f.client.GetUserGroup(f.ctx(), authed(&pmv1.GetUserGroupRequest{Id: groupID}, operator.Token))
 	require.NoError(t, err)
@@ -76,6 +85,13 @@ func TestUserGroups_DirectCRUDMembershipAndAudit(t *testing.T) {
 		GroupId: groupID, UserId: member.ID,
 	}, operator.Token))
 	require.NoError(t, err)
+	rows, total, err = f.store.Search(f.ctx(), store.SearchParams{
+		Scope: "user_groups", Query: groupID, Limit: 50,
+		TagFilters: map[string][]string{"member_count": {"0"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, rows, 1)
 	var afterVersion int32
 	require.NoError(t, f.raw.QueryRow(f.ctx(),
 		`SELECT session_version FROM users WHERE id = $1`, member.ID).Scan(&afterVersion))

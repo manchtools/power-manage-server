@@ -23,6 +23,10 @@ func EraseUser(ctx context.Context, tx *Tx, rec *AuditRecorder, before UserRow) 
 	if err != nil {
 		return err
 	}
+	groupIDs, err := tx.ListUserGroupIDsForUser(ctx, before.ID)
+	if err != nil {
+		return err
+	}
 	memberships, err := tx.DeleteUserGroupMembershipsForUser(ctx, before.ID)
 	if err != nil {
 		return err
@@ -84,5 +88,8 @@ func EraseUser(ctx context.Context, tx *Tx, rec *AuditRecorder, before UserRow) 
 		Outcome:      EffectApplied,
 		BeforeCount:  &keys,
 	})
+	for _, groupID := range groupIDs {
+		rec.RefreshSearch("user_group", groupID)
+	}
 	return nil
 }

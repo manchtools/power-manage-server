@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sort"
 	"time"
@@ -24,13 +25,18 @@ func (s *Store) RecordHeartbeatTelemetry(ctx context.Context, snapshot map[strin
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	for _, id := range ids {
-		seenAt := snapshot[id].UTC().Truncate(time.Microsecond)
-		if _, err := s.queries.RecordDeviceHeartbeat(ctx, db.RecordDeviceHeartbeatParams{
-			DeviceID: id, LastSeenAt: &seenAt,
-		}); err != nil {
-			return err
+	return s.withTx(ctx, func(raw *sql.Tx, queries *db.Queries) error {
+		for _, id := range ids {
+			seenAt := snapshot[id].UTC().Truncate(time.Microsecond)
+			if _, err := queries.RecordDeviceHeartbeat(ctx, db.RecordDeviceHeartbeatParams{
+				DeviceID: id, LastSeenAt: &seenAt,
+			}); err != nil {
+				return err
+			}
+			if err := refreshSearchDocument(ctx, raw, "devices", id); err != nil {
+				return err
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }

@@ -422,6 +422,10 @@ func (h *Handler) recordHello(ctx context.Context, deviceID string, hello *pmv1.
 	now := h.now().UTC().Truncate(time.Microsecond)
 	_, err := h.store.WithAudit(ctx, agentOperation(deviceID, "Hello"),
 		func(ctx context.Context, tx *store.Tx, recorder *store.AuditRecorder) error {
+			current, err := tx.GetDevice(ctx, deviceID)
+			if err != nil {
+				return err
+			}
 			rows, err := tx.RecordDeviceHello(ctx, db.RecordDeviceHelloParams{
 				Hostname: hello.Hostname, AgentVersion: hello.AgentVersion, LastSeenAt: &now, ID: deviceID,
 			})
@@ -435,6 +439,15 @@ func (h *Handler) recordHello(ctx context.Context, deviceID string, hello *pmv1.
 				ResourceType: "device", ResourceID: deviceID, Action: "CONNECT", Outcome: store.EffectApplied,
 				ChangedFields: []string{"agent_version", "hostname", "last_seen_at"},
 			})
+			if current.Hostname != hello.Hostname {
+				executionIDs, err := tx.ListExecutionIDsForDevice(ctx, deviceID)
+				if err != nil {
+					return err
+				}
+				for _, executionID := range executionIDs {
+					recorder.RefreshSearch("execution", executionID)
+				}
+			}
 			return nil
 		})
 	return err

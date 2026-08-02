@@ -75,7 +75,7 @@ func (s *Service) RenameActionSet(ctx context.Context, op store.AuditOperation, 
 		}
 		out = row
 		rec.Effect(actionSetEffect(id, "UPDATE", "name"))
-		return nil
+		return refreshActionSetDependents(ctx, tx, rec, id)
 	})
 	return out, translateNotFound(err)
 }
@@ -153,7 +153,7 @@ func (s *Service) AddActionToSet(ctx context.Context, op store.AuditOperation, s
 		effect := actionSetEffect(setID, "UPDATE", "memberships")
 		effect.AfterRef = &after
 		rec.Effect(effect)
-		return nil
+		return refreshActionSetDependents(ctx, tx, rec, setID)
 	})
 	if store.IsNotFound(err) {
 		if _, readErr := s.store.GetManifestActionSet(ctx, setID); readErr != nil {
@@ -182,7 +182,7 @@ func (s *Service) RemoveActionFromSet(ctx context.Context, op store.AuditOperati
 		effect := actionSetEffect(setID, "UPDATE", "memberships")
 		effect.BeforeRef = &before
 		rec.Effect(effect)
-		return nil
+		return refreshActionSetDependents(ctx, tx, rec, setID)
 	})
 	if store.IsNotFound(err) {
 		return ErrMemberNotFound
@@ -218,6 +218,9 @@ func (s *Service) DeleteActionSet(ctx context.Context, op store.AuditOperation, 
 	}
 	now := s.now().UTC()
 	_, err := s.store.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		if err := refreshActionSetDependents(ctx, tx, rec, id); err != nil {
+			return err
+		}
 		if _, err := tx.DeleteAuthoringActionSetMembers(ctx, id); err != nil {
 			return fmt.Errorf("authoring: delete action set members: %w", err)
 		}

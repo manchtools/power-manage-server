@@ -406,6 +406,8 @@ func (l *Linker) SyncGroupMemberships(
 				Outcome:      store.EffectApplied,
 				AfterRef:     &userID,
 			})
+			rec.RefreshSearch("user_group", groupID)
+			rec.RefreshSearch("user", userID)
 			continue
 		}
 		n, err := tx.DeleteUserGroupMember(ctx, db.DeleteUserGroupMemberParams{
@@ -425,6 +427,8 @@ func (l *Linker) SyncGroupMemberships(
 			Outcome:      store.EffectApplied,
 			BeforeRef:    &userID,
 		})
+		rec.RefreshSearch("user_group", groupID)
+		rec.RefreshSearch("user", userID)
 	}
 	return nil
 }

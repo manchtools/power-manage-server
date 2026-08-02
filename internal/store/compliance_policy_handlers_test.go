@@ -19,6 +19,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/authoring"
 	"github.com/manchtools/power-manage/server/internal/compliance"
+	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 type complianceHandlerFixture struct {
@@ -88,6 +89,14 @@ func TestCompliancePolicyHandlers_CRUDRulesAndAudit(t *testing.T) {
 	require.Len(t, added.Msg.Policy.Rules, 1)
 	assert.Equal(t, int32(1), added.Msg.Policy.RuleCount)
 	assert.Equal(t, "detect drift", added.Msg.Policy.Rules[0].ActionName)
+	rows, total, err := f.store.Search(context.Background(), store.SearchParams{
+		Scope: "actions", Query: actionID, Limit: 50,
+		TagFilters: map[string][]string{"is_compliance": {"true"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, rows, 1)
+	assert.Equal(t, actionID, rows[0].ID)
 	_, err = f.handlers.AddCompliancePolicyRule(ctx, connect.NewRequest(&pmv1.AddCompliancePolicyRuleRequest{
 		PolicyId: policyID, ActionId: actionID,
 	}))
@@ -126,6 +135,14 @@ func TestCompliancePolicyHandlers_CRUDRulesAndAudit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, removed.Msg.Policy.Rules)
 	assert.Equal(t, int32(0), removed.Msg.Policy.RuleCount)
+	rows, total, err = f.store.Search(context.Background(), store.SearchParams{
+		Scope: "actions", Query: actionID, Limit: 50,
+		TagFilters: map[string][]string{"is_compliance": {"false"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, rows, 1)
+	assert.Equal(t, actionID, rows[0].ID)
 	_, err = f.handlers.RemoveCompliancePolicyRule(ctx, connect.NewRequest(&pmv1.RemoveCompliancePolicyRuleRequest{
 		PolicyId: policyID, ActionId: actionID,
 	}))

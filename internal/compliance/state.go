@@ -146,6 +146,7 @@ func (s *State) AddRule(ctx context.Context, op store.AuditOperation, policyID, 
 		effect := policyEffect(policyID, "UPDATE", "rules")
 		effect.AfterRef = &after
 		rec.Effect(effect)
+		rec.RefreshSearch("action", actionID)
 		return nil
 	})
 	if store.IsNotFound(err) {
@@ -175,6 +176,7 @@ func (s *State) RemoveRule(ctx context.Context, op store.AuditOperation, policyI
 		effect := policyEffect(policyID, "UPDATE", "rules")
 		effect.BeforeRef = &before
 		rec.Effect(effect)
+		rec.RefreshSearch("action", actionID)
 		return nil
 	})
 	if store.IsNotFound(err) {
@@ -210,8 +212,12 @@ func (s *State) Delete(ctx context.Context, op store.AuditOperation, id string) 
 		return ErrInvalidInput
 	}
 	_, err := s.store.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
-		if _, err := tx.DeleteAuthoringCompliancePolicyRules(ctx, id); err != nil {
+		actionIDs, err := tx.DeleteAuthoringCompliancePolicyRules(ctx, id)
+		if err != nil {
 			return fmt.Errorf("compliance: delete policy rules: %w", err)
+		}
+		for _, actionID := range actionIDs {
+			rec.RefreshSearch("action", actionID)
 		}
 		if _, err := tx.DeleteCompliancePolicyEvaluations(ctx, id); err != nil {
 			return fmt.Errorf("compliance: delete policy evaluations: %w", err)

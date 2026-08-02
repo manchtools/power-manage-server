@@ -94,6 +94,9 @@ func (h *Handlers) evaluateDynamicUserGroup(ctx context.Context, op store.AuditO
 			effect := userGroupEffect(groupID, "INVALIDATE_MEMBER_SESSIONS", "session_version")
 			effect.AfterCount = &affected
 			rec.Effect(effect)
+			for _, userID := range changed {
+				rec.RefreshSearch("user", userID)
+			}
 		}
 		before, after := int64(len(current)), int64(len(current)-len(removed)+len(added))
 		effect := userGroupEffect(groupID, "EVALUATE", "members")

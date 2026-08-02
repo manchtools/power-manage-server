@@ -687,6 +687,10 @@ func (h *Handlers) invalidateSubjectSessions(ctx context.Context, tx *store.Tx, 
 // subject that holds the role, directly or through a group, so no
 // session outlives the authority it was minted under.
 func (h *Handlers) invalidateRoleHolderSessions(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder, roleID string) error {
+	holderIDs, err := tx.ListRoleHolderIDs(ctx, roleID)
+	if err != nil {
+		return err
+	}
 	at := h.now().UTC()
 	affected, err := tx.BumpSessionVersionForRoleHolders(ctx, db.BumpSessionVersionForRoleHoldersParams{
 		RoleID:    roleID,
@@ -703,10 +707,17 @@ func (h *Handlers) invalidateRoleHolderSessions(ctx context.Context, tx *store.T
 		ChangedFields: []string{"session_version"},
 		AfterCount:    &affected,
 	})
+	for _, userID := range holderIDs {
+		rec.RefreshSearch("user", userID)
+	}
 	return nil
 }
 
 func (h *Handlers) invalidateGroupMemberSessions(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder, groupID string) error {
+	memberIDs, err := tx.ListUserGroupMemberIDs(ctx, groupID)
+	if err != nil {
+		return err
+	}
 	at := h.now().UTC()
 	affected, err := tx.BumpSessionVersionForUserGroupMembers(ctx, db.BumpSessionVersionForUserGroupMembersParams{
 		UpdatedAt: &at, GroupID: groupID,
@@ -718,6 +729,9 @@ func (h *Handlers) invalidateGroupMemberSessions(ctx context.Context, tx *store.
 		effect := userGroupEffect(groupID, "INVALIDATE_MEMBER_SESSIONS", "session_version")
 		effect.AfterCount = &affected
 		rec.Effect(effect)
+	}
+	for _, userID := range memberIDs {
+		rec.RefreshSearch("user", userID)
 	}
 	return nil
 }

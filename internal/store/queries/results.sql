@@ -224,3 +224,9 @@ WHERE (sqlc.arg(device_id) = '' OR e.device_id = sqlc.arg(device_id))
             AND ugm.user_id = sqlc.narg(assigned_user_id)
       )
   );
+
+-- name: ListExecutionIDsForAction :many
+SELECT id FROM executions WHERE action_id = ? ORDER BY id;
+
+-- name: ListExecutionIDsForDevice :many
+SELECT id FROM executions WHERE device_id = ? ORDER BY id;

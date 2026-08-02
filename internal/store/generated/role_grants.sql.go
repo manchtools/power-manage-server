@@ -348,6 +348,44 @@ func (q *Queries) ListInheritedRolesForUser(ctx context.Context, userID string) 
 	return items, nil
 }
 
+const listRoleHolderIDs = `-- name: ListRoleHolderIDs :many
+SELECT user_id FROM (
+    SELECT ur.user_id
+    FROM user_roles ur
+    WHERE ur.role_id = ?1
+    UNION
+    SELECT m.user_id
+    FROM user_group_roles gr
+    JOIN user_groups g ON g.id = gr.group_id AND g.is_deleted = FALSE
+    JOIN user_group_members m ON m.group_id = gr.group_id
+    WHERE gr.role_id = ?1
+)
+ORDER BY user_id
+`
+
+func (q *Queries) ListRoleHolderIDs(ctx context.Context, roleID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listRoleHolderIDs, roleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var user_id string
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserGroupIDsForUser = `-- name: ListUserGroupIDsForUser :many
 SELECT m.group_id
 FROM user_group_members m

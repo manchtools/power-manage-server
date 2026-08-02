@@ -66,7 +66,7 @@ var sqliteSearchFacets = map[string]sqliteSearchFacet{
 	"actions":             {"created_at", keys("name", "type", "created_at", "updated_at"), keys("type", "is_compliance", "assigned"), keys("created_at", "updated_at")},
 	"action_sets":         {"created_at", keys("name", "member_count", "created_at", "updated_at"), keys("member_count", "assigned"), keys("created_at", "updated_at")},
 	"definitions":         {"created_at", keys("name", "member_count", "created_at", "updated_at"), keys("member_count", "assigned"), keys("created_at", "updated_at")},
-	"compliance_policies": {"created_at", keys("name", "rule_count", "created_at"), keys("rule_count"), keys("created_at")},
+	"compliance_policies": {"created_at", keys("name", "rule_count", "created_at"), keys("rule_count", "assigned"), keys("created_at")},
 	"devices":             {"last_seen_at", keys("hostname", "compliance_status", "registered_at", "last_seen_at"), keys("agent_version", "os_name", "os_arch", "compliance_status", "status"), keys("registered_at", "last_seen_at")},
 	"device_groups":       {"created_at", keys("name", "member_count", "created_at"), keys("is_dynamic", "member_count"), keys("created_at")},
 	"users":               {"created_at", keys("email", "display_name", "linux_username", "disabled", "created_at", "last_login_at"), keys("disabled", "role"), keys("created_at", "last_login_at")},

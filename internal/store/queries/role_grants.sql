@@ -129,6 +129,20 @@ JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
 WHERE m.user_id = sqlc.arg(user_id)
 ORDER BY m.group_id;
 
+-- name: ListRoleHolderIDs :many
+SELECT user_id FROM (
+    SELECT ur.user_id
+    FROM user_roles ur
+    WHERE ur.role_id = sqlc.arg(role_id)
+    UNION
+    SELECT m.user_id
+    FROM user_group_roles gr
+    JOIN user_groups g ON g.id = gr.group_id AND g.is_deleted = FALSE
+    JOIN user_group_members m ON m.group_id = gr.group_id
+    WHERE gr.role_id = sqlc.arg(role_id)
+)
+ORDER BY user_id;
+
 -- name: DeleteUserGroupMembershipsForUser :execrows
 DELETE FROM user_group_members WHERE user_id = ?;
 

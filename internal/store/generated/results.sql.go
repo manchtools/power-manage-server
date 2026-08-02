@@ -680,6 +680,60 @@ func (q *Queries) ListDeviceComplianceResults(ctx context.Context, deviceID stri
 	return items, nil
 }
 
+const listExecutionIDsForAction = `-- name: ListExecutionIDsForAction :many
+SELECT id FROM executions WHERE action_id = ? ORDER BY id
+`
+
+func (q *Queries) ListExecutionIDsForAction(ctx context.Context, actionID *string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listExecutionIDsForAction, actionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExecutionIDsForDevice = `-- name: ListExecutionIDsForDevice :many
+SELECT id FROM executions WHERE device_id = ? ORDER BY id
+`
+
+func (q *Queries) ListExecutionIDsForDevice(ctx context.Context, deviceID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listExecutionIDsForDevice, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExecutionViews = `-- name: ListExecutionViews :many
 SELECT e.id, e.delivery_id, e.device_id, e.action_id, e.action_type, e.desired_state, e.params, e.timeout_seconds, e.status, e.error, e.output, e.detection_output, e.changed, e.compliant, e.created_at, e.scheduled_for, e.dispatched_at, e.started_at, e.completed_at, e.duration_ms, e.created_by_type, e.created_by_id, COALESCE(a.name, '') AS action_name
 FROM executions e

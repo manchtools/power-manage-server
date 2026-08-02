@@ -10,6 +10,7 @@ import (
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 func TestCreateRole_RecordsThePermissionCount(t *testing.T) {
@@ -69,14 +70,23 @@ func TestUpdateRole_RefusesSystemRolesAndInvalidatesHolderSessions(t *testing.T)
 	require.NoError(t, err)
 	holder := f.seedSubject()
 	f.insertUserRoleGrant(holder.ID, created.Msg.Role.Id, "", "")
+	f.rebuildSearch()
 
 	before, err := f.store.GetUserSessionState(f.ctx(), holder.ID)
 	require.NoError(t, err)
 
 	_, err = f.client.UpdateRole(f.ctx(), authed(&pmv1.UpdateRoleRequest{
-		RoleId: created.Msg.Role.Id, Name: "Operators", Permissions: []string{"ListUsers", "GetUser"},
+		RoleId: created.Msg.Role.Id, Name: "Platform Operators", Permissions: []string{"ListUsers", "GetUser"},
 	}, admin.Token))
 	require.NoError(t, err)
+	rows, total, err := f.store.Search(f.ctx(), store.SearchParams{
+		Scope: "users", Query: "Platform Operators", Limit: 50,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, rows, 1)
+	assert.Equal(t, holder.ID, rows[0].ID,
+		"renaming a role must refresh every holder's searchable role text")
 
 	after, err := f.store.GetUserSessionState(f.ctx(), holder.ID)
 	require.NoError(t, err)
@@ -366,13 +376,29 @@ func TestAssignRoleToUserGroup_GrantsAndRevokesByScope(t *testing.T) {
 	role := f.insertRole([]string{"UpdateUserProfile"})
 	member := f.seedSubject()
 	f.addUserToGroup(group, member.ID)
+	f.rebuildSearch()
+	roleRow, err := f.store.GetRole(f.ctx(), role)
+	require.NoError(t, err)
 	before, err := f.store.GetUserSessionState(f.ctx(), member.ID)
 	require.NoError(t, err)
+	rows, total, err := f.store.Search(f.ctx(), store.SearchParams{
+		Scope: "users", Query: roleRow.Name, Limit: 50,
+	})
+	require.NoError(t, err)
+	assert.Zero(t, total)
+	assert.Empty(t, rows)
 
 	_, err = f.client.AssignRoleToUserGroup(f.ctx(), authed(&pmv1.AssignRoleToUserGroupRequest{
 		GroupId: group, RoleId: role,
 	}, admin.Token))
 	require.NoError(t, err)
+	rows, total, err = f.store.Search(f.ctx(), store.SearchParams{
+		Scope: "users", Query: roleRow.Name, Limit: 50,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, rows, 1)
+	assert.Equal(t, member.ID, rows[0].ID)
 	afterGrant, err := f.store.GetUserSessionState(f.ctx(), member.ID)
 	require.NoError(t, err)
 	assert.Equal(t, before.SessionVersion+1, afterGrant.SessionVersion)
@@ -389,6 +415,12 @@ func TestAssignRoleToUserGroup_GrantsAndRevokesByScope(t *testing.T) {
 		GroupId: group, RoleId: role,
 	}, admin.Token))
 	require.NoError(t, err)
+	rows, total, err = f.store.Search(f.ctx(), store.SearchParams{
+		Scope: "users", Query: roleRow.Name, Limit: 50,
+	})
+	require.NoError(t, err)
+	assert.Zero(t, total)
+	assert.Empty(t, rows, "revoking a group role must remove it from every member's search document")
 	afterRevoke, err := f.store.GetUserSessionState(f.ctx(), member.ID)
 	require.NoError(t, err)
 	assert.Equal(t, before.SessionVersion+2, afterRevoke.SessionVersion)

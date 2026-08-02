@@ -163,11 +163,19 @@ type AuditEffect struct {
 // ids minted during the mutation — and the primitive writes them in
 // the same transaction.
 type AuditRecorder struct {
-	effects []AuditEffect
+	effects       []AuditEffect
+	searchTouches []searchTouch
 }
 
 // Effect appends one effect to the operation.
 func (r *AuditRecorder) Effect(e AuditEffect) { r.effects = append(r.effects, e) }
+
+// RefreshSearch records derived search state that must be refreshed in this
+// transaction but is not itself a separate auditable effect. Use it when a
+// relationship row changes fields on another resource's search document.
+func (r *AuditRecorder) RefreshSearch(resourceType, resourceID string) {
+	r.searchTouches = append(r.searchTouches, searchTouch{resourceType: resourceType, resourceID: resourceID})
+}
 
 // Len reports how many effects have been recorded.
 func (r *AuditRecorder) Len() int { return len(r.effects) }
@@ -231,7 +239,7 @@ func (s *Store) WithAudit(
 				return err
 			}
 		}
-		if err := refreshSearchDocumentsForEffects(ctx, raw, rec.effects); err != nil {
+		if err := refreshSearchDocumentsForEffects(ctx, raw, rec.effects, rec.searchTouches); err != nil {
 			return err
 		}
 
@@ -342,7 +350,7 @@ func (s *Store) WithAuditEffects(
 		if len(rec.effects) == 0 {
 			return fmt.Errorf("%w: a continuation of %s recorded nothing", ErrAuditEffectRequired, operationID)
 		}
-		if err := refreshSearchDocumentsForEffects(ctx, raw, rec.effects); err != nil {
+		if err := refreshSearchDocumentsForEffects(ctx, raw, rec.effects, rec.searchTouches); err != nil {
 			return err
 		}
 

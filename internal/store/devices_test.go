@@ -248,6 +248,12 @@ func TestHeartbeatTelemetryUpdatesWithoutGrowingAudit(t *testing.T) {
 	var stored time.Time
 	require.NoError(t, pool.QueryRow(ctx, `SELECT last_seen_at FROM devices WHERE id = $1`, deviceID).Scan(&stored))
 	assert.True(t, stored.Equal(after), "stored heartbeat = %s, want %s", stored, after)
+	rows, total, err := st.Search(ctx, store.SearchParams{Scope: "devices", Query: deviceID, Limit: 50})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, rows, 1)
+	assert.Equal(t, fmt.Sprint(after.Unix()), rows[0].Fields["last_seen_at"],
+		"heartbeat and searchable recency must commit together")
 	auditAfter, err := st.CountAuditOperations(ctx, "")
 	require.NoError(t, err)
 	assert.Equal(t, auditBefore, auditAfter, "heartbeat telemetry must not enter the audit chain")

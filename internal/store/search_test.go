@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/manchtools/power-manage/server/internal/authoring"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -235,6 +236,29 @@ func TestSQLiteSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) {
 		require.NoError(t, err, tc.scope)
 		assert.Positive(t, total, tc.scope)
 	}
+
+	service := authoring.New(authoring.Config{Store: st, Now: func() time.Time { return now }})
+	_, err = service.RenameAction(ctx, actionOperation(), actionID, "QuasarNadel", false)
+	require.NoError(t, err)
+	for _, scope := range []string{"actions", "action_sets", "definitions", "compliance_policies", "executions"} {
+		row := requireOneSearchRow(t, search(scope, "QuasarNadel"))
+		assert.NotEmpty(t, row.ID, scope)
+	}
+
+	_, err = service.RenameActionSet(ctx, actionOperation(), setID, "ObsidianKamm")
+	require.NoError(t, err)
+	assert.Equal(t, definitionID, requireOneSearchRow(t, search("definitions", "ObsidianKamm")).ID)
+
+	require.NoError(t, service.DeleteAction(ctx, actionOperation(), actionID, false))
+	for _, scope := range []string{"actions", "action_sets", "definitions", "compliance_policies"} {
+		assert.Empty(t, search(scope, "QuasarNadel"), scope)
+	}
+	assert.Equal(t, executionID, requireOneSearchRow(t, search("executions", "QuasarNadel")).ID,
+		"historical execution documents retain the action name after authoring deletion")
+
+	require.NoError(t, service.DeleteActionSet(ctx, actionOperation(), setID))
+	assert.Empty(t, search("definitions", "ObsidianKamm"),
+		"deleting a set refreshes definitions after their former composition edge is removed")
 }
 
 func TestSQLiteSearch_FiltersScopesSortsAndPagesDeterministically(t *testing.T) {

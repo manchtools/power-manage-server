@@ -152,6 +152,15 @@ func (f *fixture) advance(d time.Duration) {
 	*f.clock = f.clock.Add(d)
 }
 
+func (f *fixture) rebuildSearch() {
+	f.t.Helper()
+	require.NoError(f.t, f.store.RebuildSearchIndexes(f.ctx(), store.AuditOperation{
+		Class: store.ClassBackgroundWriter, ActorType: "system", Origin: "test_fixture",
+		RequestDescriptor: "search.fixture/rebuild", AuthorizationOutcome: store.AuthorizationNotApplicable,
+		Result: store.ResultSuccess, ResultCode: "OK",
+	}))
+}
+
 type fixtureConfig struct {
 	now          time.Time
 	newProvider  identity.ProviderFactory

@@ -250,8 +250,8 @@ func (s *Store) Ping(ctx context.Context) error {
 //
 // Package-private on purpose: an exported generic transaction would be
 // a second, unaudited door into the mutation path, and the audit
-// contract is that there is only one. The audited primitives in
-// audit.go are its only callers.
+// contract is that there is only one. The audited primitives and the named
+// heartbeat telemetry exception are its only callers.
 func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx, *generated.Queries) error) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

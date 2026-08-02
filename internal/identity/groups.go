@@ -255,6 +255,10 @@ func (h *Handlers) DeleteUserGroup(ctx context.Context, req *connect.Request[pmv
 			if _, err := tx.GetUserGroup(ctx, req.Msg.Id); err != nil {
 				return err
 			}
+			memberIDs, err := tx.ListUserGroupMemberIDs(ctx, req.Msg.Id)
+			if err != nil {
+				return err
+			}
 			managed, err := tx.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 			if err != nil {
 				return err
@@ -291,6 +295,9 @@ func (h *Handlers) DeleteUserGroup(ctx context.Context, req *connect.Request[pmv
 				effect := userGroupEffect(req.Msg.Id, "INVALIDATE_SESSIONS", "session_version")
 				effect.AfterCount = &affected
 				rec.Effect(effect)
+			}
+			for _, userID := range memberIDs {
+				rec.RefreshSearch("user", userID)
 			}
 			return nil
 		})
@@ -400,6 +407,7 @@ func (h *Handlers) AddUserToGroup(ctx context.Context, req *connect.Request[pmv1
 			if added == 0 {
 				return errUserGroupNoChange
 			}
+			rec.RefreshSearch("user_group", req.Msg.GroupId)
 			return nil
 		})
 	if errors.Is(err, errUserGroupNoChange) {
@@ -469,6 +477,7 @@ func (h *Handlers) RemoveUserFromGroup(ctx context.Context, req *connect.Request
 				ResourceType: "user", ResourceID: req.Msg.UserId, Action: "INVALIDATE_SESSIONS",
 				Outcome: store.EffectApplied, ChangedFields: []string{"session_version"}, AfterCount: &v,
 			})
+			rec.RefreshSearch("user_group", req.Msg.GroupId)
 			return nil
 		})
 	if err != nil {

@@ -101,6 +101,7 @@ func (s *State) Create(ctx context.Context, op store.AuditOperation, p CreatePar
 			Outcome: store.EffectApplied, ChangedFields: []string{"source", "target", "mode", "is_deleted"},
 			AfterRef: &after,
 		})
+		rec.RefreshSearch(sourceType, p.SourceID)
 		return nil
 	})
 	if errors.Is(err, errAlreadyActive) {
@@ -142,6 +143,7 @@ func (s *State) Delete(ctx context.Context, op store.AuditOperation, id string) 
 			ResourceType: "assignment", ResourceID: id, Action: "DELETE",
 			Outcome: store.EffectApplied, ChangedFields: []string{"is_deleted"}, BeforeRef: &before,
 		})
+		rec.RefreshSearch(row.SourceType, row.SourceID)
 		return nil
 	})
 	if store.IsNotFound(err) {

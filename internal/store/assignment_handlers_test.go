@@ -19,6 +19,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/authoring"
 	"github.com/manchtools/power-manage/server/internal/compliance"
+	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 type assignmentHandlerFixture struct {
@@ -125,6 +126,12 @@ func TestAssignmentHandlers_CRUDAcrossEverySourceAndTarget(t *testing.T) {
 		{pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY, pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP},
 	}
 	created := make([]*pmv1.Assignment, 0, len(types))
+	searchScopes := map[pmv1.AssignmentSourceType]string{
+		pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION:            "actions",
+		pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET:        "action_sets",
+		pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION:        "definitions",
+		pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY: "compliance_policies",
+	}
 	for _, pair := range types {
 		response, err := f.handlers.CreateAssignment(ctx, connect.NewRequest(&pmv1.CreateAssignmentRequest{
 			SourceType: pair.source, SourceId: f.sources[pair.source],
@@ -136,6 +143,15 @@ func TestAssignmentHandlers_CRUDAcrossEverySourceAndTarget(t *testing.T) {
 		assert.NotEmpty(t, response.Msg.Assignment.SourceName)
 		assert.NotEmpty(t, response.Msg.Assignment.TargetName)
 		assert.True(t, response.Msg.Assignment.CreatedAt.AsTime().Equal(f.now))
+		rows, total, err := f.store.Search(context.Background(), store.SearchParams{
+			Scope: searchScopes[pair.source], Query: f.sources[pair.source], Limit: 50,
+			TagFilters: map[string][]string{"assigned": {"true"}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), total)
+		require.Len(t, rows, 1)
+		assert.Equal(t, f.sources[pair.source], rows[0].ID,
+			"the assignment facet must be fresh without a search rebuild")
 	}
 
 	duplicate, err := f.handlers.CreateAssignment(ctx, connect.NewRequest(&pmv1.CreateAssignmentRequest{
@@ -164,6 +180,14 @@ func TestAssignmentHandlers_CRUDAcrossEverySourceAndTarget(t *testing.T) {
 
 	_, err = f.handlers.DeleteAssignment(ctx, connect.NewRequest(&pmv1.DeleteAssignmentRequest{Id: created[0].Id}))
 	require.NoError(t, err)
+	rows, total, err := f.store.Search(context.Background(), store.SearchParams{
+		Scope: "actions", Query: created[0].SourceId, Limit: 50,
+		TagFilters: map[string][]string{"assigned": {"false"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, rows, 1)
+	assert.Equal(t, created[0].SourceId, rows[0].ID)
 	recreated, err := f.handlers.CreateAssignment(ctx, connect.NewRequest(&pmv1.CreateAssignmentRequest{
 		SourceType: created[0].SourceType, SourceId: created[0].SourceId,
 		TargetType: created[0].TargetType, TargetId: created[0].TargetId,
