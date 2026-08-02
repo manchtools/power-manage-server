@@ -761,18 +761,25 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 	return items, nil
 }
 
-const recordDeviceHeartbeat = `-- name: RecordDeviceHeartbeat :execrows
-UPDATE devices SET last_seen_at = $1
-WHERE id = $2 AND is_deleted = FALSE
+const recordDeviceHeartbeats = `-- name: RecordDeviceHeartbeats :execrows
+UPDATE devices AS d
+SET last_seen_at = heartbeat.last_seen_at
+FROM ROWS FROM (
+    unnest($1::text[]),
+    unnest($2::timestamptz[])
+) AS heartbeat(id, last_seen_at)
+WHERE d.id = heartbeat.id
+  AND d.is_deleted = FALSE
+  AND (d.last_seen_at IS NULL OR d.last_seen_at < heartbeat.last_seen_at)
 `
 
-type RecordDeviceHeartbeatParams struct {
-	LastSeenAt *time.Time `json:"last_seen_at"`
-	ID         string     `json:"id"`
+type RecordDeviceHeartbeatsParams struct {
+	DeviceIds   []string             `json:"device_ids"`
+	LastSeenAts []pgtype.Timestamptz `json:"last_seen_ats"`
 }
 
-func (q *Queries) RecordDeviceHeartbeat(ctx context.Context, arg RecordDeviceHeartbeatParams) (int64, error) {
-	result, err := q.db.Exec(ctx, recordDeviceHeartbeat, arg.LastSeenAt, arg.ID)
+func (q *Queries) RecordDeviceHeartbeats(ctx context.Context, arg RecordDeviceHeartbeatsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordDeviceHeartbeats, arg.DeviceIds, arg.LastSeenAts)
 	if err != nil {
 		return 0, err
 	}

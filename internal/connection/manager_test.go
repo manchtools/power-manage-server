@@ -193,6 +193,20 @@ func TestManager_UpdateLastSeen_Nonexistent(t *testing.T) {
 	m.UpdateLastSeen("nonexistent") // Should not panic
 }
 
+func TestManager_LastSeenSnapshotIsAnIndependentCopy(t *testing.T) {
+	m := NewManager()
+	at := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return at }
+	m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
+
+	snapshot := m.LastSeenSnapshot()
+	require.Equal(t, at, snapshot["device-1"])
+	delete(snapshot, "device-1")
+
+	_, stillConnected := m.Get("device-1")
+	assert.True(t, stillConnected, "mutating a telemetry snapshot must not mutate the manager")
+}
+
 func TestManager_SendNotConnected(t *testing.T) {
 	m := NewManager()
 	err := m.Send("device-1", nil)

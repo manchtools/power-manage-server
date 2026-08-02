@@ -3,14 +3,44 @@ package agentstream
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/delivery"
 )
+
+func TestFrameBudgetsArePerDeviceAndClass(t *testing.T) {
+	heartbeats := auth.NewRateLimiter(2, time.Minute)
+	alerts := auth.NewRateLimiter(1, time.Minute)
+	hellos := auth.NewRateLimiter(1, time.Minute)
+	defer heartbeats.Stop()
+	defer alerts.Stop()
+	defer hellos.Stop()
+	h := &Handler{frameLimiters: map[frameClass]*auth.RateLimiter{
+		frameTelemetry: heartbeats,
+		frameAudit:     alerts,
+		frameHello:     hellos,
+	}}
+	heartbeat := &pmv1.AgentMessage{Payload: &pmv1.AgentMessage_Heartbeat{Heartbeat: &pmv1.Heartbeat{}}}
+	alert := &pmv1.AgentMessage{Payload: &pmv1.AgentMessage_SecurityAlert{SecurityAlert: &pmv1.SecurityAlert{
+		Type: pmv1.SecurityAlertType_SECURITY_ALERT_TYPE_CREDENTIAL_TAMPERING,
+	}}}
+	hello := &pmv1.AgentMessage{Payload: &pmv1.AgentMessage_Hello{Hello: &pmv1.Hello{}}}
+
+	assert.True(t, h.allowFrame("device-1", heartbeat))
+	assert.True(t, h.allowFrame("device-1", heartbeat))
+	assert.False(t, h.allowFrame("device-1", heartbeat))
+	assert.True(t, h.allowFrame("device-2", heartbeat), "devices must not share a budget")
+	assert.True(t, h.allowFrame("device-1", alert), "frame classes must not share a budget")
+	assert.False(t, h.allowFrame("device-1", alert))
+	assert.True(t, h.allowFrame("device-1", hello))
+	assert.False(t, h.allowFrame("device-1", hello))
+}
 
 type fakeDeliveryState struct {
 	receiptDelivery, receiptDevice                      string
@@ -79,6 +109,7 @@ func TestHandleAgentMessageRoutesDirectDurableFrames(t *testing.T) {
 	agent := &connection.Agent{DeviceID: deviceID}
 
 	frames := []*pmv1.AgentMessage{
+		{Payload: &pmv1.AgentMessage_Heartbeat{Heartbeat: &pmv1.Heartbeat{}}},
 		{Payload: &pmv1.AgentMessage_DeliveryReceipt{DeliveryReceipt: &pmv1.DeliveryReceipt{DeliveryId: deliveryID}}},
 		{Payload: &pmv1.AgentMessage_ManifestResult{ManifestResult: &pmv1.ManifestResult{
 			DeliveryId: deliveryID, ManifestId: manifestID,

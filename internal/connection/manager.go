@@ -284,6 +284,19 @@ func (m *Manager) UpdateLastSeen(deviceID string) {
 	m.mu.Unlock()
 }
 
+// LastSeenSnapshot returns the latest process-local timestamp for every live
+// device. The caller owns the returned map and may persist it without holding
+// the connection-manager lock across database work.
+func (m *Manager) LastSeenSnapshot() map[string]time.Time {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snapshot := make(map[string]time.Time, len(m.agents))
+	for id, agent := range m.agents {
+		snapshot[id] = agent.LastSeen
+	}
+	return snapshot
+}
+
 // Send sends a message to a specific agent.
 func (m *Manager) Send(deviceID string, msg *pm.ServerMessage) error {
 	m.mu.RLock()

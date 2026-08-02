@@ -20,9 +20,16 @@ SET hostname = sqlc.arg(hostname),
     last_seen_at = sqlc.arg(last_seen_at)
 WHERE id = sqlc.arg(id) AND is_deleted = FALSE;
 
--- name: RecordDeviceHeartbeat :execrows
-UPDATE devices SET last_seen_at = sqlc.arg(last_seen_at)
-WHERE id = sqlc.arg(id) AND is_deleted = FALSE;
+-- name: RecordDeviceHeartbeats :execrows
+UPDATE devices AS d
+SET last_seen_at = heartbeat.last_seen_at
+FROM ROWS FROM (
+    unnest(sqlc.arg(device_ids)::text[]),
+    unnest(sqlc.arg(last_seen_ats)::timestamptz[])
+) AS heartbeat(id, last_seen_at)
+WHERE d.id = heartbeat.id
+  AND d.is_deleted = FALSE
+  AND (d.last_seen_at IS NULL OR d.last_seen_at < heartbeat.last_seen_at);
 
 -- Advance the tracked certificate only when the presented fingerprint is
 -- still current. This is the concurrency boundary for renewal: exactly one

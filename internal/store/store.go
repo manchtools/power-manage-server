@@ -1,13 +1,12 @@
 // Package store provides database access for the control server.
 //
 // The package boundary is the enforcement mechanism for the audit
-// contract. The connection pool and the generated query handle are
-// unexported and no exported method hands either of them out, so there
-// is exactly one door through which a state mutation can reach the
-// database: WithAudit, which writes the operation row and its effect
-// rows in the same transaction as the mutation. Reads are exported
-// individually. A handler cannot mutate without an audit record
-// because there is no call it could make to do so.
+// contract. The connection pool and generated query handle are unexported.
+// Ordinary state changes reach the database through WithAudit, which writes
+// their operation and effects in the same transaction. The one named exception
+// is bounded, coalesced heartbeat telemetry: liveness samples are not security
+// evidence and do not enter the serialized audit chain. No generic query handle
+// escapes this package.
 package store
 
 import (

@@ -19,11 +19,25 @@ import (
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/delivery"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
+
+type frameClass string
+
+const (
+	frameState     frameClass = "state"
+	frameHello     frameClass = "hello"
+	frameTelemetry frameClass = "telemetry"
+	frameAudit     frameClass = "audit"
+	frameBulk      frameClass = "bulk"
+	frameTerminal  frameClass = "terminal"
+)
+
+const frameRateWindow = time.Minute
 
 // DeviceResults is the direct sink for device-owned result frames.
 type DeviceResults interface {
@@ -102,6 +116,8 @@ type Handler struct {
 	heartbeatInterval time.Duration
 	now               func() time.Time
 	validator         interface{ Struct(any) error }
+	frameLimiters     map[frameClass]*auth.RateLimiter
+	frameDropAudits   *auth.RateLimiter
 }
 
 // New constructs the direct AgentService handler.
@@ -123,6 +139,30 @@ func New(cfg Config) *Handler {
 		serverVersion: cfg.ServerVersion, deviceLoginURL: cfg.DeviceLoginURL,
 		heartbeatInterval: cfg.HeartbeatInterval, now: cfg.Now,
 		validator: sdkvalidate.NewValidator(),
+		// These are deliberately generous ingestion ceilings, not ordinary
+		// operating rates. A healthy agent stays far below every budget.
+		frameLimiters: map[frameClass]*auth.RateLimiter{
+			frameState:     auth.NewRateLimiter(600, frameRateWindow),
+			frameHello:     auth.NewRateLimiter(10, frameRateWindow),
+			frameTelemetry: auth.NewRateLimiter(12, frameRateWindow),
+			frameAudit:     auth.NewRateLimiter(30, frameRateWindow),
+			frameBulk:      auth.NewRateLimiter(4097, frameRateWindow),
+			frameTerminal:  auth.NewRateLimiter(6000, frameRateWindow),
+		},
+		frameDropAudits: auth.NewRateLimiter(1, frameRateWindow),
+	}
+}
+
+// Close stops the process-local frame-budget cleanup loops.
+func (h *Handler) Close() {
+	if h == nil {
+		return
+	}
+	for _, limiter := range h.frameLimiters {
+		limiter.Stop()
+	}
+	if h.frameDropAudits != nil {
+		h.frameDropAudits.Stop()
 	}
 }
 
@@ -145,6 +185,10 @@ func (h *Handler) Stream(ctx context.Context, stream *connect.BidiStream[pmv1.Ag
 	}
 	if hello.GetDeviceId().GetValue() != deviceID {
 		return connect.NewError(connect.CodePermissionDenied, errors.New("device identity mismatch"))
+	}
+	if !h.allowFrame(deviceID, first) {
+		h.recordFrameDrop(ctx, deviceID, first)
+		return connect.NewError(connect.CodeResourceExhausted, errors.New("agent connection rate limit exceeded"))
 	}
 	if err := h.recordHello(ctx, deviceID, hello); err != nil {
 		if store.IsNotFound(err) {
@@ -212,6 +256,10 @@ func (h *Handler) Stream(ctx context.Context, stream *connect.BidiStream[pmv1.Ag
 			if err := h.validator.Struct(received.message); err != nil {
 				return connect.NewError(connect.CodeInvalidArgument, errors.New("invalid agent frame"))
 			}
+			if !h.allowFrame(deviceID, received.message) {
+				h.recordFrameDrop(ctx, deviceID, received.message)
+				continue
+			}
 			h.manager.UpdateLastSeen(deviceID)
 			if err := h.handleAgentMessage(ctx, agent, received.message); err != nil {
 				h.logger.Warn("apply agent frame", "device_id", deviceID,
@@ -222,11 +270,32 @@ func (h *Handler) Stream(ctx context.Context, stream *connect.BidiStream[pmv1.Ag
 	}
 }
 
+func (h *Handler) recordFrameDrop(ctx context.Context, deviceID string, message *pmv1.AgentMessage) {
+	class := frameClassOf(message)
+	if h.frameDropAudits != nil && !h.frameDropAudits.Allow(deviceID) {
+		return
+	}
+	op := agentOperation(deviceID, "FrameRateLimit/"+string(class))
+	op.AuthorizationOutcome = store.AuthorizationDenied
+	op.AuthorizationDetail = "device_frame_budget"
+	op.Result = store.ResultRejected
+	op.ResultCode = "RATE_LIMITED"
+	classRef := string(class)
+	_, err := h.store.RecordOperation(ctx, op, store.AuditEffect{
+		ResourceType: "device", ResourceID: deviceID, Action: "FRAME_RATE_LIMIT",
+		Outcome: store.EffectRejected, AfterRef: &classRef,
+	})
+	if err != nil {
+		h.logger.Error("record agent frame rate limit", "device_id", deviceID, "class", class, "error", err)
+	}
+	h.logger.Warn("agent frame rate limit exceeded", "device_id", deviceID, "class", class)
+}
+
 func (h *Handler) handleAgentMessage(ctx context.Context, agent *connection.Agent, message *pmv1.AgentMessage) error {
 	deviceID := agent.DeviceID
 	switch payload := message.Payload.(type) {
 	case *pmv1.AgentMessage_Heartbeat:
-		return h.recordHeartbeat(ctx, deviceID)
+		return nil
 	case *pmv1.AgentMessage_SyncRequest:
 		response, err := h.sync.Sync(ctx, deviceID)
 		return h.sendResponse(agent, message.Id, response, err)
@@ -275,6 +344,34 @@ func (h *Handler) handleAgentMessage(ctx context.Context, agent *connection.Agen
 		return errors.New("hello is only valid as the first frame")
 	default:
 		return errors.New("unsupported agent frame")
+	}
+}
+
+func (h *Handler) allowFrame(deviceID string, message *pmv1.AgentMessage) bool {
+	if h == nil || h.frameLimiters == nil {
+		return true
+	}
+	limiter := h.frameLimiters[frameClassOf(message)]
+	return limiter == nil || limiter.Allow(deviceID)
+}
+
+func frameClassOf(message *pmv1.AgentMessage) frameClass {
+	if message == nil {
+		return frameState
+	}
+	switch message.Payload.(type) {
+	case *pmv1.AgentMessage_Hello:
+		return frameHello
+	case *pmv1.AgentMessage_Heartbeat:
+		return frameTelemetry
+	case *pmv1.AgentMessage_SecurityAlert:
+		return frameAudit
+	case *pmv1.AgentMessage_OutputChunk:
+		return frameBulk
+	case *pmv1.AgentMessage_TerminalOutput, *pmv1.AgentMessage_TerminalStateChange:
+		return frameTerminal
+	default:
+		return frameState
 	}
 }
 
@@ -337,26 +434,6 @@ func (h *Handler) recordHello(ctx context.Context, deviceID string, hello *pmv1.
 			recorder.Effect(store.AuditEffect{
 				ResourceType: "device", ResourceID: deviceID, Action: "CONNECT", Outcome: store.EffectApplied,
 				ChangedFields: []string{"agent_version", "hostname", "last_seen_at"},
-			})
-			return nil
-		})
-	return err
-}
-
-func (h *Handler) recordHeartbeat(ctx context.Context, deviceID string) error {
-	now := h.now().UTC().Truncate(time.Microsecond)
-	_, err := h.store.WithAudit(ctx, agentOperation(deviceID, "Heartbeat"),
-		func(ctx context.Context, tx *store.Tx, recorder *store.AuditRecorder) error {
-			rows, err := tx.RecordDeviceHeartbeat(ctx, db.RecordDeviceHeartbeatParams{LastSeenAt: &now, ID: deviceID})
-			if err != nil {
-				return err
-			}
-			if rows != 1 {
-				return store.ErrNotFound
-			}
-			recorder.Effect(store.AuditEffect{
-				ResourceType: "device", ResourceID: deviceID, Action: "HEARTBEAT",
-				Outcome: store.EffectApplied, ChangedFields: []string{"last_seen_at"},
 			})
 			return nil
 		})

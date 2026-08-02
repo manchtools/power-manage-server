@@ -61,10 +61,11 @@ errors, traces, audit payloads, or support bundles.
 ### State and audit
 
 Application state is ordinary CRUD. The audit log is append-only evidence, not
-authoritative state. A mutation and its initial operation/effect rows commit in
-one transaction. Shared boundaries and exact-set tests enforce coverage for
-RPCs, sensitive reads, rejected authentication, SCIM, enrollment, jobs, and
-background writers.
+authoritative state. Ordinary mutations and their initial operation/effect rows
+commit in one transaction. Coalesced heartbeat liveness is the sole named
+unaudited telemetry writer. Shared boundaries and exact-set tests enforce
+coverage for RPCs, sensitive reads, rejected authentication, SCIM, enrollment,
+jobs, and background writers.
 
 Audit streams are hash-chained and periodically anchored off-host. Retention
 archives and verifies a prefix before deletion.

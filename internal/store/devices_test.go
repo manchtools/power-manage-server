@@ -222,6 +222,37 @@ func TestDeviceCRUD_ViewsAndFilters(t *testing.T) {
 	assert.True(t, store.IsNotFound(err))
 }
 
+func TestHeartbeatTelemetryUpdatesWithoutGrowingAudit(t *testing.T) {
+	st, pool := setupPostgres(t)
+	ctx := context.Background()
+	before := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	after := before.Add(2 * time.Minute)
+	deviceID := newID()
+
+	_, err := st.WithAudit(ctx, mutationOp(), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		_, err := tx.InsertDevice(ctx, db.InsertDeviceParams{
+			ID: deviceID, Hostname: "telemetry", AgentVersion: "1.0.0",
+			AgentSealingPublicKey: bytes.Repeat([]byte{1}, 32), RegisteredAt: &before, LastSeenAt: &before,
+		})
+		if err == nil {
+			rec.Effect(deviceEffect(deviceID))
+		}
+		return err
+	})
+	require.NoError(t, err)
+	auditBefore, err := st.CountAuditOperations(ctx, "")
+	require.NoError(t, err)
+
+	require.NoError(t, st.RecordHeartbeatTelemetry(ctx, map[string]time.Time{deviceID: after}))
+
+	var stored time.Time
+	require.NoError(t, pool.QueryRow(ctx, `SELECT last_seen_at FROM devices WHERE id = $1`, deviceID).Scan(&stored))
+	assert.True(t, stored.Equal(after), "stored heartbeat = %s, want %s", stored, after)
+	auditAfter, err := st.CountAuditOperations(ctx, "")
+	require.NoError(t, err)
+	assert.Equal(t, auditBefore, auditAfter, "heartbeat telemetry must not enter the audit chain")
+}
+
 func TestInsertDevice_RejectsInvalidAgentSealingKey(t *testing.T) {
 	st, _ := setupPostgres(t)
 	ctx := context.Background()

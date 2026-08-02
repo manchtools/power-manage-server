@@ -41,9 +41,10 @@ import (
 )
 
 const (
-	maxControlRequestBytes = 8 << 20
-	maxAgentFrameBytes     = 64 << 20
-	requestDeadline        = 30 * time.Second
+	maxControlRequestBytes     = 8 << 20
+	maxAgentFrameBytes         = 64 << 20
+	requestDeadline            = 30 * time.Second
+	heartbeatTelemetryInterval = 2 * time.Minute
 )
 
 // Config contains the already-loaded durable dependencies and ordinary
@@ -75,9 +76,12 @@ type Runtime struct {
 	Connections   *connection.Manager
 	Deliveries    *delivery.Dispatcher
 
-	scim     *scim.Handler
-	limiters []*auth.RateLimiter
-	close    sync.Once
+	store       *store.Store
+	logger      *slog.Logger
+	agentStream *agentstream.Handler
+	scim        *scim.Handler
+	limiters    []*auth.RateLimiter
+	close       sync.Once
 }
 
 // New wires every retained RPC to its direct domain owner.
@@ -176,15 +180,45 @@ func New(cfg Config) *Runtime {
 	return &Runtime{
 		PublicHandler: publicHandler, AgentHandler: agentMux, Connections: manager,
 		Deliveries: dispatcher, scim: scimHandler, limiters: ownedLimiters,
+		store: cfg.Store, logger: cfg.Logger, agentStream: agentService,
 	}
 }
 
-// Run blocks until ctx is cancelled while the durable delivery sweep runs.
+// Run blocks until ctx is cancelled while the durable delivery sweep and
+// coalesced heartbeat telemetry flush run.
 func (r *Runtime) Run(ctx context.Context) error {
-	if r == nil || r.Deliveries == nil {
+	if ctx == nil || r == nil || r.Deliveries == nil || r.store == nil || r.Connections == nil {
 		return errors.New("control runtime is not initialized")
 	}
-	return r.Deliveries.Run(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.flushHeartbeatTelemetry(runCtx)
+	}()
+	err := r.Deliveries.Run(runCtx)
+	cancel()
+	<-done
+	return err
+}
+
+func (r *Runtime) flushHeartbeatTelemetry(ctx context.Context) {
+	ticker := time.NewTicker(heartbeatTelemetryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			snapshot := r.Connections.LastSeenSnapshot()
+			if len(snapshot) == 0 {
+				continue
+			}
+			if err := r.store.RecordHeartbeatTelemetry(ctx, snapshot); err != nil && !errors.Is(err, context.Canceled) {
+				r.logger.Error("persist heartbeat telemetry", "devices", len(snapshot), "error", err)
+			}
+		}
+	}
 }
 
 // Close releases process-local rate limiter and SCIM resources.
@@ -193,6 +227,9 @@ func (r *Runtime) Close() {
 		return
 	}
 	r.close.Do(func() {
+		if r.agentStream != nil {
+			r.agentStream.Close()
+		}
 		if r.scim != nil {
 			r.scim.Close()
 		}

@@ -2,12 +2,10 @@ package store_test
 
 // The audit contract made mechanical.
 //
-// "Every state mutation commits through a primitive that requires its
-// audit operation" is only true if there is no other way to reach the
-// database. That is a property of the package's exported surface, so
-// it is asserted over the exported surface rather than trusted to
-// review: a new exported writer fails this test the day it is added,
-// before it has a caller.
+// Every ordinary state mutation commits through a primitive that requires its
+// audit operation. The sole high-rate telemetry exception is named explicitly
+// below. This is a property of the package's exported surface, so a new writer
+// fails this test the day it is added, before it has a caller.
 
 import (
 	"reflect"
@@ -35,6 +33,8 @@ import (
 //     and writes its checkpoint in one transaction
 //   - RebuildSearchIndexes reindexes fixed PostgreSQL facets and records
 //     its maintenance effect in the same transaction
+//   - RecordHeartbeatTelemetry is the one deliberate unaudited telemetry
+//     writer; it coalesces live connection timestamps in bounded batches
 //
 // Adding an entry here is a deliberate act that has to survive review.
 var mutationCapableExports = map[string]string{
@@ -44,6 +44,7 @@ var mutationCapableExports = map[string]string{
 	"RecordPublishedAuditAnchor": "appends an anchor for a published chain position",
 	"PruneAuditPrefix":           "archived-prefix deletion with its checkpoint",
 	"RebuildSearchIndexes":       "audited PostgreSQL index maintenance",
+	"RecordHeartbeatTelemetry":   "bounded high-rate telemetry exception",
 }
 
 // nonMutatingExports is every other exported method, each with the
