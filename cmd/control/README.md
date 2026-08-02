@@ -55,6 +55,17 @@ make sqlc-check
 
 Generated sqlc and protobuf outputs are never edited by hand.
 
+<!-- docref: begin src=internal/store/postgres_scale_test.go#TestPostgresScale_MixedWorkloadAtTenThousandAgents:6f99b735 -->
+Run the explicit PostgreSQL 10,000-agent baseline with:
+
+```bash
+POWER_MANAGE_RUN_SCALE_TEST=1 GOWORK=off go test ./internal/store \
+  -run '^TestPostgresScale_MixedWorkloadAtTenThousandAgents$' -count=1 -v -timeout 10m
+```
+
+It is intentionally skipped by the ordinary unit-test gate.
+<!-- docref: end -->
+
 Trust-boundary tests must cover validation before authentication,
 authorization and scope rejection, transaction rollback on audit failure,
 certificate revocation, delivery replay, and secret exclusion.

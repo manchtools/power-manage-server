@@ -58,7 +58,7 @@ func initShared() {
 	ctx := context.Background()
 
 	container, err := postgres.Run(ctx,
-		"postgres:17-alpine",
+		"postgres:18-alpine",
 		postgres.WithDatabase(templateDatabase),
 		postgres.WithUsername("test"),
 		postgres.WithPassword("test"),
