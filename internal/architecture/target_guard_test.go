@@ -24,10 +24,12 @@ func TestAbolishedArchitectureCannotReturn(t *testing.T) {
 		"cmd/gateway",
 		"cmd/indexer",
 		"internal/api",
+		"internal/datastore",
 		"internal/eventtypes",
 		"internal/projectors",
 		"internal/search",
 		"internal/taskqueue",
+		"migrations",
 	} {
 		err := filepath.WalkDir(filepath.Join(root, path), func(found string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -53,10 +55,18 @@ func TestAbolishedArchitectureCannotReturn(t *testing.T) {
 		"github.com/hibiken/asynq",
 		"github.com/pquerna/otp",
 		"github.com/redis/go-redis",
+		"github.com/jackc/pgx",
+		"github.com/lib/pq",
+		"github.com/pressly/goose",
 	} {
 		if strings.Contains(string(mod), dependency) {
 			t.Errorf("abolished dependency returned: %s", dependency)
 		}
+	}
+	// Matches-zero guard for the scan above and the datastore itself: the
+	// embedded SQLite driver is the only declared database engine.
+	if !strings.Contains(string(mod), "modernc.org/sqlite") {
+		t.Error("embedded SQLite driver is no longer declared in go.mod")
 	}
 }
 
@@ -73,6 +83,9 @@ func TestAbolishedRuntimeAPIsCannotReturn(t *testing.T) {
 		"github.com/alicebob/miniredis",
 		"power-manage-sdk/verify",
 		"net/smtp",
+		"github.com/jackc/pgx",
+		"github.com/lib/pq",
+		"github.com/pressly/goose",
 	}
 	forbiddenIdentifiers := []string{
 		"ActionEnvelope",
