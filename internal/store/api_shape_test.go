@@ -35,6 +35,8 @@ import (
 //     its maintenance effect in the same transaction
 //   - RecordHeartbeatTelemetry is the one deliberate unaudited telemetry
 //     writer; it coalesces live connection timestamps in bounded batches
+//   - CleanupExpiredAuthStates deletes expired one-time OIDC state and records
+//     the maintenance effect in the same transaction
 //
 // Adding an entry here is a deliberate act that has to survive review.
 var mutationCapableExports = map[string]string{
@@ -45,6 +47,7 @@ var mutationCapableExports = map[string]string{
 	"PruneAuditPrefix":           "archived-prefix deletion with its checkpoint",
 	"RebuildSearchIndexes":       "audited PostgreSQL index maintenance",
 	"RecordHeartbeatTelemetry":   "bounded high-rate telemetry exception",
+	"CleanupExpiredAuthStates":   "audited one-time OIDC state cleanup",
 }
 
 // nonMutatingExports is every other exported method, each with the
@@ -74,7 +77,10 @@ var nonMutatingExports = map[string]string{
 	"ListDueDeliveries":                "read",
 	"ListDeviceDeliveries":             "read",
 	"GetJob":                           "read",
+	"GetLiveJobByDedupe":               "read",
 	"ListClaimableJobs":                "read",
+	"FindAuditRetentionBoundary":       "read",
+	"WriteAuditPrefix":                 "read-only archive export",
 	"GetManifestAction":                "read",
 	"GetManifestActionSet":             "read",
 	"ListManifestActionSetActions":     "read",

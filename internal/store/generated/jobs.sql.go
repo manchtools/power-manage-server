@@ -152,6 +152,35 @@ func (q *Queries) GetJob(ctx context.Context, jobID string) (Job, error) {
 	return i, err
 }
 
+const getLiveJobByDedupe = `-- name: GetLiveJobByDedupe :one
+SELECT job_id, kind, payload, state, due_at, claimed_at, claimed_until, claimed_by, attempt_count, max_attempts, result_code, dedupe_key, created_at, updated_at, terminal_at FROM jobs
+WHERE dedupe_key = $1 AND state IN ('PENDING', 'CLAIMED')
+LIMIT 1
+`
+
+func (q *Queries) GetLiveJobByDedupe(ctx context.Context, dedupeKey *string) (Job, error) {
+	row := q.db.QueryRow(ctx, getLiveJobByDedupe, dedupeKey)
+	var i Job
+	err := row.Scan(
+		&i.JobID,
+		&i.Kind,
+		&i.Payload,
+		&i.State,
+		&i.DueAt,
+		&i.ClaimedAt,
+		&i.ClaimedUntil,
+		&i.ClaimedBy,
+		&i.AttemptCount,
+		&i.MaxAttempts,
+		&i.ResultCode,
+		&i.DedupeKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TerminalAt,
+	)
+	return i, err
+}
+
 const insertJob = `-- name: InsertJob :one
 
 INSERT INTO jobs (job_id, kind, payload, state, due_at, max_attempts, dedupe_key)

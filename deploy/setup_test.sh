@@ -47,6 +47,7 @@ test_secure_idempotent_setup() {
     grep -q '"agent_proxy_sources": \["172.30.0.2"\]' "$directory/config/control.json"
     grep -q '"artifact_path": "/var/lib/power-manage/artifacts"' "$directory/config/control.json"
     grep -q '"backup_path": "/var/lib/power-manage/backups"' "$directory/config/control.json"
+	grep -q '"audit_retention": "2160h"' "$directory/config/control.json"
     if grep -R -iEq 'valkey|asynq|indexer|password_auth' "$directory/config"; then
         return 1
     fi

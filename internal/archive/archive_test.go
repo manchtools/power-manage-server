@@ -17,10 +17,9 @@ import (
 	"github.com/manchtools/power-manage/server/internal/archive"
 )
 
-// Spec 19 AC 23 — the ArchiveStore streams artifacts to/from the
-// operator-configured path via io.Reader/io.Writer; the zero/unknown
-// backend is rejected (ErrUnknownBackend). AC 22 — integrity seal:
-// tampering with any archived byte is detected.
+// ArchiveStore streams artifacts to/from the operator-configured path via
+// io.Reader/io.Writer; an unknown backend is rejected and tampering with any
+// archived byte is detected.
 
 func fsStore(t *testing.T) archive.ArchiveStore {
 	t.Helper()
@@ -107,11 +106,11 @@ func TestFilesystem_TamperDetected(t *testing.T) {
 
 	// The seal now fails — tampering with any archived byte is detected.
 	err = archive.Verify(ctx, st, "sealed-1")
-	require.Error(t, err, "a flipped byte must break the integrity seal (AC 22)")
+	require.Error(t, err, "a flipped byte must break the integrity seal")
 
 	// The reported sha is the hash of the untampered original (recorded
-	// out of band by the prune event), so a re-hash of the flipped bytes
-	// mismatches it — the seal is what the prune event pins.
+	// out of band by the retention checkpoint), so a re-hash of the flipped
+	// bytes mismatches it — the seal is what the checkpoint pins.
 	want := sha256.Sum256([]byte("the original sealed contents"))
 	assert.Equal(t, hex.EncodeToString(want[:]), info.SHA256)
 }

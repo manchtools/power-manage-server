@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,6 +72,7 @@ func TestLoadConfigUsesOneFileAndSecretFiles(t *testing.T) {
 	assert.Equal(t, "manage.example", cfg.TerminalOrigins[0])
 	assert.Equal(t, artifactPath, cfg.ArtifactPath)
 	assert.Equal(t, backupPath, cfg.BackupPath)
+	assert.Equal(t, 90*24*time.Hour, cfg.AuditRetention)
 	assert.Equal(t, sessionPrivate, cfg.SessionSigningKey)
 	assert.Equal(t, bytes.Repeat([]byte{1}, 32), cfg.SealingKey.Bytes())
 }

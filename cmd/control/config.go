@@ -42,6 +42,7 @@ type configDocument struct {
 	LogFormat             string   `json:"log_format"`
 	CertificateValidity   string   `json:"certificate_validity"`
 	HeartbeatInterval     string   `json:"heartbeat_interval"`
+	AuditRetention        string   `json:"audit_retention"`
 	ArtifactPath          string   `json:"artifact_path"`
 	BackupPath            string   `json:"backup_path"`
 	CACertFile            string   `json:"ca_cert_file"`
@@ -71,6 +72,7 @@ type Config struct {
 	LogFormat           string
 	CertificateValidity time.Duration
 	HeartbeatInterval   time.Duration
+	AuditRetention      time.Duration
 	ArtifactPath        string
 	BackupPath          string
 	CACertFile          string
@@ -133,6 +135,10 @@ func loadConfig(args []string) (*Config, error) {
 	if err != nil || heartbeatInterval <= 0 {
 		return nil, errors.New("heartbeat_interval must be a positive duration")
 	}
+	auditRetention, err := time.ParseDuration(document.AuditRetention)
+	if err != nil || auditRetention <= 0 {
+		return nil, errors.New("audit_retention must be a positive duration")
+	}
 	cfg := &Config{
 		PublicListen: document.PublicListen, AgentListen: document.AgentListen,
 		PublicBaseURL: document.PublicBaseURL, AgentURL: document.AgentURL, TerminalURL: document.TerminalURL,
@@ -142,6 +148,7 @@ func loadConfig(args []string) (*Config, error) {
 		AgentProxySources: append([]string(nil), document.AgentProxySources...),
 		LogLevel:          document.LogLevel, LogFormat: document.LogFormat,
 		CertificateValidity: certificateValidity, HeartbeatInterval: heartbeatInterval,
+		AuditRetention:    auditRetention,
 		ArtifactPath:      document.ArtifactPath,
 		BackupPath:        document.BackupPath,
 		CACertFile:        document.CACertFile,
@@ -205,6 +212,9 @@ func applyDefaults(document *configDocument) {
 	}
 	if document.HeartbeatInterval == "" {
 		document.HeartbeatInterval = "30s"
+	}
+	if document.AuditRetention == "" {
+		document.AuditRetention = "2160h"
 	}
 }
 

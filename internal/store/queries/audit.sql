@@ -278,6 +278,26 @@ FROM audit_effects e
 JOIN audit_operations o ON o.operation_id = e.operation_id
 WHERE e.stream = $1 AND e.chain_seq > $2 AND o.chain_seq <= $2;
 
+-- name: FindClosedAuditRetentionBoundary :one
+-- Pick the newest row older than the retention cutoff that would not strand a
+-- later effect after deleting its operation. The primitive repeats this check
+-- transactionally before deletion; this query only chooses a viable candidate.
+WITH candidates AS (
+    SELECT o.chain_seq FROM audit_operations o
+    WHERE o.stream = sqlc.arg(stream) AND o.occurred_at < sqlc.arg(cutoff)
+    UNION ALL
+    SELECT e.chain_seq FROM audit_effects e
+    WHERE e.stream = sqlc.arg(stream) AND e.occurred_at < sqlc.arg(cutoff)
+)
+SELECT COALESCE(MAX(c.chain_seq), 0)::bigint
+FROM candidates c
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM audit_operations o
+    JOIN audit_effects e ON e.operation_id = o.operation_id
+    WHERE o.stream = sqlc.arg(stream) AND o.chain_seq <= c.chain_seq AND e.chain_seq > c.chain_seq
+);
+
 -- name: DeleteAuditEffectsAtOrBelow :execrows
 -- Sanctioned retention delete. Only succeeds inside a transaction that
 -- has set pm.audit_retention_active and pm.audit_retention_up_to_seq;

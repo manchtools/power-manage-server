@@ -136,6 +136,12 @@ func (s *Store) VerifyAuditChain(ctx context.Context, opts AuditVerifyOptions) (
 				ErrAuditChainBroken, stream, head.Height)
 		}
 		out.HeadHash = wantHash
+		if opts.ExpectedAnchor != nil {
+			if err := verifyExternalAnchor(nil, checkpoints, *opts.ExpectedAnchor); err != nil {
+				return out, err
+			}
+			out.AnchorsChecked++
+		}
 		return out, nil
 	}
 
@@ -190,7 +196,7 @@ func (s *Store) VerifyAuditChain(ctx context.Context, opts AuditVerifyOptions) (
 	}
 
 	if opts.ExpectedAnchor != nil {
-		if err := verifyAnchor(rows, *opts.ExpectedAnchor); err != nil {
+		if err := verifyExternalAnchor(rows, checkpoints, *opts.ExpectedAnchor); err != nil {
 			return out, err
 		}
 		out.AnchorsChecked++
@@ -213,6 +219,19 @@ func (s *Store) VerifyAuditChain(ctx context.Context, opts AuditVerifyOptions) (
 	}
 
 	return out, nil
+}
+
+func verifyExternalAnchor(rows []AuditChainRow, checkpoints []AuditCheckpoint, anchor AuditAnchor) error {
+	if len(rows) > 0 && anchor.ChainSeq >= rows[0].ChainSeq {
+		return verifyAnchor(rows, anchor)
+	}
+	for _, checkpoint := range checkpoints {
+		if checkpoint.BoundarySeq == anchor.ChainSeq && bytes.Equal(checkpoint.BoundaryHash, anchor.RowHash) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: external anchor at position %d is neither retained nor authenticated by a checkpoint",
+		ErrAuditAnchorMismatch, anchor.ChainSeq)
 }
 
 // verifyAnchor checks that the local chain reproduces the value the

@@ -8,6 +8,11 @@ RETURNING *;
 -- name: GetJob :one
 SELECT * FROM jobs WHERE job_id = $1;
 
+-- name: GetLiveJobByDedupe :one
+SELECT * FROM jobs
+WHERE dedupe_key = $1 AND state IN ('PENDING', 'CLAIMED')
+LIMIT 1;
+
 -- name: ClaimJob :execrows
 -- The conditional transition that makes claiming safe without a lock
 -- table: a row is claimable when it is due and unclaimed, or when a

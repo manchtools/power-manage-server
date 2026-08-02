@@ -11,12 +11,13 @@ process, and PostgreSQL. The authoritative system design is
 Copy `.env.example` to `.env`, edit the three required public values, then run
 `./setup.sh`.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:1b8bb36b -->
+<!-- docref: begin src=deploy/setup.sh#@generated-material:56204711 -->
 `setup.sh` creates the internal Ed25519 CA, the control and datastore
 certificates, the session and sealing keys, the PostgreSQL password, and
-`config/control.json`. Existing complete keypairs are retained, which permits a
-pre-provisioned CA. Partial or unusable material fails closed. Generated secret
-files are mode 0600 and are never printed.
+`config/control.json` with a 90-day audit-retention policy. Existing complete
+keypairs are retained, which permits a pre-provisioned CA. Partial or unusable
+material fails closed. Generated secret files are mode 0600 and are never
+printed.
 <!-- docref: end -->
 
 <!-- docref: begin src=deploy/traefik/dynamic/routes.yml#@agent-route:2b16b515,cmd/control/httpserver.go#serveAgent:0543d07f,cmd/control/httpserver.go#buildAgentServer:ccd04d34,internal/agentstream/identity.go#MTLSMiddleware:f1b23680 -->
@@ -47,8 +48,14 @@ Use `./deploy.sh` for an update, `docker compose logs -f control` for logs, and
 
 Artifacts and backups live under `data/artifacts` and `data/backups`.
 PostgreSQL data lives under `data/postgres`; ACME state lives under
-`data/traefik`. Back these paths and the `certs` and `secrets` directories up as
-one deployment unit.
+`data/traefik`.
+
+<!-- docref: begin src=internal/maintenance/service.go#Service.RetainAudit:c0aefcae,cmd/control/config.go#Config.AuditRetention:0e4ab606 -->
+Control writes integrity-sealed audit anchors and archive-before-delete chain
+prefixes to `backup_path`; `audit_retention` defaults to 90 days. Mount or
+replicate that path off-host, and back up the database, artifacts, `certs`, and
+`secrets` as one deployment unit.
+<!-- docref: end -->
 
 <!-- docref: begin src=internal/store/reads.go#ListDueDeliveries:081847c0,internal/store/search.go#Search:8542ac77 -->
 Pending dispatch is ordinary PostgreSQL state. Search uses PostgreSQL FTS.

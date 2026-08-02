@@ -1,0 +1,172 @@
+package store_test
+
+import (
+	"context"
+	"errors"
+	"io"
+	"sort"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/manchtools/power-manage/server/internal/archive"
+	"github.com/manchtools/power-manage/server/internal/jobs"
+	"github.com/manchtools/power-manage/server/internal/maintenance"
+	"github.com/manchtools/power-manage/server/internal/store"
+)
+
+type unavailableArchive struct{}
+
+func (unavailableArchive) Put(context.Context, string, io.Reader) (archive.ArchiveInfo, error) {
+	return archive.ArchiveInfo{}, errors.New("off-host archive unavailable")
+}
+func (unavailableArchive) Get(context.Context, string) (io.ReadCloser, error) {
+	return nil, errors.New("off-host archive unavailable")
+}
+func (unavailableArchive) List(context.Context) ([]archive.ArchiveInfo, error) { return nil, nil }
+
+func newMaintenance(t *testing.T, st *store.Store, now time.Time, retention time.Duration) (*maintenance.Service, archive.ArchiveStore) {
+	t.Helper()
+	archives, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
+	require.NoError(t, err)
+	return maintenance.New(maintenance.Config{
+		Store: st, Archive: archives, Retention: retention, Now: func() time.Time { return now },
+	}), archives
+}
+
+func TestMaintenance_SeedsExactlyOneDurableJobPerKind(t *testing.T) {
+	st, raw := setupPostgres(t)
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	service, _ := newMaintenance(t, st, now, 90*24*time.Hour)
+
+	require.NoError(t, service.EnsureScheduled(context.Background()))
+	require.NoError(t, service.EnsureScheduled(context.Background()))
+
+	rows, err := raw.Query(context.Background(), `SELECT kind FROM jobs ORDER BY kind`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var kinds []string
+	for rows.Next() {
+		var kind string
+		require.NoError(t, rows.Scan(&kind))
+		kinds = append(kinds, kind)
+	}
+	require.NoError(t, rows.Err())
+	want := []string{
+		maintenance.KindAuditAnchor, maintenance.KindAuditRetention,
+		maintenance.KindAuditVerify, maintenance.KindAuthStateCleanup,
+	}
+	sort.Strings(want)
+	assert.Equal(t, want, kinds)
+	assert.Len(t, service.Handlers(), len(want))
+	assert.Len(t, service.Recurring(), len(want))
+
+	var created int
+	require.NoError(t, raw.QueryRow(context.Background(), `
+		SELECT count(*) FROM audit_effects WHERE resource_type = 'job' AND action = 'CREATE'
+	`).Scan(&created))
+	assert.Equal(t, len(want), created)
+}
+
+func TestMaintenance_ExternalAnchorAndArchiveBeforeDeleteRunEndToEnd(t *testing.T) {
+	st, raw := setupPostgres(t)
+	ctx := context.Background()
+	seedOperation(t, st)
+	seedOperation(t, st)
+	now := time.Now().UTC().Add(120 * 24 * time.Hour)
+	service, archives := newMaintenance(t, st, now, 90*24*time.Hour)
+
+	require.NoError(t, service.RetainAudit(ctx, jobs.Job{}))
+	assert.Zero(t, countRows(t, raw, "audit_operations"))
+	assert.Zero(t, countRows(t, raw, "audit_effects"))
+	assert.Equal(t, int64(1), countRows(t, raw, "audit_chain_checkpoints"))
+
+	items, err := archives.List(ctx)
+	require.NoError(t, err)
+	var anchorRef, prefixRef string
+	for _, item := range items {
+		if len(item.Ref) >= len("audit-anchor-") && item.Ref[:len("audit-anchor-")] == "audit-anchor-" {
+			anchorRef = item.Ref
+		}
+		if len(item.Ref) >= len("audit-prefix-") && item.Ref[:len("audit-prefix-")] == "audit-prefix-" {
+			prefixRef = item.Ref
+		}
+	}
+	require.NotEmpty(t, anchorRef)
+	require.NotEmpty(t, prefixRef)
+	require.NoError(t, archive.Verify(ctx, archives, anchorRef))
+	require.NoError(t, archive.Verify(ctx, archives, prefixRef))
+	require.NoError(t, service.VerifyAudit(ctx, jobs.Job{}),
+		"the external anchor must authenticate the now-archived boundary through its checkpoint")
+}
+
+func TestMaintenance_ArchiveFailureLeavesAuditRowsUntouched(t *testing.T) {
+	st, raw := setupPostgres(t)
+	seedOperation(t, st)
+	now := time.Now().UTC().Add(120 * 24 * time.Hour)
+	service := maintenance.New(maintenance.Config{
+		Store: st, Archive: unavailableArchive{}, Retention: 90 * 24 * time.Hour,
+		Now: func() time.Time { return now },
+	})
+
+	err := service.RetainAudit(context.Background(), jobs.Job{})
+	require.ErrorContains(t, err, "off-host archive unavailable")
+	assert.Equal(t, int64(1), countRows(t, raw, "audit_operations"))
+	assert.Equal(t, int64(1), countRows(t, raw, "audit_effects"))
+	assert.Zero(t, countRows(t, raw, "audit_chain_checkpoints"))
+}
+
+func TestMaintenance_CleansExpiredOIDCStateWithAudit(t *testing.T) {
+	st, raw := setupPostgres(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	providerID := newID()
+	_, err := raw.Exec(ctx, `
+		INSERT INTO identity_providers (id, name, slug, client_id, issuer_url)
+		VALUES ($1, 'oidc', 'oidc', 'client', 'https://idp.example.test')
+	`, providerID)
+	require.NoError(t, err)
+	_, err = raw.Exec(ctx, `
+		INSERT INTO auth_states (state, provider_id, expires_at) VALUES
+		('expired', $1, $2), ('live', $1, $3)
+	`, providerID, now.Add(-time.Minute), now.Add(time.Hour))
+	require.NoError(t, err)
+	service, _ := newMaintenance(t, st, now, 90*24*time.Hour)
+
+	require.NoError(t, service.CleanupAuthStates(ctx, jobs.Job{}))
+	var states []string
+	require.NoError(t, raw.QueryRow(ctx, `SELECT array_agg(state ORDER BY state) FROM auth_states`).Scan(&states))
+	assert.Equal(t, []string{"live"}, states)
+	var effects int
+	require.NoError(t, raw.QueryRow(ctx, `
+		SELECT count(*) FROM audit_effects
+		WHERE resource_type = 'auth_state_collection' AND action = 'CLEANUP'
+	`).Scan(&effects))
+	assert.Equal(t, 1, effects)
+}
+
+func TestMaintenance_AuthStateAuditFailureRollsBackCleanup(t *testing.T) {
+	st, raw := setupPostgres(t)
+	ctx := context.Background()
+	providerID := newID()
+	_, err := raw.Exec(ctx, `
+		INSERT INTO identity_providers (id, name, slug, client_id, issuer_url)
+		VALUES ($1, 'oidc', 'oidc', 'client', 'https://idp.example.test')
+	`, providerID)
+	require.NoError(t, err)
+	_, err = raw.Exec(ctx, `
+		INSERT INTO auth_states (state, provider_id, expires_at)
+		VALUES ('expired', $1, now() - interval '1 minute')
+	`, providerID)
+	require.NoError(t, err)
+	_, err = raw.Exec(ctx, `ALTER TABLE audit_effects ADD CONSTRAINT reject_auth_cleanup CHECK (action <> 'CLEANUP')`)
+	require.NoError(t, err)
+	service, _ := newMaintenance(t, st, time.Now().UTC(), 90*24*time.Hour)
+
+	require.Error(t, service.CleanupAuthStates(ctx, jobs.Job{}))
+	var count int
+	require.NoError(t, raw.QueryRow(ctx, `SELECT count(*) FROM auth_states WHERE state = 'expired'`).Scan(&count))
+	assert.Equal(t, 1, count)
+}

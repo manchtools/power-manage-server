@@ -10,13 +10,16 @@ import (
 	"time"
 )
 
-const cleanupExpiredAuthStates = `-- name: CleanupExpiredAuthStates :exec
+const cleanupExpiredAuthStates = `-- name: CleanupExpiredAuthStates :execrows
 DELETE FROM auth_states WHERE expires_at < now()
 `
 
-func (q *Queries) CleanupExpiredAuthStates(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, cleanupExpiredAuthStates)
-	return err
+func (q *Queries) CleanupExpiredAuthStates(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, cleanupExpiredAuthStates)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const consumeAuthState = `-- name: ConsumeAuthState :one

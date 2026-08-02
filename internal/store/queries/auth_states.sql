@@ -7,5 +7,5 @@ DELETE FROM auth_states
 WHERE state = $1 AND expires_at > now()
 RETURNING *;
 
--- name: CleanupExpiredAuthStates :exec
+-- name: CleanupExpiredAuthStates :execrows
 DELETE FROM auth_states WHERE expires_at < now();

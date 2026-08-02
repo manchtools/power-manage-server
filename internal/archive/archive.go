@@ -1,14 +1,9 @@
-// Package archive is the pluggable cold-storage backend for pruned
-// event-log history (spec 19 retention). The prune worker writes each
-// {snapshot, events ≤ N} artifact through an ArchiveStore as one
-// integrity-sealed, independently-replayable blob BEFORE any event is
-// deleted from the live log.
+// Package archive stores integrity-sealed audit anchors and chain prefixes on
+// the operator's off-host backup mount. Retention writes and verifies a prefix
+// here before deleting any live audit row.
 //
-// Streaming by design (io.Reader / io.Writer, never []byte): a prune of
-// months of events can be large, and freezing the slice shape would
-// force an interface break when the S3-compatible backend lands. The
-// filesystem backend is v1; a second backend adds here without any
-// prune-worker change (AC 23).
+// Streaming by design (io.Reader / io.Writer, never []byte): a retained audit
+// prefix can be large. The filesystem backend is the version-one backend.
 package archive
 
 import (
@@ -17,9 +12,8 @@ import (
 	"io"
 )
 
-// Backend names the storage driver. The zero value is intentionally
-// invalid so a mis-configured deployment fails loudly rather than
-// silently defaulting somewhere (AC 23).
+// Backend names the storage driver. The zero value is intentionally invalid so
+// a misconfigured deployment fails loudly rather than silently defaulting.
 type Backend string
 
 const (
@@ -39,9 +33,9 @@ type Config struct {
 }
 
 // ArchiveInfo describes one stored artifact. SHA256 is the integrity
-// seal computed while the bytes stream in; the prune worker also
-// records it in the EventLogPruned event so the seal is checkable both
-// against the archive (offline) and against the tamper-evident log.
+// seal computed while the bytes stream in. Retention records that digest in
+// the immutable audit checkpoint, so the archived object remains identifiable
+// after its live prefix has been deleted.
 type ArchiveInfo struct {
 	Ref    string
 	Size   int64

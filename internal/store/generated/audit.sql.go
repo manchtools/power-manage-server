@@ -184,6 +184,39 @@ func (q *Queries) DeleteAuditOperationsAtOrBelow(ctx context.Context, arg Delete
 	return result.RowsAffected(), nil
 }
 
+const findClosedAuditRetentionBoundary = `-- name: FindClosedAuditRetentionBoundary :one
+WITH candidates AS (
+    SELECT o.chain_seq FROM audit_operations o
+    WHERE o.stream = $1 AND o.occurred_at < $2
+    UNION ALL
+    SELECT e.chain_seq FROM audit_effects e
+    WHERE e.stream = $1 AND e.occurred_at < $2
+)
+SELECT COALESCE(MAX(c.chain_seq), 0)::bigint
+FROM candidates c
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM audit_operations o
+    JOIN audit_effects e ON e.operation_id = o.operation_id
+    WHERE o.stream = $1 AND o.chain_seq <= c.chain_seq AND e.chain_seq > c.chain_seq
+)
+`
+
+type FindClosedAuditRetentionBoundaryParams struct {
+	Stream string    `json:"stream"`
+	Cutoff time.Time `json:"cutoff"`
+}
+
+// Pick the newest row older than the retention cutoff that would not strand a
+// later effect after deleting its operation. The primitive repeats this check
+// transactionally before deletion; this query only chooses a viable candidate.
+func (q *Queries) FindClosedAuditRetentionBoundary(ctx context.Context, arg FindClosedAuditRetentionBoundaryParams) (int64, error) {
+	row := q.db.QueryRow(ctx, findClosedAuditRetentionBoundary, arg.Stream, arg.Cutoff)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const firstAuditEffectSeqAbove = `-- name: FirstAuditEffectSeqAbove :one
 SELECT COALESCE(MIN(chain_seq), 0)::bigint
 FROM audit_effects WHERE stream = $1 AND chain_seq > $2

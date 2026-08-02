@@ -13,11 +13,14 @@ import (
 	"time"
 
 	"github.com/manchtools/power-manage-sdk/logging"
+	"github.com/manchtools/power-manage/server/internal/archive"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/controlruntime"
 	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/datastore"
+	"github.com/manchtools/power-manage/server/internal/jobs"
+	"github.com/manchtools/power-manage/server/internal/maintenance"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -77,6 +80,25 @@ func run(cfg *Config, logger *slog.Logger) error {
 	if err := auth.ReconcileSystemRoles(ctx, st, time.Now(), logger); err != nil {
 		return fmt.Errorf("reconcile system roles: %w", err)
 	}
+	auditArchive, err := archive.New(archive.Config{
+		Backend: archive.BackendFilesystem, FilesystemPath: cfg.BackupPath,
+	})
+	if err != nil {
+		return fmt.Errorf("open audit archive: %w", err)
+	}
+	maintenanceService := maintenance.New(maintenance.Config{
+		Store: st, Archive: auditArchive, Retention: cfg.AuditRetention,
+	})
+	if err := maintenanceService.EnsureScheduled(ctx); err != nil {
+		return fmt.Errorf("schedule maintenance: %w", err)
+	}
+	jobState := jobs.New(jobs.Config{
+		Store: st, LeaseDuration: 2 * time.Minute, RetryDelay: 30 * time.Second,
+	})
+	jobRunner := jobs.NewRunner(jobs.RunnerConfig{
+		Store: st, State: jobState, Handlers: maintenanceService.Handlers(),
+		Recurring: maintenanceService.Recurring(), Logger: logger,
+	})
 	revocations := store.NewRevocationChecker(st)
 
 	runtime := controlruntime.New(controlruntime.Config{
@@ -100,10 +122,15 @@ func run(cfg *Config, logger *slog.Logger) error {
 		return err
 	}
 
-	errorsCh := make(chan error, 3)
+	errorsCh := make(chan error, 4)
 	go func() {
 		if err := runtime.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			errorsCh <- fmt.Errorf("delivery dispatcher: %w", err)
+		}
+	}()
+	go func() {
+		if err := jobRunner.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			errorsCh <- fmt.Errorf("job runner: %w", err)
 		}
 	}()
 	go func() {

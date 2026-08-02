@@ -944,6 +944,16 @@ func (s *Store) GetJob(ctx context.Context, id string) (JobRow, error) {
 	return row, nil
 }
 
+// GetLiveJobByDedupe returns the pending or claimed singleton for one
+// scheduling key. ErrNotFound means the singleton still needs to be seeded.
+func (s *Store) GetLiveJobByDedupe(ctx context.Context, key string) (JobRow, error) {
+	row, err := s.queries.GetLiveJobByDedupe(ctx, &key)
+	if err != nil {
+		return JobRow{}, fmt.Errorf("job: get live singleton: %w", translateNotFound(err))
+	}
+	return row, nil
+}
+
 // ListClaimableJobs returns due pending jobs and expired leases, oldest first.
 func (s *Store) ListClaimableJobs(ctx context.Context, at time.Time, limit int32) ([]JobRow, error) {
 	rows, err := s.queries.ListClaimableJobs(ctx, generated.ListClaimableJobsParams{DueAt: at, Limit: limit})

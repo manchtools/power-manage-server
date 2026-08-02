@@ -14,7 +14,7 @@ import (
 
 // sealSuffix names the sidecar holding an artifact's integrity seal
 // (the hex sha256 of the data file). Kept beside the artifact so the
-// archive is self-verifying offline (AC 22) without the live system.
+// archive is self-verifying offline without the live system.
 const sealSuffix = ".sha256"
 
 // probePrefix names the writability-probe temp files newFilesystem
@@ -99,7 +99,7 @@ func writeFileSync(path string, data []byte) (err error) {
 
 // syncDir fsyncs the archive directory so a rename or newly-created
 // sidecar survives a crash. Load-bearing: the archive is the ONLY copy
-// of the events the prune step subsequently deletes — a rename that
+// of the audit rows the retention step subsequently deletes — a rename that
 // isn't durable is silent data loss on power-loss (CR).
 func (f *filesystem) syncDir() error {
 	d, err := os.Open(f.dir)
@@ -157,8 +157,8 @@ func (f *filesystem) Put(ctx context.Context, ref string, r io.Reader) (ArchiveI
 		return ArchiveInfo{}, fmt.Errorf("archive: publish %s: %w", ref, err)
 	}
 	// fsync the directory so the seal-file creation AND the rename are
-	// durable before we report success — the caller (prune worker) only
-	// deletes events after a durable archive lands (AC 28).
+	// durable before we report success — retention only deletes audit rows after
+	// a durable archive lands.
 	if err := f.syncDir(); err != nil {
 		return ArchiveInfo{}, err
 	}
@@ -208,7 +208,7 @@ func (f *filesystem) List(ctx context.Context) ([]ArchiveInfo, error) {
 
 // Verify recomputes an artifact's hash from its stored bytes and
 // compares it to its seal — tamper detection independent of the live
-// system (AC 22). A mismatch, a missing artifact, or a missing seal is
+// system. A mismatch, a missing artifact, or a missing seal is
 // an error.
 func Verify(ctx context.Context, store ArchiveStore, ref string) error {
 	fs, ok := store.(*filesystem)

@@ -84,7 +84,9 @@ silent replay of non-idempotent effects.
 - Restrict the PROXY-protocol listener to the isolated Traefik network.
 - Protect CA, JWT, sealing, database, and at-rest encryption keys with strict
   filesystem or deployment-secret permissions.
-- Replicate database and artifacts off-host and monitor backup age and lag.
+- Mount or replicate `backup_path` off-host: audit anchors and archive-before-
+  delete prefixes are written there. Replicate the database and artifacts too,
+  and monitor backup age and lag.
 
 Gateway, Valkey, Asynq, external indexing, CRL distribution, local
 password/TOTP, and application-frame signing are not compensating controls and
