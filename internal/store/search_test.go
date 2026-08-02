@@ -75,7 +75,7 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 		newID(), policyID, now, userID)
 	require.NoError(t, err)
 
-	_, err = st.RecordOperation(ctx, store.AuditOperation{
+	auditRecord, err := st.RecordOperation(ctx, store.AuditOperation{
 		Class: store.ClassMutation, ActorType: "user", ActorID: userID,
 		Origin: "control_rpc", RequestDescriptor: "/powermanage.v1.ControlService/DispatchAction",
 		AuthorizationOutcome: store.AuthorizationAllowed, AuthorizationDetail: "DispatchAction",
@@ -84,6 +84,10 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 		ResourceType: "action", ResourceID: actionID, Action: "DISPATCH", Outcome: store.EffectApplied,
 	})
 	require.NoError(t, err)
+	var auditOccurredAt time.Time
+	require.NoError(t, raw.QueryRow(ctx,
+		`SELECT occurred_at FROM audit_operations WHERE operation_id = $1`, auditRecord.OperationID,
+	).Scan(&auditOccurredAt))
 
 	search := func(scope, query string) []store.SearchRow {
 		t.Helper()
@@ -200,9 +204,13 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 	}
 	for scope, fields := range dateCases {
 		for _, field := range fields {
+			center := now
+			if scope == "audit_events" {
+				center = auditOccurredAt
+			}
 			_, total, err := st.Search(ctx, store.SearchParams{
 				Scope: scope, Limit: 50,
-				DateRanges: []store.SearchDateRange{{Field: field, Start: now.Add(-24 * time.Hour).Unix(), End: now.Add(24 * time.Hour).Unix()}},
+				DateRanges: []store.SearchDateRange{{Field: field, Start: center.Add(-24 * time.Hour).Unix(), End: center.Add(24 * time.Hour).Unix()}},
 			})
 			require.NoErrorf(t, err, "%s date %s", scope, field)
 			assert.Positivef(t, total, "%s date %s", scope, field)
