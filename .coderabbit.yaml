@@ -6,19 +6,25 @@ reviews:
   path_instructions:
     - path: "internal/store/migrations/*.sql"
       instructions: >
-        This project uses event sourcing with PostgreSQL. Migrations contain
-        PL/pgSQL projection functions triggered on INSERT to the events table.
-        Always wrap CREATE FUNCTION in goose StatementBegin/StatementEnd.
-        Check for correct event type handling and projection consistency.
-    - path: "internal/api/*_handler.go"
+        The approved consolidation design uses direct CRUD tables on
+        PostgreSQL; event stores, projections, replay machinery, and
+        compatibility migrations are abolished. Audit operations/effects are
+        append-only evidence, never application state. Reject any migration
+        that revives the removed architecture or weakens audit-chain guards.
+    - path: "internal/store/**"
       instructions: >
-        RPC handlers follow Connect-RPC patterns. Every mutation must append
-        an event via store.AppendEvent. Errors must use apiErrorCtx with
-        proper Connect error codes. Never silently ignore errors.
+        Ordinary state is direct transactional CRUD. Every state mutation,
+        sensitive read, and background writer must use the structural audit
+        transaction path; the only unaudited write exception is explicitly
+        classified, coalesced heartbeat telemetry. Search is PostgreSQL FTS,
+        jobs and dispatch are PostgreSQL-backed, and Valkey/Asynq/projectors
+        must not return.
     - path: "internal/auth/**"
       instructions: >
         Security-critical code. Check for permission bypass, scope escalation,
-        and proper validation of :self/:assigned scoped permissions.
+        and proper validation of :self/:assigned scoped permissions. Human
+        identity is OIDC with SCIM lifecycle or explicitly enabled OIDC JIT;
+        local passwords, TOTP, CreateUser, and DeleteUser must not return.
   tools:
     golangci-lint:
       enabled: true
