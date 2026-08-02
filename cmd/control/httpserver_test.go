@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
@@ -9,6 +10,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHTTPServerReadTimeouts(t *testing.T) {
+	t.Parallel()
+
+	public, err := buildPublicServer(&Config{PublicListen: "127.0.0.1:0"}, http.NotFoundHandler())
+	require.NoError(t, err)
+	assert.Equal(t, publicRequestReadTimeout, public.ReadTimeout,
+		"the public listener must bound slow request bodies")
+}
 
 func TestAgentProxyListenerRequiresTrustedProxyHeader(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

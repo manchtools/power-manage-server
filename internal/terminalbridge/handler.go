@@ -104,6 +104,16 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "device unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	// The public server bounds ordinary request bodies with ReadTimeout. A
+	// WebSocket becomes a long-lived terminal transport after the upgrade, so
+	// it must not inherit that one-request deadline. Fail closed if the concrete
+	// server response writer cannot remove it; accepting would produce a shell
+	// that is guaranteed to die when the original deadline expires.
+	if err := http.NewResponseController(response).SetReadDeadline(time.Time{}); err != nil {
+		h.logger.Error("clear terminal read deadline", "code", "TRANSPORT_UNSUPPORTED")
+		http.Error(response, "terminal session unavailable", http.StatusServiceUnavailable)
+		return
+	}
 
 	ws, err := websocket.Accept(response, request, &websocket.AcceptOptions{
 		OriginPatterns: h.originPatterns,

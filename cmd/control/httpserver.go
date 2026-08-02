@@ -13,10 +13,12 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 )
 
+const publicRequestReadTimeout = 30 * time.Second
+
 func buildPublicServer(cfg *Config, handler http.Handler) (*http.Server, error) {
 	server := &http.Server{
 		Addr: cfg.PublicListen, Handler: handler, IdleTimeout: 120 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 1 << 20,
+		ReadTimeout: publicRequestReadTimeout, ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 1 << 20,
 	}
 	if cfg.PublicTLSCertFile == "" {
 		return server, nil
