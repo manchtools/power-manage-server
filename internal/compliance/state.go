@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -23,6 +24,10 @@ var (
 	ErrRuleExists          = errors.New("compliance policy rule already exists")
 	ErrRuleNotFound        = errors.New("compliance policy rule not found")
 	ErrActionNotCompliance = errors.New("action is not a compliance action")
+	// ErrComplianceActionNeedsDetection means a compliance-classified shell
+	// action carries no detection script. Compliance actions are detection-only,
+	// so such an action can never produce a finding.
+	ErrComplianceActionNeedsDetection = errors.New("compliance action needs a detection script")
 )
 
 // StateConfig supplies the direct store and clock.
@@ -242,8 +247,15 @@ func validateComplianceAction(row store.ActionRow) error {
 	if err := actionparams.PopulateManagedAction(action, action.Type, row.Params); err != nil {
 		return fmt.Errorf("compliance: decode action params: %w", err)
 	}
-	if action.GetShell() == nil || !action.GetShell().IsCompliance {
+	shell := action.GetShell()
+	if shell == nil || !shell.IsCompliance {
 		return ErrActionNotCompliance
+	}
+	// A compliance action is detection-only. Without a detection script it can
+	// never report a finding, so attachment fails closed instead of enrolling a
+	// rule that would silently evaluate nothing.
+	if strings.TrimSpace(shell.DetectionScript) == "" {
+		return ErrComplianceActionNeedsDetection
 	}
 	return nil
 }

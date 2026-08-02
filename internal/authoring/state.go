@@ -341,6 +341,9 @@ func validateActionSafety(params proto.Message) error {
 		if p.Script == "" && p.DetectionScript == "" {
 			return fmt.Errorf("%w: shell action needs a script or detection script", ErrInvalidInput)
 		}
+		if p.IsCompliance && strings.TrimSpace(p.DetectionScript) == "" {
+			return fmt.Errorf("%w: compliance shell action is detection-only and needs a detection script", ErrInvalidInput)
+		}
 	case *pmv1.AppInstallParams:
 		if !strings.HasPrefix(strings.ToLower(p.Url), "https://") || !isLowerHex64(p.ChecksumSha256) {
 			return fmt.Errorf("%w: application install requires HTTPS and a lowercase SHA-256", ErrInvalidInput)

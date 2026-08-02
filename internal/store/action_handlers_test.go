@@ -281,6 +281,48 @@ func TestActionHandlers_RejectUnsafeOrMismatchedParamsAndSystemMutation(t *testi
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
 
+func TestActionHandlers_RejectComplianceShellWithoutDetectionScript(t *testing.T) {
+	f := newActionHandlerFixture(t)
+	ctx := f.actor("CreateAction", "UpdateActionParams")
+
+	for _, tc := range []struct{ name, detection string }{
+		{"empty", ""},
+		{"blank", " \t\n "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := f.handlers.CreateAction(ctx, connect.NewRequest(&pmv1.CreateActionRequest{
+				Name: "compliance " + tc.name, Type: pmv1.ActionType_ACTION_TYPE_SHELL,
+				DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT, TimeoutSeconds: 300,
+				Params: &pmv1.CreateActionRequest_Shell{Shell: &pmv1.ShellParams{
+					Interpreter: "/bin/sh", Script: "echo remediate",
+					DetectionScript: tc.detection, IsCompliance: true,
+				}},
+			}))
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+				"a compliance action is detection-only and cannot be authored without a detection script")
+		})
+	}
+
+	created, err := f.handlers.CreateAction(ctx, connect.NewRequest(&pmv1.CreateActionRequest{
+		Name: "compliance detect", Type: pmv1.ActionType_ACTION_TYPE_SHELL,
+		DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT, TimeoutSeconds: 300,
+		Params: &pmv1.CreateActionRequest_Shell{Shell: &pmv1.ShellParams{
+			Interpreter: "/bin/sh", DetectionScript: "exit 0", IsCompliance: true,
+		}},
+	}))
+	require.NoError(t, err, "a compliance action carrying a detection script stays authorable")
+
+	_, err = f.handlers.UpdateActionParams(ctx, connect.NewRequest(&pmv1.UpdateActionParamsRequest{
+		Id: created.Msg.Action.Id, DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT,
+		TimeoutSeconds: 300,
+		Params: &pmv1.UpdateActionParamsRequest_Shell{Shell: &pmv1.ShellParams{
+			Interpreter: "/bin/sh", Script: "echo remediate", IsCompliance: true,
+		}},
+	}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"an update may not strip the detection script from a compliance action")
+}
+
 func TestActionHandlers_MountsExactSurface(t *testing.T) {
 	f := newActionHandlerFixture(t)
 	assert.Equal(t, []string{

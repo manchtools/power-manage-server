@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -207,6 +208,67 @@ func TestCompliancePolicyHandlers_RejectsOrdinaryAndOutOfScopeActions(t *testing
 		PolicyId: policy.ID, ActionId: inScope,
 	}))
 	require.NoError(t, err)
+}
+
+// insertDetectionlessComplianceAction stores a compliance-classified shell
+// action whose detection script is absent or blank. It bypasses authoring so
+// the attachment guard is proven on its own rather than through the authoring
+// guard that also refuses this shape.
+func insertDetectionlessComplianceAction(t *testing.T, raw *testdb.DB, name, detection string) string {
+	t.Helper()
+	params, err := actionparams.MarshalActionParams(&pmv1.ShellParams{
+		Interpreter: "/bin/sh", Script: "echo remediate",
+		DetectionScript: detection, IsCompliance: true,
+	})
+	require.NoError(t, err)
+	id := newID()
+	_, err = raw.Exec(context.Background(), `
+		INSERT INTO actions
+			(id, name, action_type, desired_state, params, timeout_seconds, created_at)
+		VALUES ($1, $2, $3, 1, $4, 60, CURRENT_TIMESTAMP)
+	`, id, name, int32(pmv1.ActionType_ACTION_TYPE_SHELL), string(params))
+	require.NoError(t, err)
+	return id
+}
+
+// A compliance action is detection-only, so attaching one without a detection
+// script must fail closed. The positive control — attaching a compliance action
+// that has a detection script — is covered by
+// TestCompliancePolicyHandlers_CRUDRulesAndAudit and
+// TestCompliancePolicyHandlers_RejectsOrdinaryAndOutOfScopeActions.
+func TestCompliancePolicyHandlers_RefuseComplianceActionWithoutDetectionScript(t *testing.T) {
+	f := newComplianceHandlerFixture(t)
+	policyState := compliance.NewState(compliance.StateConfig{Store: f.store})
+	op := actionOperation()
+	policy, err := policyState.Create(context.Background(), op, compliance.CreateParams{
+		Name: "baseline", CreatedBy: op.ActorID,
+	})
+	require.NoError(t, err)
+	ctx := f.actor("AddCompliancePolicyRule")
+
+	for _, tc := range []struct{ name, detection string }{
+		{"empty", ""},
+		{"blank", " \t\n "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			actionID := insertDetectionlessComplianceAction(t, f.raw, tc.name+" detection", tc.detection)
+
+			stateErr := policyState.AddRule(context.Background(), actionOperation(), policy.ID, actionID, 0)
+			require.Error(t, stateErr, "a detection-less compliance action is not attachable")
+			require.ErrorIs(t, stateErr, compliance.ErrComplianceActionNeedsDetection)
+			require.NotErrorIs(t, stateErr, compliance.ErrActionNotCompliance,
+				"the refusal names the missing detection script, not the classification")
+
+			_, rpcErr := f.handlers.AddCompliancePolicyRule(ctx, connect.NewRequest(&pmv1.AddCompliancePolicyRuleRequest{
+				PolicyId: policy.ID, ActionId: actionID,
+			}))
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(rpcErr))
+
+			rules, err := f.store.ListCompliancePolicyRules(context.Background(), policy.ID)
+			require.NoError(t, err)
+			assert.Empty(t, rules)
+		})
+	}
 }
 
 func TestCompliancePolicyHandlers_KeysetAndDirectScope(t *testing.T) {

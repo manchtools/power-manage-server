@@ -34,6 +34,7 @@ const (
 	errPolicyNotFound      = "compliance_policy_not_found"
 	errActionNotFound      = "action_not_found"
 	errActionNotCompliance = "action_not_compliance"
+	errActionNoDetection   = "compliance_action_needs_detection"
 	errRuleExists          = "compliance_policy_rule_exists"
 	errPolicyRuleNotFound  = "compliance_policy_rule_not_found"
 )
@@ -480,6 +481,8 @@ func (h *Handlers) policyError(ctx context.Context, operation string, err error)
 		return rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid compliance policy")
 	case errors.Is(err, ErrActionNotCompliance):
 		return rpcError(ctx, errActionNotCompliance, connect.CodeInvalidArgument, "action must be a compliance shell action")
+	case errors.Is(err, ErrComplianceActionNeedsDetection):
+		return rpcError(ctx, errActionNoDetection, connect.CodeInvalidArgument, "compliance action must carry a detection script")
 	case errors.Is(err, ErrRuleExists):
 		return rpcError(ctx, errRuleExists, connect.CodeAlreadyExists, "compliance policy rule already exists")
 	case errors.Is(err, ErrRuleNotFound):
