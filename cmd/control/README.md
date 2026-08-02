@@ -11,7 +11,7 @@ authority is
 - OIDC, SCIM, RBAC, and scoped authorization;
 - CRUD state and transactional audit operation/effect rows;
 - database-backed scheduling and durable delivery;
-- PostgreSQL full-text search during consolidation;
+- SQLite FTS5 full-text search;
 - certificate issuance, renewal, and indexed revocation;
 - artifact metadata and filesystem ownership; and
 <!-- docref: begin src=internal/controlruntime/runtime.go#health:550d4ab3,internal/controlruntime/runtime.go#readinessHandler:679b3b18,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
@@ -35,14 +35,15 @@ Initial administration uses the host-authorized `bootstrap-admin` command to
 produce a single-use, short-lived URL. Configure OIDC/SCIM immediately; there
 is no local administrator password.
 
-## Database sequence
+## Database
 
-Use PostgreSQL for the consolidation. Convert state to CRUD, audit to dedicated
-append-only tables, work to database jobs, and search to PostgreSQL FTS first.
-Do not mix those changes with the SQLite port.
+Control embeds SQLite in WAL mode with `synchronous=FULL` and owns the file
+named by `database_path`. Search runs on FTS5.
 
-After semantics and verification are stable, port to SQLite WAL with
-`synchronous=FULL` and replace PostgreSQL FTS with FTS5.
+That datastore port deliberately came last: state was first converted to CRUD,
+audit to dedicated append-only tables, work to database jobs, and search to
+full-text search, so swapping the engine did not change RPC or observable
+search semantics. PostgreSQL is removed and guarded against return.
 
 ## Development
 
@@ -55,15 +56,16 @@ make sqlc-check
 
 Generated sqlc and protobuf outputs are never edited by hand.
 
-<!-- docref: begin src=internal/store/postgres_scale_test.go#TestPostgresScale_MixedWorkloadAtTenThousandAgents:6f99b735 -->
-Run the explicit PostgreSQL 10,000-agent baseline with:
+<!-- docref: begin src=internal/store/sqlite_scale_test.go#TestSQLiteScale_MixedWorkloadAtTenThousandAgents:cbcd232a -->
+Run the explicit SQLite 10,000-agent gate with:
 
 ```bash
-POWER_MANAGE_RUN_SCALE_TEST=1 GOWORK=off go test ./internal/store \
-  -run '^TestPostgresScale_MixedWorkloadAtTenThousandAgents$' -count=1 -v -timeout 10m
+POWER_MANAGE_RUN_SCALE_TEST=1 go test ./internal/store \
+  -run '^TestSQLiteScale_MixedWorkloadAtTenThousandAgents$' -count=1 -v -timeout 10m
 ```
 
-It is intentionally skipped by the ordinary unit-test gate.
+It is intentionally skipped by the ordinary unit-test gate and logs one
+`SQLITE_SCALE_RESULT` JSON record.
 <!-- docref: end -->
 
 Trust-boundary tests must cover validation before authentication,

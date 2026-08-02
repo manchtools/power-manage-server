@@ -3,7 +3,7 @@
 # the symbol/region it points at — e.g. the `control doctor` binary/subcommand
 # name, the doctor exit-code contract, or the registered check set.
 [scan]
-include = ["deploy/QUICKSTART.md", "SECURITY.md"]
+include = ["deploy/QUICKSTART.md", "SECURITY.md", "README.md", "cmd/control/README.md"]
 
 [check]
 level = "strict"

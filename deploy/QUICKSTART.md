@@ -1,8 +1,8 @@
 # Power Manage server quickstart
 
-<!-- docref: begin src=deploy/compose.yml#@deployment-services:c8bd2e6c -->
-The consolidation stack has exactly three services: Traefik, one control
-process, and PostgreSQL. The authoritative system design is
+<!-- docref: begin src=deploy/compose.yml#@deployment-services:5fb8f238 -->
+The stack has exactly two services: Traefik and one control process with an
+embedded SQLite database. The authoritative system design is
 `../../DESIGN_2026_07_31/00_TARGET_DESIGN.md`.
 <!-- docref: end -->
 
@@ -11,10 +11,10 @@ process, and PostgreSQL. The authoritative system design is
 Copy `.env.example` to `.env`, edit the three required public values, then run
 `./setup.sh`.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:4e587237 -->
-`setup.sh` creates the internal Ed25519 CA, the control and datastore
-certificates, the session and sealing keys, the PostgreSQL password, and
-`config/control.json` with a 90-day audit-retention policy. Existing complete
+<!-- docref: begin src=deploy/setup.sh#@generated-material:6c6a5264 -->
+`setup.sh` creates the internal Ed25519 CA, the control certificate, the
+encryption, session and sealing keys, and `config/control.json` with a 90-day
+audit-retention policy and the SQLite `database_path`. Existing complete
 keypairs are retained, which permits a pre-provisioned CA. Partial or unusable
 material fails closed. Generated secret files are mode 0600 and are never
 printed.
@@ -40,7 +40,7 @@ metadata remain available without recording query-string credentials.
 Run `docker compose up -d --wait`, then inspect the result with
 `docker compose ps`.
 
-<!-- docref: begin src=cmd/control/bootstrap_admin.go#runBootstrapAdmin:c20952b3,internal/identity/bootstrap.go#Bootstrapper.setupURL:417b204e -->
+<!-- docref: begin src=cmd/control/bootstrap_admin.go#runBootstrapAdmin:aa979b40,internal/identity/bootstrap.go#Bootstrapper.setupURL:417b204e -->
 Create a host-authorized, single-use administrator setup URL:
 
 Run `docker compose exec control control bootstrap-admin`.
@@ -57,8 +57,8 @@ administrator.
 Use `./deploy.sh` for an update, `docker compose logs -f control` for logs, and
 `docker compose down` to stop the stack.
 
-Artifacts and backups live under `data/artifacts` and `data/backups`.
-PostgreSQL data lives under `data/postgres`; ACME state lives under
+Artifacts and backups live under `data/artifacts` and `data/backups`. The
+SQLite database lives under `data/control`; ACME state lives under
 `data/traefik`.
 
 <!-- docref: begin src=internal/maintenance/service.go#Service.RetainAudit:c0aefcae,cmd/control/config.go#Config.AuditRetention:0e4ab606 -->
@@ -75,16 +75,17 @@ occurrence time; control has no email or provider-specific notification
 integration.
 <!-- docref: end -->
 
-<!-- docref: begin src=deploy/backup.sh#@postgres-backup:c9acafd6,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
-Run `./backup.sh` from a host timer at least daily. It verifies the PostgreSQL
-dump before publishing its status, retains seven dumps by default, and never
-touches readiness. Inspect the latest success and current lag with
-`docker compose exec control control backup-status`; `backup_max_lag` defaults
-to 26 hours.
+<!-- docref: begin src=deploy/backup.sh#@sqlite-backup:76ef1013,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
+Run `./backup.sh` from a host timer at least daily. It takes an online SQLite
+`.backup`, then verifies the copy with `integrity_check` and `foreign_key_check`
+before atomically publishing `backup-status.json`. It retains seven backups by
+default and never touches readiness. Inspect the latest success and current lag
+with `docker compose exec control control backup-status`; `backup_max_lag`
+defaults to 26 hours.
 <!-- docref: end -->
 
-<!-- docref: begin src=internal/store/reads.go#ListDueDeliveries:081847c0,internal/store/search.go#Search:12db8002 -->
-Pending dispatch is ordinary PostgreSQL state. Search uses PostgreSQL FTS.
-There is no broker, projector rebuild, dynamic proxy provider, or auxiliary
-search process to operate.
+<!-- docref: begin src=internal/store/reads.go#ListDueDeliveries:bbaaa8a0,internal/store/search.go#Search:3244914e -->
+Pending dispatch is ordinary SQLite state. Search uses SQLite FTS5. There is no
+broker, projector rebuild, dynamic proxy provider, or auxiliary search process
+to operate.
 <!-- docref: end -->

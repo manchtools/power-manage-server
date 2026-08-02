@@ -17,8 +17,8 @@ repository's security contract without creating a competing architecture.
 - Traefik is the only internet-facing server component.
 - The browser authenticates to control with an OIDC-derived session.
 - Agents authenticate directly to control with device mTLS certificates.
-- PostgreSQL is trusted for availability and persistence during consolidation,
-  but a database copy must not reveal plaintext protected secrets.
+- The embedded SQLite database is trusted for availability and persistence, but
+  a database copy must not reveal plaintext protected secrets.
 - The control host and its CA/key material are trusted. A hostile host
   administrator is outside the application threat boundary.
 
@@ -79,14 +79,14 @@ silent replay of non-idempotent effects.
 
 ## Deployment requirements
 
-- Do not expose control or PostgreSQL directly to the internet.
+- Do not expose control directly to the internet.
 - Do not mount the Docker socket into Traefik.
 - Restrict the PROXY-protocol listener to the isolated Traefik network.
 - Protect CA, JWT, sealing, database, and at-rest encryption keys with strict
   filesystem or deployment-secret permissions.
-<!-- docref: begin src=deploy/backup.sh#@postgres-backup:c9acafd6,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
+<!-- docref: begin src=deploy/backup.sh#@sqlite-backup:76ef1013,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
 - Run `deploy/backup.sh` from a host timer and replicate `backup_path` off-host:
-  it contains verified bounded PostgreSQL dumps, audit anchors, and archived
+  it contains verified bounded SQLite backups, audit anchors, and archived
   prefixes. Back up artifacts too, and monitor `control backup-status`.
 <!-- docref: end -->
 
