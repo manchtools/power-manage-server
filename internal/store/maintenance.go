@@ -36,5 +36,8 @@ func (s *Store) CleanupExpiredAuthStates(ctx context.Context) (int64, error) {
 		})
 		return nil
 	})
-	return deleted, err
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
 }

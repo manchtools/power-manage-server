@@ -13,7 +13,10 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
-const auditArchiveVersion = 1
+const (
+	auditArchiveVersion  = 1
+	auditArchivePageSize = int64(1000)
+)
 
 // AuditArchiveSummary identifies the exact chain prefix written by
 // WriteAuditPrefix.
@@ -64,34 +67,29 @@ func (s *Store) WriteAuditPrefix(ctx context.Context, stream string, boundarySeq
 	if stream == "" {
 		stream = DefaultAuditStream
 	}
-	ops, err := s.queries.ListAuditChainOperations(ctx, generated.ListAuditChainOperationsParams{
-		Stream: stream, ChainSeq: 1, ChainSeq_2: boundarySeq,
+	boundaryHash, err := s.rowHashAt(ctx, s.queries, stream, boundarySeq)
+	if err != nil {
+		return AuditArchiveSummary{}, fmt.Errorf("audit archive: read boundary: %w", err)
+	}
+	operationCount, err := s.queries.CountAuditOperationsAtOrBelow(ctx, generated.CountAuditOperationsAtOrBelowParams{
+		Stream: stream, ChainSeq: boundarySeq,
 	})
 	if err != nil {
-		return AuditArchiveSummary{}, fmt.Errorf("audit archive: list operations: %w", err)
+		return AuditArchiveSummary{}, fmt.Errorf("audit archive: count operations: %w", err)
 	}
-	effects, err := s.queries.ListAuditChainEffects(ctx, generated.ListAuditChainEffectsParams{
-		Stream: stream, ChainSeq: 1, ChainSeq_2: boundarySeq,
+	effectCount, err := s.queries.CountAuditEffectsAtOrBelow(ctx, generated.CountAuditEffectsAtOrBelowParams{
+		Stream: stream, ChainSeq: boundarySeq,
 	})
 	if err != nil {
-		return AuditArchiveSummary{}, fmt.Errorf("audit archive: list effects: %w", err)
+		return AuditArchiveSummary{}, fmt.Errorf("audit archive: count effects: %w", err)
 	}
-	type orderedRow struct {
-		seq int64
-		row auditArchiveRow
+	firstSeq, err := s.firstSeqAbove(ctx, s.queries, stream, 0)
+	if err != nil {
+		return AuditArchiveSummary{}, err
 	}
-	rows := make([]orderedRow, 0, len(ops)+len(effects))
-	for i := range ops {
-		rows = append(rows, orderedRow{seq: ops[i].ChainSeq, row: auditArchiveRow{Type: "operation", Operation: &ops[i]}})
-	}
-	for i := range effects {
-		rows = append(rows, orderedRow{seq: effects[i].ChainSeq, row: auditArchiveRow{Type: "effect", Effect: &effects[i]}})
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].seq < rows[j].seq })
-	if len(rows) == 0 || rows[len(rows)-1].seq != boundarySeq {
+	if firstSeq == 0 || firstSeq > boundarySeq {
 		return AuditArchiveSummary{}, fmt.Errorf("audit archive: boundary position %d is not retained", boundarySeq)
 	}
-	boundaryHash := rowArchiveHash(rows[len(rows)-1].row)
 	checkpoints, err := s.ListAuditCheckpoints(ctx, stream)
 	if err != nil {
 		return AuditArchiveSummary{}, err
@@ -109,17 +107,47 @@ func (s *Store) WriteAuditPrefix(ctx context.Context, stream string, boundarySeq
 	}); err != nil {
 		return AuditArchiveSummary{}, fmt.Errorf("audit archive: write header: %w", err)
 	}
-	for _, row := range rows {
-		if err := encoder.Encode(row.row); err != nil {
-			return AuditArchiveSummary{}, fmt.Errorf("audit archive: write row: %w", err)
+	type orderedRow struct {
+		seq int64
+		row auditArchiveRow
+	}
+	rowsWritten := int64(0)
+	expectedSeq := firstSeq
+	for from := firstSeq; from <= boundarySeq; from += auditArchivePageSize {
+		to := min(from+auditArchivePageSize-1, boundarySeq)
+		ops, err := s.queries.ListAuditChainOperations(ctx, generated.ListAuditChainOperationsParams{
+			Stream: stream, ChainSeq: from, ChainSeq_2: to,
+		})
+		if err != nil {
+			return AuditArchiveSummary{}, fmt.Errorf("audit archive: list operations: %w", err)
+		}
+		effects, err := s.queries.ListAuditChainEffects(ctx, generated.ListAuditChainEffectsParams{
+			Stream: stream, ChainSeq: from, ChainSeq_2: to,
+		})
+		if err != nil {
+			return AuditArchiveSummary{}, fmt.Errorf("audit archive: list effects: %w", err)
+		}
+		rows := make([]orderedRow, 0, len(ops)+len(effects))
+		for i := range ops {
+			rows = append(rows, orderedRow{seq: ops[i].ChainSeq, row: auditArchiveRow{Type: "operation", Operation: &ops[i]}})
+		}
+		for i := range effects {
+			rows = append(rows, orderedRow{seq: effects[i].ChainSeq, row: auditArchiveRow{Type: "effect", Effect: &effects[i]}})
+		}
+		sort.Slice(rows, func(i, j int) bool { return rows[i].seq < rows[j].seq })
+		for _, row := range rows {
+			if row.seq != expectedSeq {
+				return AuditArchiveSummary{}, fmt.Errorf("audit archive: chain jumps from %d to %d", expectedSeq-1, row.seq)
+			}
+			if err := encoder.Encode(row.row); err != nil {
+				return AuditArchiveSummary{}, fmt.Errorf("audit archive: write row: %w", err)
+			}
+			expectedSeq++
+			rowsWritten++
 		}
 	}
-	return AuditArchiveSummary{Rows: int64(len(rows)), BoundaryHash: append([]byte(nil), boundaryHash...)}, nil
-}
-
-func rowArchiveHash(row auditArchiveRow) []byte {
-	if row.Operation != nil {
-		return row.Operation.RowHash
+	if rowsWritten != operationCount+effectCount || expectedSeq != boundarySeq+1 {
+		return AuditArchiveSummary{}, errors.New("audit archive: retained row count changed during export")
 	}
-	return row.Effect.RowHash
+	return AuditArchiveSummary{Rows: rowsWritten, BoundaryHash: append([]byte(nil), boundaryHash...)}, nil
 }

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -34,6 +33,7 @@ const (
 	authStateCleanupInterval = time.Hour
 	maintenanceMaxAttempts   = int32(100)
 	maxAnchorBytes           = 4 << 10
+	externalAnchorRef        = "audit-anchor-control-latest.json"
 )
 
 var recurring = map[string]time.Duration{
@@ -167,7 +167,7 @@ func (s *Service) AnchorAudit(ctx context.Context, _ jobs.Job) error {
 		return err
 	}
 
-	ref := fmt.Sprintf("audit-anchor-%s-%020d-%s.json", tip.Stream, tip.Height, ulid.Make().String())
+	ref := externalAnchorRef
 	payload, err := json.Marshal(externalAnchorFile{
 		Version: 1, Stream: tip.Stream, ChainSeq: tip.Height,
 		RowHashHex: hex.EncodeToString(tip.HeadHash), CapturedAt: s.now().UTC(),
@@ -265,17 +265,17 @@ func (s *Service) latestExternalAnchor(ctx context.Context) (externalAnchor, boo
 	if err != nil {
 		return externalAnchor{}, false, fmt.Errorf("list external audit anchors: %w", err)
 	}
-	anchors := make([]archive.ArchiveInfo, 0, len(infos))
+	var latest *archive.ArchiveInfo
 	for _, info := range infos {
-		if strings.HasPrefix(info.Ref, "audit-anchor-") && strings.HasSuffix(info.Ref, ".json") {
-			anchors = append(anchors, info)
+		if info.Ref == externalAnchorRef {
+			copy := info
+			latest = &copy
+			break
 		}
 	}
-	if len(anchors) == 0 {
+	if latest == nil {
 		return externalAnchor{}, false, nil
 	}
-	sort.Slice(anchors, func(i, j int) bool { return anchors[i].Ref < anchors[j].Ref })
-	latest := anchors[len(anchors)-1]
 	if latest.Size <= 0 || latest.Size > maxAnchorBytes {
 		return externalAnchor{}, false, errors.New("external audit anchor has an invalid size")
 	}

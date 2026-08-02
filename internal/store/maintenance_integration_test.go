@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,15 +18,14 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-type unavailableArchive struct{}
+type prefixFailArchive struct{ archive.ArchiveStore }
 
-func (unavailableArchive) Put(context.Context, string, io.Reader) (archive.ArchiveInfo, error) {
-	return archive.ArchiveInfo{}, errors.New("off-host archive unavailable")
+func (a prefixFailArchive) Put(ctx context.Context, ref string, src io.Reader) (archive.ArchiveInfo, error) {
+	if strings.HasPrefix(ref, "audit-prefix-") {
+		return archive.ArchiveInfo{}, errors.New("off-host prefix archive unavailable")
+	}
+	return a.ArchiveStore.Put(ctx, ref, src)
 }
-func (unavailableArchive) Get(context.Context, string) (io.ReadCloser, error) {
-	return nil, errors.New("off-host archive unavailable")
-}
-func (unavailableArchive) List(context.Context) ([]archive.ArchiveInfo, error) { return nil, nil }
 
 func newMaintenance(t *testing.T, st *store.Store, now time.Time, retention time.Duration) (*maintenance.Service, archive.ArchiveStore) {
 	t.Helper()
@@ -78,6 +78,8 @@ func TestMaintenance_ExternalAnchorAndArchiveBeforeDeleteRunEndToEnd(t *testing.
 	now := time.Now().UTC().Add(120 * 24 * time.Hour)
 	service, archives := newMaintenance(t, st, now, 90*24*time.Hour)
 
+	require.NoError(t, service.AnchorAudit(ctx, jobs.Job{}))
+	seedOperation(t, st)
 	require.NoError(t, service.RetainAudit(ctx, jobs.Job{}))
 	assert.Zero(t, countRows(t, raw, "audit_operations"))
 	assert.Zero(t, countRows(t, raw, "audit_effects"))
@@ -86,15 +88,18 @@ func TestMaintenance_ExternalAnchorAndArchiveBeforeDeleteRunEndToEnd(t *testing.
 	items, err := archives.List(ctx)
 	require.NoError(t, err)
 	var anchorRef, prefixRef string
+	anchorCount := 0
 	for _, item := range items {
 		if len(item.Ref) >= len("audit-anchor-") && item.Ref[:len("audit-anchor-")] == "audit-anchor-" {
 			anchorRef = item.Ref
+			anchorCount++
 		}
 		if len(item.Ref) >= len("audit-prefix-") && item.Ref[:len("audit-prefix-")] == "audit-prefix-" {
 			prefixRef = item.Ref
 		}
 	}
 	require.NotEmpty(t, anchorRef)
+	assert.Equal(t, 1, anchorCount, "only the newest external head anchor is retained")
 	require.NotEmpty(t, prefixRef)
 	require.NoError(t, archive.Verify(ctx, archives, anchorRef))
 	require.NoError(t, archive.Verify(ctx, archives, prefixRef))
@@ -102,17 +107,19 @@ func TestMaintenance_ExternalAnchorAndArchiveBeforeDeleteRunEndToEnd(t *testing.
 		"the external anchor must authenticate the now-archived boundary through its checkpoint")
 }
 
-func TestMaintenance_ArchiveFailureLeavesAuditRowsUntouched(t *testing.T) {
+func TestMaintenance_PrefixArchiveFailureLeavesAuditRowsUntouched(t *testing.T) {
 	st, raw := setupPostgres(t)
 	seedOperation(t, st)
 	now := time.Now().UTC().Add(120 * 24 * time.Hour)
+	base, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
+	require.NoError(t, err)
 	service := maintenance.New(maintenance.Config{
-		Store: st, Archive: unavailableArchive{}, Retention: 90 * 24 * time.Hour,
+		Store: st, Archive: prefixFailArchive{ArchiveStore: base}, Retention: 90 * 24 * time.Hour,
 		Now: func() time.Time { return now },
 	})
 
-	err := service.RetainAudit(context.Background(), jobs.Job{})
-	require.ErrorContains(t, err, "off-host archive unavailable")
+	err = service.RetainAudit(context.Background(), jobs.Job{})
+	require.ErrorContains(t, err, "off-host prefix archive unavailable")
 	assert.Equal(t, int64(1), countRows(t, raw, "audit_operations"))
 	assert.Equal(t, int64(1), countRows(t, raw, "audit_effects"))
 	assert.Zero(t, countRows(t, raw, "audit_chain_checkpoints"))
@@ -163,9 +170,9 @@ func TestMaintenance_AuthStateAuditFailureRollsBackCleanup(t *testing.T) {
 	require.NoError(t, err)
 	_, err = raw.Exec(ctx, `ALTER TABLE audit_effects ADD CONSTRAINT reject_auth_cleanup CHECK (action <> 'CLEANUP')`)
 	require.NoError(t, err)
-	service, _ := newMaintenance(t, st, time.Now().UTC(), 90*24*time.Hour)
-
-	require.Error(t, service.CleanupAuthStates(ctx, jobs.Job{}))
+	deleted, cleanupErr := st.CleanupExpiredAuthStates(ctx)
+	require.Error(t, cleanupErr)
+	assert.Zero(t, deleted, "rolled-back rows must not be reported as deleted")
 	var count int
 	require.NoError(t, raw.QueryRow(ctx, `SELECT count(*) FROM auth_states WHERE state = 'expired'`).Scan(&count))
 	assert.Equal(t, 1, count)

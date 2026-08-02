@@ -211,29 +211,38 @@ func (f *filesystem) List(ctx context.Context) ([]ArchiveInfo, error) {
 // system. A mismatch, a missing artifact, or a missing seal is
 // an error.
 func Verify(ctx context.Context, store ArchiveStore, ref string) error {
-	fs, ok := store.(*filesystem)
-	if !ok {
-		return errors.New("archive: Verify supports the filesystem backend only")
+	if store == nil {
+		return errors.New("archive: store is required")
 	}
-	p, err := fs.refPath(ref)
+	infos, err := store.List(ctx)
 	if err != nil {
 		return err
 	}
-	seal, err := os.ReadFile(p + sealSuffix)
-	if err != nil {
-		return fmt.Errorf("archive: read seal for %s: %w", ref, err)
+	var expected string
+	for _, info := range infos {
+		if info.Ref == ref {
+			expected = info.SHA256
+			break
+		}
 	}
-	rc, err := fs.Get(ctx, ref)
+	decoded, err := hex.DecodeString(expected)
+	if err != nil || len(decoded) != sha256.Size {
+		return fmt.Errorf("archive: missing or invalid seal for %s", ref)
+	}
+	rc, err := store.Get(ctx, ref)
 	if err != nil {
 		return err
 	}
-	defer rc.Close()
 	h := sha256.New()
 	if _, err := io.Copy(h, rc); err != nil {
+		_ = rc.Close()
 		return fmt.Errorf("archive: rehash %s: %w", ref, err)
 	}
+	if err := rc.Close(); err != nil {
+		return fmt.Errorf("archive: close %s: %w", ref, err)
+	}
 	got := hex.EncodeToString(h.Sum(nil))
-	if got != strings.TrimSpace(string(seal)) {
+	if got != expected {
 		return fmt.Errorf("archive: integrity seal MISMATCH for %s — the artifact has been tampered with", ref)
 	}
 	return nil
