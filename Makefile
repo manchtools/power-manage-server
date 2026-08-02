@@ -5,13 +5,13 @@
 # pinned.
 .PHONY: sqlc-generate sqlc-check help
 
-# Pinned OFFICIAL sqlc image. This is load-bearing: a locally
-# `go install`-ed sqlc resolves type overrides differently from the
-# release build — it silently ignored the (unqualified) `timestamptz`
-# override and emitted `pgtype.Timestamptz` instead of `time.Time`.
-# Generation MUST go through this image for output that matches
-# the committed config.
-SQLC_IMAGE ?= sqlc/sqlc:1.30.0
+# Pinned OFFICIAL sqlc image. This is load-bearing: sqlc versions differ in the
+# Go they emit for the same query, so generation MUST go through this image or
+# the drift check fails on a version difference rather than a real change. The
+# pin has to match the version that produced the committed output — 1.30.0, for
+# example, emits `int64` where 1.31.1 emits `bool` for an EXISTS query. A
+# locally `go install`-ed sqlc is not a substitute.
+SQLC_IMAGE ?= sqlc/sqlc:1.31.1
 DOCKER ?= docker
 
 help:
@@ -19,19 +19,12 @@ help:
 	@echo "  sqlc-generate  regenerate internal/store/generated/ via the pinned sqlc image"
 	@echo "  sqlc-check     fail if generated code is stale (run sqlc-generate first)"
 
-# Regenerate the sqlc query layer. Runs from internal/store so the image
-# sees sqlc.yaml, queries/, migrations/, and the parse-only
-# sqlc_schema_overlay.sql (which re-declares the scope columns that
-# migration 010 hides from sqlc's parser inside a DO-block).
+# Regenerate the sqlc query layer. Runs from internal/store so the image sees
+# sqlc.yaml, queries/, and sqliteschema/schema.sql — the single SQLite baseline
+# that sqlc.yaml declares as its schema. There is no migrations directory: the
+# datastore is embedded SQLite and the baseline is created fresh, so the schema
+# is one file rather than an ordered migration set.
 #
-# Two prerequisites are baked into internal/store/sqlc.yaml:
-#   * overrides use `db_type: "pg_catalog.timestamptz"` — the qualified
-#     name modern sqlc matches (the bare `timestamptz` is ignored).
-#   * timestamptz PARAMETERS must NOT carry a redundant `::TIMESTAMPTZ`
-#     cast in queries/: sqlc applies go_type overrides to catalog-resolved
-#     columns but not to cast-typed params, so a cast forces
-#     pgtype.Timestamptz. Drop the no-op cast and sqlc infers the param
-#     type from the bound column.
 # A clean regeneration is a no-op. If sqlc-generate produces a diff, commit the
 # regenerated output; never hand-edit generated/.
 # Generate into a temporary sibling first. sqlc does not remove output for a
@@ -41,7 +34,7 @@ sqlc-generate:
 	@set -eu; \
 	stage=$$(mktemp -d internal/store/.sqlc.XXXXXX); \
 	trap 'rm -rf "$$stage"' EXIT INT TERM; \
-	cp -R internal/store/sqlc.yaml internal/store/migrations internal/store/queries "$$stage/"; \
+	cp -R internal/store/sqlc.yaml internal/store/sqliteschema internal/store/queries "$$stage/"; \
 	$(DOCKER) run --rm --user "$$(id -u):$$(id -g)" \
 		-v "$$(realpath "$$stage")":/src:Z -w /src $(SQLC_IMAGE) generate; \
 	mv internal/store/generated "$$stage/previous"; \
