@@ -1,0 +1,6 @@
+# Local database exports may contain identities, credential hashes, and audit
+# evidence. Ignore only repository-root dumps; checked-in SQL under internal/
+# remains visible to Git.
+/*.sql
+/*.sql.gz
+/*.dump
