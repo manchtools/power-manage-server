@@ -59,8 +59,13 @@ test_secure_idempotent_setup() {
 	[[ ! -e "$directory/certs/postgres.crt" ]]
 	[[ ! -e "$directory/secrets/postgres.password" ]]
     python3 -m json.tool "$directory/config/control.json" >/dev/null
-    openssl x509 -in "$directory/certs/control.crt" -checkhost agents.example.test -noout >/dev/null
-    openssl x509 -in "$directory/certs/control.crt" -checkhost control -noout >/dev/null
+    # Match the verdict text, not the exit status: OpenSSL 3.0 exits 0 even for
+    # a name that does NOT match, so an exit-code assertion here would hold on
+    # any certificate and prove nothing.
+    [[ "$(openssl x509 -in "$directory/certs/control.crt" -checkhost agents.example.test -noout 2>/dev/null)" \
+        == "Hostname agents.example.test does match certificate" ]]
+    [[ "$(openssl x509 -in "$directory/certs/control.crt" -checkhost control -noout 2>/dev/null)" \
+        == "Hostname control does match certificate" ]]
 
     local before after
     before="$(sha256sum "$directory/certs/ca.key" "$directory/certs/control.key" "$directory/secrets/sealing.key")"

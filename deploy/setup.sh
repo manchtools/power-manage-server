@@ -95,12 +95,24 @@ ensure_certificate() {
     openssl verify -CAfile "$CERTS_DIR/ca.crt" "$certificate" >/dev/null
 }
 
+# `openssl x509 -checkhost` cannot be judged by its exit status: OpenSSL 3.0
+# (Ubuntu 24.04, Debian 12) exits 0 even when the name does NOT match and
+# reports the verdict only on stdout, while 3.2+ exits non-zero. Reading the
+# exit code therefore makes this check silently inert on the most common LTS
+# distributions — a pass that means "not checked". The message text is stable
+# across versions, so match it instead.
+certificate_covers_host() {
+    local certificate="$1" host="$2"
+    [[ "$(openssl x509 -in "$certificate" -checkhost "$host" -noout 2>/dev/null)" \
+        == "Hostname $host does match certificate" ]]
+}
+
 ensure_certificates() {
     ensure_certificate control "/CN=$AGENT_DOMAIN/O=Power Manage" \
         "subjectAltName=DNS:$AGENT_DOMAIN,DNS:control,DNS:localhost\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature"
-    openssl x509 -in "$CERTS_DIR/control.crt" -checkhost "$AGENT_DOMAIN" -noout >/dev/null \
+    certificate_covers_host "$CERTS_DIR/control.crt" "$AGENT_DOMAIN" \
         || fail "control.crt does not cover AGENT_DOMAIN; replace control.crt and control.key"
-    openssl x509 -in "$CERTS_DIR/control.crt" -checkhost control -noout >/dev/null \
+    certificate_covers_host "$CERTS_DIR/control.crt" control \
         || fail "control.crt does not cover the internal control service name; replace control.crt and control.key"
 
 }
