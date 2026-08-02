@@ -154,6 +154,8 @@ write_config() {
   "log_format": "${LOG_FORMAT:-json}",
   "certificate_validity": "8760h",
   "heartbeat_interval": "30s",
+  "artifact_path": "/var/lib/power-manage/artifacts",
+  "backup_path": "/var/lib/power-manage/backups",
   "ca_cert_file": "/run/certs/ca.crt",
   "ca_key_file": "/run/certs/ca.key",
   "agent_tls_cert_file": "/run/certs/control.crt",

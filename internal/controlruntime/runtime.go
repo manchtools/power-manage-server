@@ -65,6 +65,7 @@ type Config struct {
 	TrustedProxies           []string
 	HeartbeatInterval        time.Duration
 	Now                      func() time.Time
+	Readiness                func(context.Context) error
 }
 
 // Runtime owns the HTTP surfaces and bounded background dispatcher.
@@ -81,8 +82,9 @@ type Runtime struct {
 
 // New wires every retained RPC to its direct domain owner.
 func New(cfg Config) *Runtime {
-	if cfg.Store == nil || cfg.CA == nil || cfg.JWT == nil || cfg.AtRest == nil || cfg.ControlSealingPrivateKey == nil {
-		panic("controlruntime: store, CA, JWT, at-rest cipher, and sealing key are required")
+	if cfg.Store == nil || cfg.CA == nil || cfg.JWT == nil || cfg.AtRest == nil ||
+		cfg.ControlSealingPrivateKey == nil || cfg.Readiness == nil {
+		panic("controlruntime: store, CA, JWT, at-rest cipher, sealing key, and readiness check are required")
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -158,13 +160,7 @@ func New(cfg Config) *Runtime {
 		OriginPatterns: cfg.TerminalOriginPatterns, Now: cfg.Now,
 	}))
 	publicMux.HandleFunc("/health", health)
-	publicMux.HandleFunc("/ready", func(response http.ResponseWriter, request *http.Request) {
-		if err := cfg.Store.Ping(request.Context()); err != nil {
-			http.Error(response, "not ready", http.StatusServiceUnavailable)
-			return
-		}
-		health(response, request)
-	})
+	publicMux.HandleFunc("/ready", readinessHandler(cfg.Readiness))
 	auth.SetTrustedProxies(cfg.TrustedProxies)
 	publicHandler := middleware.RequestID(middleware.SecurityHeaders(
 		middleware.CORS(cfg.CORSOrigins, cfg.CORSAllowAll, cfg.Logger)(publicMux)))
@@ -175,20 +171,13 @@ func New(cfg Config) *Runtime {
 	agentMux.Handle(agentPath, agentstream.MTLSMiddleware(directAgentHandler,
 		store.NewRevocationChecker(cfg.Store), cfg.Logger))
 	agentMux.HandleFunc("/health", health)
-	agentMux.HandleFunc("/ready", func(response http.ResponseWriter, request *http.Request) {
-		if err := cfg.Store.Ping(request.Context()); err != nil {
-			http.Error(response, "not ready", http.StatusServiceUnavailable)
-			return
-		}
-		health(response, request)
-	})
+	agentMux.HandleFunc("/ready", readinessHandler(cfg.Readiness))
 
 	return &Runtime{
 		PublicHandler: publicHandler, AgentHandler: agentMux, Connections: manager,
 		Deliveries: dispatcher, scim: scimHandler, limiters: ownedLimiters,
 	}
 }
-
 
 // Run blocks until ctx is cancelled while the durable delivery sweep runs.
 func (r *Runtime) Run(ctx context.Context) error {
@@ -216,6 +205,16 @@ func (r *Runtime) Close() {
 func health(response http.ResponseWriter, _ *http.Request) {
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write([]byte("ok"))
+}
+
+func readinessHandler(check func(context.Context) error) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if err := check(request.Context()); err != nil {
+			http.Error(response, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		health(response, request)
+	}
 }
 
 func defaultRateLimiters() (auth.RateLimiters, []*auth.RateLimiter) {

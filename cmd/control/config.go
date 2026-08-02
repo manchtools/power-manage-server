@@ -42,6 +42,8 @@ type configDocument struct {
 	LogFormat             string   `json:"log_format"`
 	CertificateValidity   string   `json:"certificate_validity"`
 	HeartbeatInterval     string   `json:"heartbeat_interval"`
+	ArtifactPath          string   `json:"artifact_path"`
+	BackupPath            string   `json:"backup_path"`
 	CACertFile            string   `json:"ca_cert_file"`
 	CAKeyFile             string   `json:"ca_key_file"`
 	AgentTLSCertFile      string   `json:"agent_tls_cert_file"`
@@ -69,6 +71,8 @@ type Config struct {
 	LogFormat           string
 	CertificateValidity time.Duration
 	HeartbeatInterval   time.Duration
+	ArtifactPath        string
+	BackupPath          string
 	CACertFile          string
 	CAKeyFile           string
 	AgentTLSCertFile    string
@@ -138,6 +142,8 @@ func loadConfig(args []string) (*Config, error) {
 		AgentProxySources: append([]string(nil), document.AgentProxySources...),
 		LogLevel:          document.LogLevel, LogFormat: document.LogFormat,
 		CertificateValidity: certificateValidity, HeartbeatInterval: heartbeatInterval,
+		ArtifactPath:      document.ArtifactPath,
+		BackupPath:        document.BackupPath,
 		CACertFile:        document.CACertFile,
 		CAKeyFile:         pathOverride("POWER_MANAGE_CA_KEY_FILE", document.CAKeyFile),
 		AgentTLSCertFile:  document.AgentTLSCertFile,
@@ -238,6 +244,12 @@ func validateConfig(cfg *Config) error {
 	if cfg.DatabaseURL == "" || cfg.EncryptionKey == "" {
 		return errors.New("database and encryption secrets are required")
 	}
+	if err := validateWritableDirectory("artifact_path", cfg.ArtifactPath); err != nil {
+		return err
+	}
+	if err := validateWritableDirectory("backup_path", cfg.BackupPath); err != nil {
+		return err
+	}
 	for name, path := range map[string]string{
 		"ca_cert_file": cfg.CACertFile, "ca_key_file": cfg.CAKeyFile,
 		"agent_tls_cert_file": cfg.AgentTLSCertFile, "agent_tls_key_file": cfg.AgentTLSKeyFile,
@@ -251,6 +263,32 @@ func validateConfig(cfg *Config) error {
 	}
 	if len(cfg.SessionSigningKey) != ed25519.PrivateKeySize || cfg.SealingKey == nil {
 		return errors.New("session and sealing private keys are required")
+	}
+	return nil
+}
+
+func validateWritableDirectory(name, path string) error {
+	if path == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%s %q: %w", name, path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s %q must be a directory", name, path)
+	}
+	probe, err := os.CreateTemp(path, ".power-manage-write-probe-*")
+	if err != nil {
+		return fmt.Errorf("%s %q is not writable: %w", name, path, err)
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(probePath)
+		return fmt.Errorf("%s %q write probe: %w", name, path, err)
+	}
+	if err := os.Remove(probePath); err != nil {
+		return fmt.Errorf("%s %q remove write probe: %w", name, path, err)
 	}
 	return nil
 }

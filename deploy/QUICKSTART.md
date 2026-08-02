@@ -1,6 +1,6 @@
 # Power Manage server quickstart
 
-<!-- docref: begin src=deploy/compose.yml#@deployment-services:b4fee0cc -->
+<!-- docref: begin src=deploy/compose.yml#@deployment-services:821c3d9b -->
 The consolidation stack has exactly three services: Traefik, one control
 process, and PostgreSQL. The authoritative system design is
 `../../DESIGN_2026_07_31/00_TARGET_DESIGN.md`.
@@ -11,7 +11,7 @@ process, and PostgreSQL. The authoritative system design is
 Copy `.env.example` to `.env`, edit the three required public values, then run
 `./setup.sh`.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:f8d53515 -->
+<!-- docref: begin src=deploy/setup.sh#@generated-material:1b8bb36b -->
 `setup.sh` creates the internal Ed25519 CA, the control and datastore
 certificates, the session and sealing keys, the PostgreSQL password, and
 `config/control.json`. Existing complete keypairs are retained, which permits a

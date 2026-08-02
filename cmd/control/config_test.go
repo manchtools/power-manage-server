@@ -39,6 +39,10 @@ func TestLoadConfigUsesOneFileAndSecretFiles(t *testing.T) {
 	sealingPath := secret("sealing.key", strings.Repeat("01", 32))
 	databasePath := secret("database.url", "postgres://control:secret@db/control?sslmode=verify-full")
 	encryptionPath := secret("encryption.key", strings.Repeat("02", 32))
+	artifactPath := filepath.Join(directory, "artifacts")
+	backupPath := filepath.Join(directory, "backups")
+	require.NoError(t, os.Mkdir(artifactPath, 0o700))
+	require.NoError(t, os.Mkdir(backupPath, 0o700))
 	configPath := filepath.Join(directory, "control.json")
 	document := `{
   "public_base_url": "https://manage.example",
@@ -46,6 +50,8 @@ func TestLoadConfigUsesOneFileAndSecretFiles(t *testing.T) {
   "terminal_url": "wss://manage.example/terminal",
   "cors_origins": ["https://manage.example"],
   "agent_proxy_sources": ["172.30.0.2"],
+	"artifact_path": ` + quote(artifactPath) + `,
+	"backup_path": ` + quote(backupPath) + `,
   "ca_cert_file": "/certs/ca.crt",
   "ca_key_file": "/certs/ca.key",
   "agent_tls_cert_file": "/certs/control.crt",
@@ -63,8 +69,19 @@ func TestLoadConfigUsesOneFileAndSecretFiles(t *testing.T) {
 	assert.Equal(t, ":8082", cfg.AgentListen)
 	assert.Equal(t, []string{"172.30.0.2"}, cfg.AgentProxySources)
 	assert.Equal(t, "manage.example", cfg.TerminalOrigins[0])
+	assert.Equal(t, artifactPath, cfg.ArtifactPath)
+	assert.Equal(t, backupPath, cfg.BackupPath)
 	assert.Equal(t, sessionPrivate, cfg.SessionSigningKey)
 	assert.Equal(t, bytes.Repeat([]byte{1}, 32), cfg.SealingKey.Bytes())
+}
+
+func TestValidateConfigRequiresWritableDataDirectories(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+
+	err := validateWritableDirectory("artifact_path", file)
+	assert.ErrorContains(t, err, "must be a directory")
+	assert.ErrorContains(t, validateWritableDirectory("backup_path", ""), "is required")
 }
 
 func TestConfigAndSecretReadersFailClosed(t *testing.T) {

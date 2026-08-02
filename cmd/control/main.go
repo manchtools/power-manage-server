@@ -77,6 +77,7 @@ func run(cfg *Config, logger *slog.Logger) error {
 	if err := auth.ReconcileSystemRoles(ctx, st, time.Now(), logger); err != nil {
 		return fmt.Errorf("reconcile system roles: %w", err)
 	}
+	revocations := store.NewRevocationChecker(st)
 
 	runtime := controlruntime.New(controlruntime.Config{
 		Store: st, CA: certificateAuthority, JWT: jwt, AtRest: atRest,
@@ -85,6 +86,9 @@ func run(cfg *Config, logger *slog.Logger) error {
 		CORSOrigins: cfg.CORSOrigins, CORSAllowAll: cfg.CORSAllowAll,
 		TerminalOriginPatterns: cfg.TerminalOrigins, TrustedProxies: cfg.TrustedProxies,
 		HeartbeatInterval: cfg.HeartbeatInterval,
+		Readiness: func(ctx context.Context) error {
+			return checkReadiness(ctx, st, revocations, cfg.ArtifactPath)
+		},
 	})
 	defer runtime.Close()
 	publicServer, err := buildPublicServer(cfg, runtime.PublicHandler)

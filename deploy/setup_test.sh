@@ -45,6 +45,8 @@ test_secure_idempotent_setup() {
     [[ "$(stat -c '%a' "$directory/certs/ca.key")" == 600 ]]
     grep -q '"agent_listen": "172.30.0.3:8082"' "$directory/config/control.json"
     grep -q '"agent_proxy_sources": \["172.30.0.2"\]' "$directory/config/control.json"
+    grep -q '"artifact_path": "/var/lib/power-manage/artifacts"' "$directory/config/control.json"
+    grep -q '"backup_path": "/var/lib/power-manage/backups"' "$directory/config/control.json"
     if grep -R -iEq 'valkey|asynq|indexer|password_auth' "$directory/config"; then
         return 1
     fi
