@@ -1,7 +1,6 @@
 package ca_test
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -10,7 +9,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -69,11 +67,9 @@ func TestIssueCertificateFromCSR_RejectsNonEd25519Identity(t *testing.T) {
 	require.ErrorContains(t, err, "Ed25519 is required")
 }
 
-// TestNew_WarnsOnGroupOrWorldReadableKeyFile pins WS10 #11: New warns
-// loudly (but does not fail) when the CA private key file is
-// group/world-accessible. A 0600 key is silent; a 0644 key warns with
-// the path.
-func TestNew_WarnsOnGroupOrWorldReadableKeyFile(t *testing.T) {
+// TestNew_RejectsGroupOrWorldReadableKeyFile pins the deployment invariant:
+// the fleet CA key is accepted only when owner-accessible.
+func TestNew_RejectsGroupOrWorldReadableKeyFile(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "ca.crt")
@@ -81,24 +77,15 @@ func TestNew_WarnsOnGroupOrWorldReadableKeyFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(certPath, certPEM, 0o600))
 	require.NoError(t, os.WriteFile(keyPath, keyPEM, 0o600))
 
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-
-	t.Run("0600 owner-only is silent", func(t *testing.T) {
-		buf.Reset()
+	t.Run("0600 owner-only is accepted", func(t *testing.T) {
 		require.NoError(t, os.Chmod(keyPath, 0o600))
 		_, err := ca.New(certPath, keyPath, time.Hour)
 		require.NoError(t, err)
-		require.NotContains(t, buf.String(), "group/world")
 	})
-	t.Run("0644 world-readable warns with the path", func(t *testing.T) {
-		buf.Reset()
+	t.Run("0644 world-readable fails with the path", func(t *testing.T) {
 		require.NoError(t, os.Chmod(keyPath, 0o644))
 		_, err := ca.New(certPath, keyPath, time.Hour)
-		require.NoError(t, err) // warn-only, not a hard failure
-		require.Contains(t, buf.String(), "group/world")
-		require.Contains(t, buf.String(), keyPath)
+		require.ErrorContains(t, err, "group/world")
+		require.ErrorContains(t, err, keyPath)
 	})
 }

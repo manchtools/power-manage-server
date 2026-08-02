@@ -13,7 +13,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math/big"
 	"net/url"
 	"os"
@@ -56,18 +55,17 @@ func New(certPath, keyPath string, validity time.Duration, opts ...Option) (*CA,
 		return nil, fmt.Errorf("read CA certificate: %w", err)
 	}
 
+	keyInfo, err := os.Stat(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat CA key: %w", err)
+	}
+	if keyInfo.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("CA private key file %q must not be group/world accessible (mode %#o)", keyPath, keyInfo.Mode().Perm())
+	}
+
 	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("read CA key: %w", err)
-	}
-
-	// WS10 #11: the CA private key is the root of all trust — warn loudly
-	// (but do not block startup) if it is group/world-accessible. A hard
-	// failure here would break an existing deployment with a looser key
-	// mode; the operator must tighten it to owner-only (0600).
-	if info, statErr := os.Stat(keyPath); statErr == nil && info.Mode().Perm()&0o077 != 0 {
-		slog.Warn("CA private key file is group/world-accessible — restrict it to owner-only (chmod 0600)",
-			"path", keyPath, "mode", fmt.Sprintf("%#o", info.Mode().Perm()))
 	}
 
 	return NewFromPEM(certPEM, keyPEM, validity, opts...)
