@@ -67,6 +67,12 @@ fts="$(compose exec -T postgres psql -U powermanage -d powermanage -Atc \
     "SELECT to_tsvector('simple','Power Manage') @@ plainto_tsquery('simple','manage');")"
 [[ "$fts" == t ]] || { printf 'PostgreSQL FTS probe failed\n' >&2; exit 1; }
 
+COMPOSE_PROJECT_NAME="$PROJECT_NAME" bash ./backup.sh >/dev/null
+if ! compose exec -T control control backup-status >/dev/null; then
+    printf 'verified backup was not reported as fresh\n' >&2
+    exit 1
+fi
+
 bootstrap="$(compose exec -T control control bootstrap-admin)"
 [[ "$bootstrap" == *"https://manage.example.test/setup#bootstrap_token="* ]] || {
     printf 'bootstrap-admin did not issue the expected setup URL\n' >&2
@@ -135,4 +141,4 @@ direct_status="$(docker run --rm --network "container:$control_id" --user 0:0 \
     exit 1
 }
 
-printf 'PASS: three services, PostgreSQL FTS, exact RPC surface, authenticated backend TLS, query-safe logs, and isolated agent route\n'
+printf 'PASS: three services, verified PostgreSQL backup, FTS, exact RPC surface, authenticated backend TLS, query-safe logs, and isolated agent route\n'

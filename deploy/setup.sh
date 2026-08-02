@@ -159,6 +159,7 @@ write_config() {
 	"audit_retention": "2160h",
   "artifact_path": "/var/lib/power-manage/artifacts",
   "backup_path": "/var/lib/power-manage/backups",
+  "backup_max_lag": "26h",
   "webhook_url": "",
   "ca_cert_file": "/run/certs/ca.crt",
   "ca_key_file": "/run/certs/ca.key",

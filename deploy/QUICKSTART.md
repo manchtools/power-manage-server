@@ -11,7 +11,7 @@ process, and PostgreSQL. The authoritative system design is
 Copy `.env.example` to `.env`, edit the three required public values, then run
 `./setup.sh`.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:e65c9532 -->
+<!-- docref: begin src=deploy/setup.sh#@generated-material:4e587237 -->
 `setup.sh` creates the internal Ed25519 CA, the control and datastore
 certificates, the session and sealing keys, the PostgreSQL password, and
 `config/control.json` with a 90-day audit-retention policy. Existing complete
@@ -68,10 +68,19 @@ replicate that path off-host, and back up the database, artifacts, `certs`, and
 `secrets` as one deployment unit.
 <!-- docref: end -->
 
-<!-- docref: begin src=cmd/control/config.go#Config.WebhookURL:341af9cf,internal/maintenance/service.go#Service.InspectSecurity:223fcf91 -->
+<!-- docref: begin src=cmd/control/config.go#Config.WebhookURL:341af9cf,internal/maintenance/service.go#Service.InspectSecurity:223fcf91,internal/maintenance/service.go#Service.InspectBackup:d8c2e6fd -->
 Set the optional `webhook_url` to an HTTPS endpoint to receive generic security
-notifications. The payload contains only the event name and occurrence time;
-control has no email or provider-specific notification integration.
+and backup-lag notifications. The payload contains only the event name and
+occurrence time; control has no email or provider-specific notification
+integration.
+<!-- docref: end -->
+
+<!-- docref: begin src=deploy/backup.sh#@postgres-backup:c9acafd6,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
+Run `./backup.sh` from a host timer at least daily. It verifies the PostgreSQL
+dump before publishing its status, retains seven dumps by default, and never
+touches readiness. Inspect the latest success and current lag with
+`docker compose exec control control backup-status`; `backup_max_lag` defaults
+to 26 hours.
 <!-- docref: end -->
 
 <!-- docref: begin src=internal/store/reads.go#ListDueDeliveries:081847c0,internal/store/search.go#Search:12db8002 -->

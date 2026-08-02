@@ -50,6 +50,7 @@ test_secure_idempotent_setup() {
     grep -q '"artifact_path": "/var/lib/power-manage/artifacts"' "$directory/config/control.json"
     grep -q '"backup_path": "/var/lib/power-manage/backups"' "$directory/config/control.json"
 	grep -q '"webhook_url": ""' "$directory/config/control.json"
+	grep -q '"backup_max_lag": "26h"' "$directory/config/control.json"
 	grep -q '"audit_retention": "2160h"' "$directory/config/control.json"
     if grep -R -iEq 'valkey|asynq|indexer|password_auth' "$directory/config"; then
         return 1

@@ -17,6 +17,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/manchtools/power-manage/server/internal/archive"
+	"github.com/manchtools/power-manage/server/internal/backupstatus"
 	"github.com/manchtools/power-manage/server/internal/jobs"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/webhook"
@@ -27,6 +28,7 @@ const (
 	KindAuditAnchor      = "audit.anchor"
 	KindAuditRetention   = "audit.retention"
 	KindAuthStateCleanup = "identity.auth_state_cleanup"
+	KindBackupInspect    = "storage.backup_inspect"
 	KindSecurityInspect  = "security.inspect"
 
 	auditVerifyInterval      = time.Hour
@@ -34,6 +36,7 @@ const (
 	auditRetentionInterval   = 24 * time.Hour
 	authStateCleanupInterval = time.Hour
 	securityInspectInterval  = 15 * time.Minute
+	backupInspectInterval    = 15 * time.Minute
 	maintenanceMaxAttempts   = int32(100)
 	maxAnchorBytes           = 4 << 10
 	externalAnchorRef        = "audit-anchor-control-latest.json"
@@ -44,6 +47,7 @@ var recurring = map[string]time.Duration{
 	KindAuditAnchor:      auditAnchorInterval,
 	KindAuditRetention:   auditRetentionInterval,
 	KindAuthStateCleanup: authStateCleanupInterval,
+	KindBackupInspect:    backupInspectInterval,
 	KindSecurityInspect:  securityInspectInterval,
 }
 
@@ -55,26 +59,30 @@ type Notifier interface {
 // Config supplies the fixed maintenance dependencies and operator retention
 // policy.
 type Config struct {
-	Store     *store.Store
-	Archive   archive.ArchiveStore
-	Retention time.Duration
-	Now       func() time.Time
-	Notifier  Notifier
+	Store        *store.Store
+	Archive      archive.ArchiveStore
+	Retention    time.Duration
+	Now          func() time.Time
+	Notifier     Notifier
+	BackupPath   string
+	BackupMaxLag time.Duration
 }
 
 // Service implements the production maintenance job handlers.
 type Service struct {
-	store     *store.Store
-	archive   archive.ArchiveStore
-	retention time.Duration
-	now       func() time.Time
-	notifier  Notifier
+	store        *store.Store
+	archive      archive.ArchiveStore
+	retention    time.Duration
+	now          func() time.Time
+	notifier     Notifier
+	backupPath   string
+	backupMaxLag time.Duration
 }
 
 // New constructs the maintenance service.
 func New(cfg Config) *Service {
-	if cfg.Store == nil || cfg.Archive == nil || cfg.Retention <= 0 {
-		panic("maintenance: store, archive, and positive retention are required")
+	if cfg.Store == nil || cfg.Archive == nil || cfg.Retention <= 0 || cfg.BackupPath == "" || cfg.BackupMaxLag <= 0 {
+		panic("maintenance: store, archive, backup policy, and positive retention are required")
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -82,6 +90,7 @@ func New(cfg Config) *Service {
 	return &Service{
 		store: cfg.Store, archive: cfg.Archive, retention: cfg.Retention,
 		now: cfg.Now, notifier: cfg.Notifier,
+		backupPath: cfg.BackupPath, backupMaxLag: cfg.BackupMaxLag,
 	}
 }
 
@@ -92,6 +101,7 @@ func (s *Service) Handlers() map[string]jobs.Handler {
 		KindAuditAnchor:      s.AnchorAudit,
 		KindAuditRetention:   s.RetainAudit,
 		KindAuthStateCleanup: s.CleanupAuthStates,
+		KindBackupInspect:    s.InspectBackup,
 		KindSecurityInspect:  s.InspectSecurity,
 	}
 }
@@ -299,6 +309,39 @@ func (s *Service) InspectSecurity(ctx context.Context, _ jobs.Job) error {
 	return s.notifier.Send(ctx, webhook.Event{
 		Name: webhook.EventZeroEnabledAdministrators, OccurredAt: s.now().UTC(),
 	})
+}
+
+// InspectBackup reports a missing, invalid, or overdue verified PostgreSQL
+// backup without changing application readiness.
+func (s *Service) InspectBackup(ctx context.Context, _ jobs.Job) error {
+	if ctx == nil {
+		return errors.New("backup inspection requires a context")
+	}
+	status, readErr := backupstatus.Read(s.backupPath, s.now().UTC(), s.backupMaxLag)
+	stale := readErr != nil || status.Stale
+	opID := ulid.Make().String()
+	_, err := s.store.WithAudit(ctx, backgroundOperation(opID, "maintenance.backup.inspect"),
+		func(_ context.Context, _ *store.Tx, rec *store.AuditRecorder) error {
+			rec.Effect(store.AuditEffect{
+				ResourceType: "backup_posture", ResourceID: opID,
+				Action: "INSPECT", Outcome: store.EffectApplied,
+				AfterFlag: &stale, AfterCount: status.LagSeconds,
+			})
+			if stale && s.notifier != nil {
+				rec.Effect(store.AuditEffect{
+					ResourceType: "webhook", ResourceID: opID,
+					Action: "NOTIFY_INTENT", Outcome: store.EffectApplied,
+				})
+			}
+			return nil
+		})
+	if err != nil {
+		return err
+	}
+	if !stale || s.notifier == nil {
+		return nil
+	}
+	return s.notifier.Send(ctx, webhook.Event{Name: webhook.EventBackupLag, OccurredAt: s.now().UTC()})
 }
 
 type externalAnchorFile struct {

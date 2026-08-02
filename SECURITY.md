@@ -84,9 +84,11 @@ silent replay of non-idempotent effects.
 - Restrict the PROXY-protocol listener to the isolated Traefik network.
 - Protect CA, JWT, sealing, database, and at-rest encryption keys with strict
   filesystem or deployment-secret permissions.
-- Mount or replicate `backup_path` off-host: audit anchors and
-  archive-before-delete prefixes are written there. Replicate the database and
-  artifacts too, and monitor backup age and lag.
+<!-- docref: begin src=deploy/backup.sh#@postgres-backup:c9acafd6,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
+- Run `deploy/backup.sh` from a host timer and replicate `backup_path` off-host:
+  it contains verified bounded PostgreSQL dumps, audit anchors, and archived
+  prefixes. Back up artifacts too, and monitor `control backup-status`.
+<!-- docref: end -->
 
 Gateway, Valkey, Asynq, external indexing, CRL distribution, local
 password/TOTP, and application-frame signing are not compensating controls and

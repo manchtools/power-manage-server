@@ -73,6 +73,7 @@ func TestLoadConfigUsesOneFileAndSecretFiles(t *testing.T) {
 	assert.Equal(t, "manage.example", cfg.TerminalOrigins[0])
 	assert.Equal(t, artifactPath, cfg.ArtifactPath)
 	assert.Equal(t, backupPath, cfg.BackupPath)
+	assert.Equal(t, 26*time.Hour, cfg.BackupMaxLag)
 	assert.Equal(t, "https://hooks.example.test/power-manage?token=secret", cfg.WebhookURL)
 	assert.Equal(t, 90*24*time.Hour, cfg.AuditRetention)
 	assert.Equal(t, sessionPrivate, cfg.SessionSigningKey)

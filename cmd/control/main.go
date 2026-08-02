@@ -30,8 +30,11 @@ var version = "dev"
 
 func main() {
 	command, args := "serve", os.Args[1:]
-	if len(args) > 0 && args[0] == "bootstrap-admin" {
-		command, args = "bootstrap-admin", args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "bootstrap-admin", "backup-status":
+			command, args = args[0], args[1:]
+		}
 	}
 	cfg, err := loadConfig(args)
 	if err != nil {
@@ -40,6 +43,9 @@ func main() {
 	}
 	if command == "bootstrap-admin" {
 		os.Exit(runBootstrapAdmin(context.Background(), cfg))
+	}
+	if command == "backup-status" {
+		os.Exit(runBackupStatus(os.Stdout, os.Stderr, cfg, time.Now))
 	}
 
 	logger := logging.SetupLogger(cfg.LogLevel, cfg.LogFormat, os.Stderr)
@@ -93,7 +99,7 @@ func run(cfg *Config, logger *slog.Logger) error {
 	}
 	maintenanceService := maintenance.New(maintenance.Config{
 		Store: st, Archive: auditArchive, Retention: cfg.AuditRetention,
-		Notifier: notifier,
+		Notifier: notifier, BackupPath: cfg.BackupPath, BackupMaxLag: cfg.BackupMaxLag,
 	})
 	if err := maintenanceService.EnsureScheduled(ctx); err != nil {
 		return fmt.Errorf("schedule maintenance: %w", err)

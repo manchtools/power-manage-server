@@ -3,7 +3,10 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -13,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/manchtools/power-manage/server/internal/archive"
+	"github.com/manchtools/power-manage/server/internal/backupstatus"
 	"github.com/manchtools/power-manage/server/internal/jobs"
 	"github.com/manchtools/power-manage/server/internal/maintenance"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -44,6 +48,7 @@ func newMaintenance(t *testing.T, st *store.Store, now time.Time, retention time
 	require.NoError(t, err)
 	return maintenance.New(maintenance.Config{
 		Store: st, Archive: archives, Retention: retention, Now: func() time.Time { return now },
+		BackupPath: t.TempDir(), BackupMaxLag: 26 * time.Hour,
 	}), archives
 }
 
@@ -68,7 +73,7 @@ func TestMaintenance_SeedsExactlyOneDurableJobPerKind(t *testing.T) {
 	want := []string{
 		maintenance.KindAuditAnchor, maintenance.KindAuditRetention,
 		maintenance.KindAuditVerify, maintenance.KindAuthStateCleanup,
-		maintenance.KindSecurityInspect,
+		maintenance.KindBackupInspect, maintenance.KindSecurityInspect,
 	}
 	sort.Strings(want)
 	assert.Equal(t, want, kinds)
@@ -92,6 +97,7 @@ func TestMaintenance_NotifiesOnlyWhenNoEnabledGlobalAdministratorExists(t *testi
 	service := maintenance.New(maintenance.Config{
 		Store: st, Archive: archives, Retention: 90 * 24 * time.Hour,
 		Now: func() time.Time { return now }, Notifier: notifier,
+		BackupPath: t.TempDir(), BackupMaxLag: 26 * time.Hour,
 	})
 
 	require.NoError(t, service.InspectSecurity(ctx, jobs.Job{}))
@@ -148,6 +154,7 @@ func TestMaintenance_WebhookFailureUsesDurableJobRetry(t *testing.T) {
 	require.NoError(t, err)
 	service := maintenance.New(maintenance.Config{
 		Store: st, Archive: archives, Retention: 90 * 24 * time.Hour, Notifier: notifier,
+		BackupPath: t.TempDir(), BackupMaxLag: 26 * time.Hour,
 	})
 
 	assert.ErrorContains(t, service.InspectSecurity(context.Background(), jobs.Job{}), "webhook unavailable")
@@ -165,6 +172,7 @@ func TestMaintenance_AuditFailurePreventsWebhook(t *testing.T) {
 	require.NoError(t, err)
 	service := maintenance.New(maintenance.Config{
 		Store: st, Archive: archives, Retention: 90 * 24 * time.Hour, Notifier: notifier,
+		BackupPath: t.TempDir(), BackupMaxLag: 26 * time.Hour,
 	})
 	_, err = raw.Exec(context.Background(), `
 		ALTER TABLE audit_effects ADD CONSTRAINT reject_webhook_intent CHECK (action <> 'NOTIFY_INTENT')
@@ -173,6 +181,71 @@ func TestMaintenance_AuditFailurePreventsWebhook(t *testing.T) {
 
 	assert.Error(t, service.InspectSecurity(context.Background(), jobs.Job{}))
 	assert.Empty(t, notifier.events, "no network effect may precede committed audit evidence")
+}
+
+func TestMaintenance_BackupAlertTracksVerifiedBackupLag(t *testing.T) {
+	st, raw := setupPostgres(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	backupPath := t.TempDir()
+	notifier := &recordingWebhook{}
+	archives, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
+	require.NoError(t, err)
+	service := maintenance.New(maintenance.Config{
+		Store: st, Archive: archives, Retention: 90 * 24 * time.Hour,
+		Now: func() time.Time { return now }, Notifier: notifier,
+		BackupPath: backupPath, BackupMaxLag: 26 * time.Hour,
+	})
+
+	require.NoError(t, service.InspectBackup(ctx, jobs.Job{}))
+	require.Len(t, notifier.events, 1)
+	assert.Equal(t, webhook.EventBackupLag, notifier.events[0].Name)
+
+	writeBackupStatusFixture(t, backupPath, now.Add(-time.Hour))
+	require.NoError(t, service.InspectBackup(ctx, jobs.Job{}))
+	assert.Len(t, notifier.events, 1, "a fresh verified backup suppresses the alert")
+
+	writeBackupStatusFixture(t, backupPath, now.Add(-27*time.Hour))
+	require.NoError(t, service.InspectBackup(ctx, jobs.Job{}))
+	assert.Len(t, notifier.events, 2)
+
+	var inspections, intents int
+	require.NoError(t, raw.QueryRow(ctx, `
+		SELECT count(*) FROM audit_effects WHERE resource_type = 'backup_posture' AND action = 'INSPECT'
+	`).Scan(&inspections))
+	require.NoError(t, raw.QueryRow(ctx, `
+		SELECT count(*) FROM audit_effects WHERE resource_type = 'webhook' AND action = 'NOTIFY_INTENT'
+	`).Scan(&intents))
+	assert.Equal(t, 3, inspections)
+	assert.Equal(t, 2, intents)
+}
+
+func TestMaintenance_BackupInspectionIsAuditedWithoutWebhook(t *testing.T) {
+	st, raw := setupPostgres(t)
+	service, _ := newMaintenance(t, st, time.Now().UTC(), 90*24*time.Hour)
+
+	require.NoError(t, service.InspectBackup(context.Background(), jobs.Job{}))
+	var inspections, intents int
+	require.NoError(t, raw.QueryRow(context.Background(), `
+		SELECT count(*) FROM audit_effects WHERE resource_type = 'backup_posture' AND action = 'INSPECT'
+	`).Scan(&inspections))
+	require.NoError(t, raw.QueryRow(context.Background(), `
+		SELECT count(*) FROM audit_effects WHERE resource_type = 'webhook' AND action = 'NOTIFY_INTENT'
+	`).Scan(&intents))
+	assert.Equal(t, 1, inspections)
+	assert.Zero(t, intents)
+}
+
+func writeBackupStatusFixture(t *testing.T, directory string, completedAt time.Time) {
+	t.Helper()
+	const artifact = "postgres-test.dump"
+	contents := []byte("verified test dump")
+	require.NoError(t, os.WriteFile(filepath.Join(directory, artifact), contents, 0o600))
+	document := fmt.Sprintf(
+		`{"version":1,"completed_at":%q,"artifact":%q,"size_bytes":%d,"sha256":%q}`,
+		completedAt.Format(time.RFC3339), artifact, len(contents), strings.Repeat("0", 64),
+	)
+	require.NoError(t, os.WriteFile(filepath.Join(directory, backupstatus.StatusFilename), []byte(document), 0o600))
 }
 
 func TestMaintenance_ExternalAnchorAndArchiveBeforeDeleteRunEndToEnd(t *testing.T) {
@@ -220,7 +293,8 @@ func TestMaintenance_PrefixArchiveFailureLeavesAuditRowsUntouched(t *testing.T) 
 	require.NoError(t, err)
 	service := maintenance.New(maintenance.Config{
 		Store: st, Archive: prefixFailArchive{ArchiveStore: base}, Retention: 90 * 24 * time.Hour,
-		Now: func() time.Time { return now },
+		Now:        func() time.Time { return now },
+		BackupPath: t.TempDir(), BackupMaxLag: 26 * time.Hour,
 	})
 
 	err = service.RetainAudit(context.Background(), jobs.Job{})

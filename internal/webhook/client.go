@@ -17,7 +17,9 @@ const (
 	// EventZeroEnabledAdministrators reports that bootstrap-admin is the only
 	// remaining path back into the control plane.
 	EventZeroEnabledAdministrators = "security.zero_enabled_administrators"
-	requestTimeout                 = 10 * time.Second
+	// EventBackupLag reports a missing, invalid, or overdue verified backup.
+	EventBackupLag = "storage.backup_lag"
+	requestTimeout = 10 * time.Second
 )
 
 // Event is deliberately metadata-only: notification call sites cannot attach
@@ -94,7 +96,7 @@ func (c *Client) Send(ctx context.Context, event Event) error {
 
 func registeredEvent(name string) bool {
 	switch name {
-	case EventZeroEnabledAdministrators:
+	case EventZeroEnabledAdministrators, EventBackupLag:
 		return true
 	default:
 		return false

@@ -14,7 +14,9 @@ authority is
 - PostgreSQL full-text search during consolidation;
 - certificate issuance, renewal, and indexed revocation;
 - artifact metadata and filesystem ownership; and
-- health, readiness, backup posture, and diagnostic endpoints.
+<!-- docref: begin src=internal/controlruntime/runtime.go#health:550d4ab3,internal/controlruntime/runtime.go#readinessHandler:679b3b18,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
+- health and readiness endpoints, plus the host-facing `backup-status` command.
+<!-- docref: end -->
 
 There is no target Gateway, Valkey, Asynq worker, event projector, separate
 indexer, local password/TOTP service, or application-frame signer.

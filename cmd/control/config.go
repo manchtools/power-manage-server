@@ -46,6 +46,7 @@ type configDocument struct {
 	AuditRetention        string   `json:"audit_retention"`
 	ArtifactPath          string   `json:"artifact_path"`
 	BackupPath            string   `json:"backup_path"`
+	BackupMaxLag          string   `json:"backup_max_lag"`
 	WebhookURL            string   `json:"webhook_url"`
 	CACertFile            string   `json:"ca_cert_file"`
 	CAKeyFile             string   `json:"ca_key_file"`
@@ -77,6 +78,7 @@ type Config struct {
 	AuditRetention      time.Duration
 	ArtifactPath        string
 	BackupPath          string
+	BackupMaxLag        time.Duration
 	WebhookURL          string
 	CACertFile          string
 	CAKeyFile           string
@@ -142,6 +144,10 @@ func loadConfig(args []string) (*Config, error) {
 	if err != nil || auditRetention <= 0 {
 		return nil, errors.New("audit_retention must be a positive duration")
 	}
+	backupMaxLag, err := time.ParseDuration(document.BackupMaxLag)
+	if err != nil || backupMaxLag <= 0 {
+		return nil, errors.New("backup_max_lag must be a positive duration")
+	}
 	cfg := &Config{
 		PublicListen: document.PublicListen, AgentListen: document.AgentListen,
 		PublicBaseURL: document.PublicBaseURL, AgentURL: document.AgentURL, TerminalURL: document.TerminalURL,
@@ -154,6 +160,7 @@ func loadConfig(args []string) (*Config, error) {
 		AuditRetention:    auditRetention,
 		ArtifactPath:      document.ArtifactPath,
 		BackupPath:        document.BackupPath,
+		BackupMaxLag:      backupMaxLag,
 		WebhookURL:        document.WebhookURL,
 		CACertFile:        document.CACertFile,
 		CAKeyFile:         pathOverride("POWER_MANAGE_CA_KEY_FILE", document.CAKeyFile),
@@ -219,6 +226,9 @@ func applyDefaults(document *configDocument) {
 	}
 	if document.AuditRetention == "" {
 		document.AuditRetention = "2160h"
+	}
+	if document.BackupMaxLag == "" {
+		document.BackupMaxLag = "26h"
 	}
 }
 
