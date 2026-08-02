@@ -11,7 +11,7 @@ embedded SQLite database. The authoritative system design is
 Copy `.env.example` to `.env`, edit the three required public values, then run
 `./setup.sh`.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:6c6a5264 -->
+<!-- docref: begin src=deploy/setup.sh#@generated-material:cc0ee234 -->
 `setup.sh` creates the internal Ed25519 CA, the control certificate, the
 encryption, session and sealing keys, and `config/control.json` with a 90-day
 audit-retention policy and the SQLite `database_path`. Existing complete
