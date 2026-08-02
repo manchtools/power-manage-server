@@ -217,3 +217,24 @@ func TestJob_CompletionAuditFailureRollsBackState(t *testing.T) {
 	assert.Equal(t, jobs.StateClaimed, row.State)
 	assert.Equal(t, f.worker1, row.ClaimedBy)
 }
+
+func TestJob_RecurringRescheduleRejectsAStaleWorker(t *testing.T) {
+	f := newJobFixture(t)
+	ctx := context.Background()
+	_, changed, err := f.service.Claim(ctx, f.jobID, f.worker1)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	changed, err = f.service.Reschedule(ctx, f.jobID, f.worker2, f.now.Add(time.Hour))
+	assert.ErrorIs(t, err, jobs.ErrClaimLost)
+	assert.False(t, changed)
+	changed, err = f.service.Reschedule(ctx, f.jobID, f.worker1, f.now.Add(time.Hour))
+	require.NoError(t, err)
+	assert.True(t, changed)
+
+	row, err := f.store.GetJob(ctx, f.jobID)
+	require.NoError(t, err)
+	assert.Equal(t, jobs.StatePending, row.State)
+	assert.True(t, row.DueAt.Equal(f.now.Add(time.Hour)))
+	assert.Zero(t, row.AttemptCount)
+}

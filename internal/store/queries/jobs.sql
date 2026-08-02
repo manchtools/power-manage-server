@@ -63,6 +63,22 @@ WHERE job_id = $1
   AND claimed_by = $2
   AND $3 IN ('SUCCEEDED', 'FAILED', 'CANCELLED');
 
+-- name: RescheduleJob :execrows
+-- A successful recurring job keeps its durable identity and returns to the
+-- pending state with a fresh retry budget.
+UPDATE jobs
+SET state = 'PENDING',
+    due_at = $3,
+    claimed_at = NULL,
+    claimed_until = NULL,
+    claimed_by = '',
+    attempt_count = 0,
+    result_code = 'OK',
+    updated_at = $4
+WHERE job_id = $1
+  AND state = 'CLAIMED'
+  AND claimed_by = $2;
+
 -- name: CancelPendingJob :execrows
 UPDATE jobs
 SET state = 'CANCELLED',

@@ -291,6 +291,53 @@ func (s *Service) Finish(ctx context.Context, jobID, workerID, state, resultCode
 	return s.resolveFinishConflict(ctx, jobID, workerID, state, resultCode)
 }
 
+// Reschedule returns a successfully completed recurring job to PENDING with a
+// fresh retry budget. A stale worker cannot move a claim it no longer owns.
+func (s *Service) Reschedule(ctx context.Context, jobID, workerID string, dueAt time.Time) (bool, error) {
+	if ctx == nil || !validID(jobID) || !validID(workerID) || dueAt.IsZero() {
+		return false, ErrInvalidInput
+	}
+	row, err := s.store.GetJob(ctx, jobID)
+	if err != nil {
+		return false, err
+	}
+	if row.State != StateClaimed {
+		return false, ErrInvalidTransition
+	}
+	if row.ClaimedBy != workerID {
+		return false, ErrClaimLost
+	}
+	now := s.now().UTC()
+	dueAt = dueAt.UTC()
+	_, err = s.store.WithAudit(ctx, workerOperation(workerID, "job.reschedule"), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		n, err := tx.RescheduleJob(ctx, db.RescheduleJobParams{
+			JobID: jobID, ClaimedBy: workerID, DueAt: dueAt, UpdatedAt: now,
+		})
+		if err != nil {
+			return fmt.Errorf("reschedule job: %w", err)
+		}
+		if n != 1 {
+			return store.ErrConflict
+		}
+		rec.Effect(jobEffect(jobID, "RESCHEDULE", "state", "claimed_by", "claimed_until", "due_at", "attempt_count", "result_code"))
+		return nil
+	})
+	if err == nil {
+		return true, nil
+	}
+	if !store.IsConflict(err) {
+		return false, err
+	}
+	current, readErr := s.store.GetJob(ctx, jobID)
+	if readErr != nil {
+		return false, readErr
+	}
+	if current.State == StateClaimed && current.ClaimedBy != workerID {
+		return false, ErrClaimLost
+	}
+	return false, ErrInvalidTransition
+}
+
 func (s *Service) resolveFinishConflict(ctx context.Context, jobID, workerID, state, resultCode string) (bool, error) {
 	current, err := s.store.GetJob(ctx, jobID)
 	if err != nil {

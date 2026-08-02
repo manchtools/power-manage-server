@@ -286,3 +286,40 @@ func (q *Queries) ReleaseJobClaim(ctx context.Context, arg ReleaseJobClaimParams
 	}
 	return result.RowsAffected(), nil
 }
+
+const rescheduleJob = `-- name: RescheduleJob :execrows
+UPDATE jobs
+SET state = 'PENDING',
+    due_at = $3,
+    claimed_at = NULL,
+    claimed_until = NULL,
+    claimed_by = '',
+    attempt_count = 0,
+    result_code = 'OK',
+    updated_at = $4
+WHERE job_id = $1
+  AND state = 'CLAIMED'
+  AND claimed_by = $2
+`
+
+type RescheduleJobParams struct {
+	JobID     string    `json:"job_id"`
+	ClaimedBy string    `json:"claimed_by"`
+	DueAt     time.Time `json:"due_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// A successful recurring job keeps its durable identity and returns to the
+// pending state with a fresh retry budget.
+func (q *Queries) RescheduleJob(ctx context.Context, arg RescheduleJobParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rescheduleJob,
+		arg.JobID,
+		arg.ClaimedBy,
+		arg.DueAt,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

@@ -43,6 +43,7 @@ type RunnerConfig struct {
 	Store        *store.Store
 	State        *Service
 	Handlers     map[string]Handler
+	Recurring    map[string]time.Duration
 	Logger       *slog.Logger
 	Now          func() time.Time
 	PollInterval time.Duration
@@ -57,6 +58,7 @@ type Runner struct {
 	store        *store.Store
 	state        *Service
 	handlers     map[string]Handler
+	recurring    map[string]time.Duration
 	logger       *slog.Logger
 	now          func() time.Time
 	pollInterval time.Duration
@@ -99,8 +101,15 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		}
 		handlers[kind] = handler
 	}
+	recurring := make(map[string]time.Duration, len(cfg.Recurring))
+	for kind, interval := range cfg.Recurring {
+		if handlers[kind] == nil || interval <= 0 {
+			panic("job runner: invalid recurring registration")
+		}
+		recurring[kind] = interval
+	}
 	return &Runner{
-		store: cfg.Store, state: cfg.State, handlers: handlers, logger: cfg.Logger,
+		store: cfg.Store, state: cfg.State, handlers: handlers, recurring: recurring, logger: cfg.Logger,
 		now: cfg.Now, pollInterval: cfg.PollInterval, workers: cfg.Workers,
 		batchSize: cfg.BatchSize, queue: make(chan string, cfg.QueueSize),
 	}
@@ -225,6 +234,10 @@ func (r *Runner) Dispatch(ctx context.Context, jobID string) error {
 			return r.finish(ctx, jobID, claimID, StateFailed, "MAX_ATTEMPTS")
 		}
 		return r.release(ctx, jobID, claimID, "RETRY")
+	}
+	if interval := r.recurring[row.Kind]; interval > 0 {
+		_, err := r.state.Reschedule(ctx, jobID, claimID, r.now().UTC().Add(interval))
+		return err
 	}
 	return r.finish(ctx, jobID, claimID, StateSucceeded, "OK")
 }

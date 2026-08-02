@@ -72,6 +72,34 @@ func TestJobRunner_WakeExecutesAndFinishesDueJob(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
+func TestJobRunner_RecurringSuccessReschedulesTheSameDurableRow(t *testing.T) {
+	f := newJobFixture(t)
+	runner := jobs.NewRunner(jobs.RunnerConfig{
+		Store: f.store, State: f.service,
+		Handlers: map[string]jobs.Handler{
+			"retention.sweep": func(context.Context, jobs.Job) error { return nil },
+		},
+		Recurring: map[string]time.Duration{"retention.sweep": time.Hour},
+		Now:       func() time.Time { return f.now },
+		Workers:   1, QueueSize: 1, BatchSize: 1, PollInterval: time.Hour,
+	})
+
+	require.NoError(t, runner.Dispatch(context.Background(), f.jobID))
+	row, err := f.store.GetJob(context.Background(), f.jobID)
+	require.NoError(t, err)
+	assert.Equal(t, jobs.StatePending, row.State)
+	assert.True(t, row.DueAt.Equal(f.now.Add(time.Hour)))
+	assert.Zero(t, row.AttemptCount, "a successful interval starts with a fresh retry budget")
+	assert.Equal(t, "OK", row.ResultCode)
+
+	var actions []string
+	require.NoError(t, f.raw.QueryRow(context.Background(), `
+		SELECT array_agg(action ORDER BY chain_seq)
+		FROM audit_effects WHERE resource_type = 'job' AND resource_id = $1
+	`, f.jobID).Scan(&actions))
+	assert.Equal(t, []string{"CREATE", "CLAIM", "RESCHEDULE"}, actions)
+}
+
 func TestJobRunner_SweepReclaimsExpiredLease(t *testing.T) {
 	f := newJobFixture(t)
 	_, changed, err := f.service.Claim(context.Background(), f.jobID, f.worker1)
