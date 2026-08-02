@@ -96,6 +96,10 @@ func New(cfg Config) *Runtime {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	caFingerprint, err := ca.FingerprintFromPEM(cfg.CA.CACertPEM())
+	if err != nil {
+		panic("controlruntime: loaded CA has no usable fingerprint")
+	}
 	manager := connection.NewManager()
 	sessions := connection.NewTerminalSessionRegistry()
 	tokens := terminal.NewTokenStore(terminal.NewMemoryBackend(cfg.Now), terminal.WithClock(cfg.Now))
@@ -147,14 +151,16 @@ func New(cfg Config) *Runtime {
 			ControlURL: cfg.AgentURL, ControlSealingPublicKey: cfg.ControlSealingPrivateKey.PublicKey().Bytes(),
 			CloseStream: manager.Unregister,
 		}),
-		Authoring:          authoring.NewHandlers(authoring.HandlersConfig{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
-		Assignments:        assignment.New(assignment.Config{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
-		DeviceGroups:       devicegroup.NewHandlers(devicegroup.HandlersConfig{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
-		Devices:            deviceHandlers,
-		RegistrationTokens: registrationtoken.New(registrationtoken.Config{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
-		Compliance:         compliance.NewHandlers(compliance.HandlersConfig{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
-		Dispatch:           dispatch.NewHandlers(dispatch.HandlersConfig{Store: cfg.Store, Waker: dispatcher, Logger: cfg.Logger, Now: cfg.Now}),
-		Search:             searchrpc.NewHandlers(cfg.Store, cfg.Logger, cfg.Now),
+		Authoring:    authoring.NewHandlers(authoring.HandlersConfig{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
+		Assignments:  assignment.New(assignment.Config{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
+		DeviceGroups: devicegroup.NewHandlers(devicegroup.HandlersConfig{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
+		Devices:      deviceHandlers,
+		RegistrationTokens: registrationtoken.New(registrationtoken.Config{
+			Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now, CAFingerprint: caFingerprint,
+		}),
+		Compliance: compliance.NewHandlers(compliance.HandlersConfig{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
+		Dispatch:   dispatch.NewHandlers(dispatch.HandlersConfig{Store: cfg.Store, Waker: dispatcher, Logger: cfg.Logger, Now: cfg.Now}),
+		Search:     searchrpc.NewHandlers(cfg.Store, cfg.Logger, cfg.Now),
 	}.Mount(publicMux, controlOptions...)
 
 	scimHandler := scim.New(scim.Config{Store: cfg.Store, Logger: cfg.Logger, KEK: cfg.AtRest, Now: cfg.Now})

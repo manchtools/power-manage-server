@@ -99,6 +99,8 @@ github.com/magiconair/properties v1.8.10 h1:s31yESBquKXCV9a/ScB3ESkOjUYYv+X0rg8S
 github.com/magiconair/properties v1.8.10/go.mod h1:Dhd985XPs7jluiymwWYZ0G4Z61jb3vdS329zhj2hYo0=
 github.com/manchtools/power-manage-sdk v0.5.4-0.20260802082556-3805e4b0841e h1:82/aWyNdKHZIMyyGQOo+Zv1wxTKQaqnbZunIVUawEM4=
 github.com/manchtools/power-manage-sdk v0.5.4-0.20260802082556-3805e4b0841e/go.mod h1:NQpkHZSQTJzGcQsdKsuE+EeQt7juWXVaN7b/i7NyjOQ=
+github.com/manchtools/power-manage-sdk v0.5.4-0.20260802115029-dd7fcf8895f9 h1:hGufwLW9luom56+vsvSZQz+BheC2gtjd2obDyN6mLI0=
+github.com/manchtools/power-manage-sdk v0.5.4-0.20260802115029-dd7fcf8895f9/go.mod h1:tjwQAdTEB5Dl1iL9mBP5sMcnJczXyFvxSkiNyg+E8lE=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/mdelapenya/tlscert v0.2.0 h1:7H81W6Z/4weDvZBNOfQte5GpIMo0lGYEeWbkGp5LJHI=

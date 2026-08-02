@@ -34,6 +34,8 @@ type tokenHandlerFixture struct {
 	otherID  string
 }
 
+const tokenCAPin = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func newTokenHandlerFixture(t *testing.T) *tokenHandlerFixture {
 	t.Helper()
 	st, raw := setupPostgres(t)
@@ -49,7 +51,7 @@ func newTokenHandlerFixture(t *testing.T) *tokenHandlerFixture {
 	require.NoError(t, err)
 	f.handlers = registrationtoken.New(registrationtoken.Config{
 		Store: st, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now: func() time.Time { return now },
+		Now: func() time.Time { return now }, CAFingerprint: tokenCAPin,
 	})
 	return f
 }
@@ -82,6 +84,7 @@ func TestTokenHandlers_CRUDIsDirectAuditedState(t *testing.T) {
 	require.NoError(t, err)
 	tokenID, plaintext := created.Msg.Token.Id, created.Msg.Token.Value
 	require.NotEmpty(t, plaintext)
+	assert.Equal(t, tokenCAPin, created.Msg.CaFingerprintPin)
 	assert.Equal(t, f.otherID, created.Msg.Token.OwnerId)
 	assert.True(t, created.Msg.Token.CreatedAt.AsTime().Equal(f.now))
 

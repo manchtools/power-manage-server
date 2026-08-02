@@ -27,9 +27,10 @@ const defaultPageSize = int32(50)
 
 // Config supplies the direct PostgreSQL store and process-local seams.
 type Config struct {
-	Store  *store.Store
-	Logger *slog.Logger
-	Now    func() time.Time
+	Store         *store.Store
+	Logger        *slog.Logger
+	Now           func() time.Time
+	CAFingerprint string
 }
 
 // Handlers implements the registration-token control RPCs.
@@ -38,12 +39,17 @@ type Handlers struct {
 	logger    *slog.Logger
 	now       func() time.Time
 	validator *validator.Validate
+	caPin     string
 }
 
 // New constructs direct registration-token handlers.
 func New(cfg Config) *Handlers {
 	if cfg.Store == nil {
 		panic("registrationtoken: store is required")
+	}
+	decodedPin, err := hex.DecodeString(cfg.CAFingerprint)
+	if err != nil || len(decodedPin) != sha256.Size {
+		panic("registrationtoken: a SHA-256 CA fingerprint is required")
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -53,7 +59,7 @@ func New(cfg Config) *Handlers {
 	}
 	return &Handlers{
 		store: cfg.Store, logger: cfg.Logger, now: cfg.Now,
-		validator: sdkvalidate.NewValidator(),
+		validator: sdkvalidate.NewValidator(), caPin: cfg.CAFingerprint,
 	}
 }
 
@@ -188,7 +194,7 @@ func (h *Handlers) CreateToken(ctx context.Context, req *connect.Request[pmv1.Cr
 	}
 	out := tokenToProto(row)
 	out.Value = plaintext
-	return connect.NewResponse(&pmv1.CreateTokenResponse{Token: out}), nil
+	return connect.NewResponse(&pmv1.CreateTokenResponse{Token: out, CaFingerprintPin: h.caPin}), nil
 }
 
 // GetToken returns one live non-bootstrap token without its bearer value.

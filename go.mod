@@ -10,7 +10,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/manchtools/power-manage-sdk v0.5.4-0.20260802082556-3805e4b0841e
+	github.com/manchtools/power-manage-sdk v0.5.4-0.20260802115029-dd7fcf8895f9
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/pressly/goose/v3 v3.26.0
