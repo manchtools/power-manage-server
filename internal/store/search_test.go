@@ -46,10 +46,12 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 		{`INSERT INTO device_labels (device_id, key, value) VALUES ($1, 'environment', 'production')`, []any{deviceID}},
 		{`INSERT INTO device_inventory (device_id, table_name, rows, collected_at)
 			VALUES ($1, 'os_version', '[{"name":"Ubuntu","version":"26.04","arch":"amd64"}]'::jsonb, $2)`, []any{deviceID, now}},
+		{`INSERT INTO device_inventory (device_id, table_name, rows, collected_at)
+			VALUES ($1, 'bios_info', '[{"vendor":"PhoenixTechnologies"}]'::jsonb, $2)`, []any{deviceID, now}},
 		{`INSERT INTO device_groups (id, name, description, created_at) VALUES ($1, 'München devices', 'DACH fleet', $2)`, []any{deviceGroupID, now}},
 		{`INSERT INTO device_group_members (group_id, device_id, added_at) VALUES ($1, $2, $3)`, []any{deviceGroupID, deviceID, now}},
-		{`INSERT INTO users (id, email, display_name, linux_username, linux_uid, created_at, updated_at)
-			VALUES ($1, 'ops@example.test', 'Night Operator', 'night-operator', 210001, $2, $2)`, []any{userID, now}},
+		{`INSERT INTO users (id, email, display_name, given_name, linux_username, linux_uid, created_at, updated_at)
+			VALUES ($1, 'ops@example.test', 'Night Operator', 'Annalena', 'night-operator', 210001, $2, $2)`, []any{userID, now}},
 		{`INSERT INTO roles (id, name, description, created_at) VALUES ($1, 'Fleet Observer', 'read only', $2)`, []any{roleID, now}},
 		{`INSERT INTO user_roles (grant_id, user_id, role_id, assigned_at) VALUES ($1, $2, $3, $4)`, []any{grantID, userID, roleID, now}},
 		{`INSERT INTO user_groups (id, name, description, created_at, updated_at) VALUES ($1, 'München operators', 'night shift', $2, $2)`, []any{userGroupID, now}},
@@ -119,6 +121,15 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 	assert.Equal(t, actionID, auditRow.Fields["stream_id"])
 	assert.Equal(t, userID, requireOneSearchRow(t, search("users", "ops@example")).ID)
 	assert.Equal(t, deviceID, requireOneSearchRow(t, search("devices", deviceID[:8])).ID)
+	assert.Equal(t, deviceID, requireOneSearchRow(t, search("devices", "PhoenixTechnlogies")).ID,
+		"fuzzy matching includes inventory fields that are not copied into the public result map")
+	assert.Equal(t, userID, requireOneSearchRow(t, search("users", "Annalna")).ID,
+		"fuzzy matching includes profile fields that are not copied into the public result map")
+	assert.Equal(t, setID, requireOneSearchRow(t, search("action_sets", "basline")).ID)
+	assert.Equal(t, definitionID, requireOneSearchRow(t, search("definitions", "basline")).ID)
+	assert.Equal(t, policyID, requireOneSearchRow(t, search("compliance_policies", "basline")).ID)
+	assert.Equal(t, actionID, requireOneSearchRow(t, search("audit_events", "contorl_rpc")).Fields["stream_id"],
+		"fuzzy matching includes private audit operation metadata")
 
 	filterCases := []struct {
 		scope, field string
@@ -295,6 +306,103 @@ func TestPostgresSearch_UserErasureRemovesSearchablePIIInSameStatement(t *testin
 	err = raw.QueryRow(ctx, `SELECT search_tsv @@ to_tsquery('simple'::regconfig, 'erasable:*') FROM users WHERE id = $1`, id).Scan(&retainsPII)
 	require.NoError(t, err)
 	assert.False(t, retainsPII, "the generated vector is recomputed by the erasure statement")
+}
+
+func TestPostgresSearch_CombinesPrefixAndFuzzyResultsDeterministically(t *testing.T) {
+	st, raw := setupPostgres(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	exactID, primaryID, descriptionID := newID(), newID(), newID()
+
+	_, err := raw.Exec(ctx, `INSERT INTO actions
+		(id, name, description, action_type, params, created_at, updated_at) VALUES
+		($1, 'Workstation exact', '', 100, '{}'::jsonb, $4, $4),
+		($2, 'Workstaiton primary', '', 100, '{}'::jsonb, $4, $4),
+		($3, 'Secondary field', 'workstaiton recovery', 100, '{}'::jsonb, $4, $4)`,
+		exactID, primaryID, descriptionID, now)
+	require.NoError(t, err)
+
+	first, total, err := st.Search(ctx, store.SearchParams{
+		Scope: "actions", Query: "workstation", Limit: 2, SortField: "name",
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), total)
+	require.Len(t, first, 2)
+	assert.Equal(t, exactID, first[0].ID, "ordinary prefix hits always precede fuzzy-only hits")
+	assert.Equal(t, primaryID, first[1].ID, "a primary-field typo ranks ahead of the same typo in a description")
+
+	second, total, err := st.Search(ctx, store.SearchParams{
+		Scope: "actions", Query: "workstation", Offset: 2, Limit: 2, SortField: "name",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), total)
+	require.Len(t, second, 1)
+	assert.Equal(t, descriptionID, second[0].ID)
+}
+
+func TestPostgresSearch_FuzzyRequiresEveryTokenAndFourCharacterMinimum(t *testing.T) {
+	st, raw := setupPostgres(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	id := newID()
+	_, err := raw.Exec(ctx, `INSERT INTO actions
+		(id, name, description, action_type, params, created_at, updated_at)
+		VALUES ($1, 'Münchn abc baseline', '', 100, '{}'::jsonb, $2, $2)`, id, now)
+	require.NoError(t, err)
+
+	rows, total, err := st.Search(ctx, store.SearchParams{Scope: "actions", Query: "münchen", Limit: 50})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), total)
+	require.Len(t, rows, 1)
+	assert.Equal(t, id, rows[0].ID)
+
+	rows, total, err = st.Search(ctx, store.SearchParams{Scope: "actions", Query: "münchen secure", Limit: 50})
+	require.NoError(t, err)
+	assert.Zero(t, total, "one fuzzy token cannot hide a missing query token")
+	assert.Empty(t, rows)
+
+	rows, total, err = st.Search(ctx, store.SearchParams{Scope: "actions", Query: "acb", Limit: 50})
+	require.NoError(t, err)
+	assert.Zero(t, total, "tokens shorter than four characters are prefix-only")
+	assert.Empty(t, rows)
+}
+
+func TestPostgresSearch_FuzzyCandidateCorpus(t *testing.T) {
+	st, raw := setupPostgres(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name, document, query string
+		want                  bool
+	}{
+		{name: "four-character transposition", document: "abcd", query: "acbd", want: true},
+		{name: "two edits at eight characters", document: "abcdefgh", query: "abcxefyh", want: true},
+		{name: "DACH umlaut deletion", document: "Server-Härtung München", query: "server härtng", want: true},
+		{name: "dotted hostname transposition", document: "db-01.eu.example", query: "db-01.eu.examlpe", want: true},
+		{name: "email transposition", document: "ops@example.test", query: "ops@exmaple.test", want: true},
+		{name: "short sharp-s spelling remains distinct", document: "Straße", query: "Strasse", want: false},
+	}
+
+	ids := make([]string, len(tests))
+	for i, tc := range tests {
+		ids[i] = newID()
+		_, err := raw.Exec(ctx, `INSERT INTO actions
+			(id, name, description, action_type, params, created_at, updated_at)
+			VALUES ($1, $2, '', 100, '{}'::jsonb, $3, $3)`, ids[i], tc.document, now)
+		require.NoError(t, err)
+	}
+
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, _, err := st.Search(ctx, store.SearchParams{Scope: "actions", Query: tc.query, Limit: 50})
+			require.NoError(t, err)
+			found := false
+			for _, row := range rows {
+				found = found || row.ID == ids[i]
+			}
+			assert.Equal(t, tc.want, found)
+		})
+	}
 }
 
 func requireOneSearchRow(t *testing.T, rows []store.SearchRow) store.SearchRow {

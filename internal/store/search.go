@@ -56,6 +56,7 @@ type searchFilter struct {
 type searchFacet struct {
 	from, where, id, name, description, memberCount string
 	fields, textMatch, scopeMatch                   string
+	fuzzyRelated                                    string
 	tagFilters                                      map[string]searchFilter
 	dateFilters, sorts                              map[string]string
 	defaultSort                                     string
@@ -127,6 +128,9 @@ var searchFacets = map[string]searchFacet{
             'assigned', (EXISTS (SELECT 1 FROM assignments x WHERE x.source_type = 'action_set' AND x.source_id = s.id AND x.is_deleted = FALSE))::text,
             'created_at', COALESCE(EXTRACT(EPOCH FROM s.created_at)::bigint, 0)::text,
             'updated_at', COALESCE(EXTRACT(EPOCH FROM s.updated_at)::bigint, 0)::text)`,
+		fuzzyRelated: `COALESCE((SELECT string_agg(a.name || ' ' || COALESCE(a.description, ''), ' ' ORDER BY m.sort_order, a.id)
+			FROM action_set_members m JOIN actions a ON a.id = m.action_id AND a.is_deleted = FALSE
+			WHERE m.set_id = s.id), '')`,
 		textMatch: `s.search_tsv @@ pq.value OR starts_with(lower(s.id), lower(@query::text)) OR EXISTS (
             SELECT 1 FROM action_set_members m JOIN actions a ON a.id = m.action_id AND a.is_deleted = FALSE
             WHERE m.set_id = s.id AND a.search_tsv @@ pq.value)`,
@@ -160,6 +164,14 @@ var searchFacets = map[string]searchFacet{
             'assigned', (EXISTS (SELECT 1 FROM assignments x WHERE x.source_type = 'definition' AND x.source_id = d.id AND x.is_deleted = FALSE))::text,
             'created_at', COALESCE(EXTRACT(EPOCH FROM d.created_at)::bigint, 0)::text,
             'updated_at', COALESCE(EXTRACT(EPOCH FROM d.updated_at)::bigint, 0)::text)`,
+		fuzzyRelated: `concat_ws(' ',
+			COALESCE((SELECT string_agg(s.name || ' ' || COALESCE(s.description, ''), ' ' ORDER BY dm.sort_order, s.id)
+				FROM definition_members dm JOIN action_sets s ON s.id = dm.action_set_id AND s.is_deleted = FALSE
+				WHERE dm.definition_id = d.id), ''),
+			COALESCE((SELECT string_agg(a.name || ' ' || COALESCE(a.description, ''), ' ' ORDER BY dm.sort_order, sm.sort_order, a.id)
+				FROM definition_members dm JOIN action_sets s ON s.id = dm.action_set_id AND s.is_deleted = FALSE
+				JOIN action_set_members sm ON sm.set_id = s.id JOIN actions a ON a.id = sm.action_id AND a.is_deleted = FALSE
+				WHERE dm.definition_id = d.id), ''))`,
 		textMatch: `d.search_tsv @@ pq.value OR starts_with(lower(d.id), lower(@query::text)) OR EXISTS (
             SELECT 1 FROM definition_members dm JOIN action_sets s ON s.id = dm.action_set_id AND s.is_deleted = FALSE
             WHERE dm.definition_id = d.id AND s.search_tsv @@ pq.value)
@@ -189,6 +201,9 @@ var searchFacets = map[string]searchFacet{
 				WHERE r.policy_id = p.id), ''),
             'rule_count', (SELECT COUNT(*) FROM compliance_policy_rules r JOIN actions a ON a.id = r.action_id AND a.is_deleted = FALSE WHERE r.policy_id = p.id)::text,
             'created_at', COALESCE(EXTRACT(EPOCH FROM p.created_at)::bigint, 0)::text)`,
+		fuzzyRelated: `COALESCE((SELECT string_agg(a.name || ' ' || COALESCE(a.description, ''), ' ' ORDER BY a.name, a.id)
+			FROM compliance_policy_rules r JOIN actions a ON a.id = r.action_id AND a.is_deleted = FALSE
+			WHERE r.policy_id = p.id), '')`,
 		textMatch: `p.search_tsv @@ pq.value OR starts_with(lower(p.id), lower(@query::text)) OR EXISTS (
             SELECT 1 FROM compliance_policy_rules r JOIN actions a ON a.id = r.action_id AND a.is_deleted = FALSE
             WHERE r.policy_id = p.id AND a.search_tsv @@ pq.value)`,
@@ -219,6 +234,11 @@ var searchFacets = map[string]searchFacet{
             'compliance_status', d.compliance_status::text,
             'registered_at', COALESCE(EXTRACT(EPOCH FROM d.registered_at)::bigint, 0)::text,
             'last_seen_at', COALESCE(EXTRACT(EPOCH FROM d.last_seen_at)::bigint, 0)::text)`,
+		fuzzyRelated: `concat_ws(' ', d.agent_version,
+			COALESCE((SELECT string_agg(l.key || ' ' || l.value, ' ' ORDER BY l.key, l.value)
+				FROM device_labels l WHERE l.device_id = d.id), ''),
+			COALESCE((SELECT string_agg(di.table_name || ' ' || di.rows::text, ' ' ORDER BY di.table_name)
+				FROM device_inventory di WHERE di.device_id = d.id), ''))`,
 		textMatch: `d.search_tsv @@ pq.value OR starts_with(lower(d.id), lower(@query::text))
           OR starts_with(lower(d.hostname), lower(@query::text))
 		  OR EXISTS (SELECT 1 FROM device_labels l WHERE l.device_id = d.id
@@ -250,6 +270,11 @@ var searchFacets = map[string]searchFacet{
                       WHERE ugm.user_id = u.id AND ugr.role_id = r.id))), ''),
             'last_login_at', COALESCE(EXTRACT(EPOCH FROM u.last_login_at)::bigint, 0)::text,
             'created_at', COALESCE(EXTRACT(EPOCH FROM u.created_at)::bigint, 0)::text)`,
+		fuzzyRelated: `concat_ws(' ', u.given_name, u.family_name, u.preferred_username, u.linux_username,
+			COALESCE((SELECT string_agg(DISTINCT r.name, ' ' ORDER BY r.name) FROM roles r
+				WHERE r.is_deleted = FALSE AND (EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id AND ur.role_id = r.id)
+				  OR EXISTS (SELECT 1 FROM user_group_members ugm JOIN user_group_roles ugr ON ugr.group_id = ugm.group_id
+					  WHERE ugm.user_id = u.id AND ugr.role_id = r.id))), ''))`,
 		textMatch: `u.search_tsv @@ pq.value OR starts_with(lower(u.id), lower(@query::text))
 		  OR starts_with(lower(u.email), lower(@query::text))
 		  OR starts_with(lower(u.linux_username), lower(@query::text)) OR EXISTS (SELECT 1 FROM roles r
@@ -286,6 +311,8 @@ var searchFacets = map[string]searchFacet{
 			'action_id', COALESCE(e.action_id, ''), 'desired_state', e.desired_state::text,
 			'changed', e.changed::text, 'duration_ms', COALESCE(e.duration_ms, 0)::text,
             'created_at', COALESCE(EXTRACT(EPOCH FROM e.created_at)::bigint, 0)::text)`,
+		fuzzyRelated: `concat_ws(' ', e.device_id, e.action_id, e.status,
+			COALESCE(a.description, ''), d.agent_version)`,
 		textMatch: `e.search_tsv @@ pq.value OR a.search_tsv @@ pq.value OR d.search_tsv @@ pq.value
 		  OR starts_with(lower(e.id), lower(@query::text))
 		  OR starts_with(lower(e.device_id), lower(@query::text))`,
@@ -329,6 +356,7 @@ func auditSearchFacet() searchFacet {
 		from: `(
 		  SELECT e.effect_id AS id, e.resource_type AS stream_type, e.action AS event_type,
 		         e.resource_id AS stream_id, e.occurred_at, o.actor_type, o.actor_id, o.request_descriptor,
+				 o.operation_class, o.origin, o.authorization_outcome, o.result,
 				 o.search_tsv || to_tsvector('simple'::regconfig,
 				     regexp_replace(o.request_descriptor, '[^[:alnum:]]+', ' ', 'g')) AS operation_tsv,
                  to_tsvector('simple'::regconfig, e.resource_type || ' ' || e.action || ' ' || e.resource_id) AS effect_tsv
@@ -339,6 +367,7 @@ func auditSearchFacet() searchFacet {
 		         CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION' THEN 'authentication' ELSE 'operation' END,
 		         CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION' THEN 'AUTHENTICATION_REJECTED' ELSE o.operation_class END,
 		         o.operation_id, o.occurred_at, o.actor_type, o.actor_id, o.request_descriptor,
+				 o.operation_class, o.origin, o.authorization_outcome, o.result,
 				 o.search_tsv || to_tsvector('simple'::regconfig,
 				     regexp_replace(o.request_descriptor, '[^[:alnum:]]+', ' ', 'g')), ''::tsvector
           FROM audit_operations o
@@ -349,6 +378,8 @@ func auditSearchFacet() searchFacet {
             'event_type', ev.event_type, 'stream_type', ev.stream_type,
 			'actor_type', ev.actor_type, 'actor_id', ev.actor_id, 'stream_id', ev.stream_id,
             'occurred_at', EXTRACT(EPOCH FROM ev.occurred_at)::bigint::text)`,
+		fuzzyRelated: `concat_ws(' ', ev.stream_type, ev.stream_id, ev.actor_type, ev.actor_id,
+			ev.operation_class, ev.origin, ev.authorization_outcome, ev.result)`,
 		textMatch: `ev.operation_tsv @@ pq.value OR ev.effect_tsv @@ pq.value
 		  OR starts_with(lower(ev.id), lower(@query::text))`, scopeMatch: "TRUE",
 		tagFilters: map[string]searchFilter{
@@ -389,9 +420,9 @@ func (s *Store) Search(ctx context.Context, p SearchParams) ([]SearchRow, int64,
 		"scope_group_ids": p.ScopeGroupIDs, "assigned_user_id": p.AssignedUserID,
 		"online_since": p.OnlineSince.UTC(),
 	}
-	conditions := []string{facet.where, "(@query::text = '' OR (pq.value IS NOT NULL AND (" + facet.textMatch + ")))"}
+	baseConditions := []string{facet.where}
 	if p.ScopeRestricted {
-		conditions = append(conditions, "("+facet.scopeMatch+")")
+		baseConditions = append(baseConditions, "("+facet.scopeMatch+")")
 	}
 
 	dates := append([]SearchDateRange(nil), p.DateRanges...)
@@ -404,12 +435,12 @@ func (s *Store) Search(ctx context.Context, p SearchParams) ([]SearchRow, int64,
 		if dateRange.Start > 0 {
 			name := "date_start_" + strconv.Itoa(i)
 			args[name] = dateRange.Start
-			conditions = append(conditions, expression+" >= to_timestamp(@"+name+")")
+			baseConditions = append(baseConditions, expression+" >= to_timestamp(@"+name+")")
 		}
 		if dateRange.End > 0 {
 			name := "date_end_" + strconv.Itoa(i)
 			args[name] = dateRange.End
-			conditions = append(conditions, expression+" <= to_timestamp(@"+name+")")
+			baseConditions = append(baseConditions, expression+" <= to_timestamp(@"+name+")")
 		}
 	}
 
@@ -475,13 +506,16 @@ func (s *Store) Search(ctx context.Context, p SearchParams) ([]SearchRow, int64,
 			return nil, 0, ErrInvalidSearch
 		}
 		predicate = strings.ReplaceAll(predicate, "{{arg}}", "@"+argName)
-		conditions = append(conditions, "("+predicate+")")
+		baseConditions = append(baseConditions, "("+predicate+")")
 	}
 
 	direction := "ASC"
 	if p.Descending {
 		direction = "DESC"
 	}
+	normalConditions := append([]string(nil), baseConditions...)
+	normalConditions = append(normalConditions,
+		"(@query::text = '' OR (pq.value IS NOT NULL AND ("+facet.textMatch+")))")
 	query := fmt.Sprintf(`WITH %s,
 prefix_query AS (
     SELECT CASE WHEN btrim(@query::text) = '' THEN NULL::tsquery ELSE (
@@ -502,7 +536,7 @@ SELECT page.id, page.name, page.description, page.member_count, page.fields, tot
 FROM total LEFT JOIN page ON TRUE
 ORDER BY page.sort_value %s NULLS LAST, page.id ASC`,
 		assignmentGroupsCTE, facet.id, facet.name, facet.description, facet.memberCount,
-		facet.fields, sortExpression, facet.from, strings.Join(conditions, " AND "), direction, direction)
+		facet.fields, sortExpression, facet.from, strings.Join(normalConditions, " AND "), direction, direction)
 
 	rows, err := s.pool.Query(ctx, query, args)
 	if err != nil {
@@ -540,7 +574,25 @@ ORDER BY page.sort_value %s NULLS LAST, page.id ASC`,
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("search %s rows: %w", p.Scope, err)
 	}
-	return results, total, nil
+
+	remaining := int(p.Limit) - len(results)
+	fuzzyOffset := int64(0)
+	if int64(p.Offset) >= total {
+		fuzzyOffset = int64(p.Offset) - total
+	}
+	fuzzyKeep := int(fuzzyOffset) + remaining
+	fuzzyResults, fuzzyTotal, err := s.searchFuzzy(ctx, p, facet, args, baseConditions, fuzzyKeep)
+	if err != nil {
+		return nil, 0, err
+	}
+	if remaining > 0 && fuzzyOffset < int64(len(fuzzyResults)) {
+		start := int(fuzzyOffset)
+		end := min(len(fuzzyResults), start+remaining)
+		for _, result := range fuzzyResults[start:end] {
+			results = append(results, result.row)
+		}
+	}
+	return results, total + fuzzyTotal, nil
 }
 
 // RebuildSearchIndexes recreates the fixed PostgreSQL GIN indexes inside the
