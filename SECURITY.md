@@ -26,7 +26,9 @@ repository's security contract without creating a competing architecture.
 
 ### Identity and authorization
 
-Human login is OIDC only, with SCIM for provisioning. MFA belongs to the
+Human login is OIDC only. SCIM owns managed provisioning and erasure; providers
+without SCIM may opt into OIDC JIT provisioning, whose subjects can be erased
+only through the provenance-gated local JIT-erasure path. MFA belongs to the
 identity provider. The bootstrap-admin token is single-use, short-lived, and
 cannot act as an ordinary `:self` user.
 
