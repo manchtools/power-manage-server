@@ -345,6 +345,22 @@ func TestDeviceHandlers_AssignedAndScopedReads(t *testing.T) {
 	assert.NotEqual(t, firstPage.Msg.Devices[0].Id, secondPage.Msg.Devices[0].Id)
 	assert.Equal(t, int32(2), secondPage.Msg.TotalCount)
 
+	complianceCtx := f.actor("GetDeviceCompliance:assigned", "GetDeviceCompliancePolicyStatus:assigned")
+	for _, id := range []string{f.directID, f.groupID} {
+		_, err = f.handlers.GetDeviceCompliance(complianceCtx,
+			connect.NewRequest(&pmv1.GetDeviceComplianceRequest{DeviceId: id}))
+		require.NoError(t, err)
+		_, err = f.handlers.GetDeviceCompliancePolicyStatus(complianceCtx,
+			connect.NewRequest(&pmv1.GetDeviceCompliancePolicyStatusRequest{DeviceId: id}))
+		require.NoError(t, err)
+	}
+	_, err = f.handlers.GetDeviceCompliance(complianceCtx,
+		connect.NewRequest(&pmv1.GetDeviceComplianceRequest{DeviceId: f.outsideID}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "assigned compliance must not reveal other devices")
+	_, err = f.handlers.GetDeviceCompliancePolicyStatus(complianceCtx,
+		connect.NewRequest(&pmv1.GetDeviceCompliancePolicyStatusRequest{DeviceId: f.outsideID}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "assigned policy status must not reveal other devices")
+
 	scopedCtx := auth.WithUser(context.Background(), &auth.UserContext{
 		ID: f.actorID, Kind: auth.PrincipalUser,
 		Permissions: []string{"GetDevice", "ListDevices"},
@@ -685,21 +701,21 @@ func TestDeviceHandlers_ExecutionReadsUseDirectKeysetAndScope(t *testing.T) {
 	assert.Equal(t, groupExecutionID, listed.Msg.Executions[0].Id)
 	assert.Equal(t, int32(1), listed.Msg.TotalCount)
 
-	assigned := f.actor("GetExecution:assigned", "ListExecutions:assigned")
-	first, err := f.handlers.ListExecutions(assigned,
-		connect.NewRequest(&pmv1.ListExecutionsRequest{PageSize: 1}))
+	global := f.actor("GetExecution", "ListExecutions")
+	first, err := f.handlers.ListExecutions(global,
+		connect.NewRequest(&pmv1.ListExecutionsRequest{PageSize: 2}))
 	require.NoError(t, err)
-	require.Len(t, first.Msg.Executions, 1)
+	require.Len(t, first.Msg.Executions, 2)
 	assert.NotEmpty(t, first.Msg.NextPageToken)
-	second, err := f.handlers.ListExecutions(assigned,
-		connect.NewRequest(&pmv1.ListExecutionsRequest{PageSize: 1, PageToken: first.Msg.NextPageToken}))
+	second, err := f.handlers.ListExecutions(global,
+		connect.NewRequest(&pmv1.ListExecutionsRequest{PageSize: 2, PageToken: first.Msg.NextPageToken}))
 	require.NoError(t, err)
 	require.Len(t, second.Msg.Executions, 1)
 	assert.Empty(t, second.Msg.NextPageToken)
-	assert.NotEqual(t, first.Msg.Executions[0].Id, second.Msg.Executions[0].Id)
-	assert.Equal(t, int32(2), second.Msg.TotalCount)
+	assert.NotContains(t, []string{first.Msg.Executions[0].Id, first.Msg.Executions[1].Id}, second.Msg.Executions[0].Id)
+	assert.Equal(t, int32(3), second.Msg.TotalCount)
 
-	searched, err := f.handlers.ListExecutions(assigned,
+	searched, err := f.handlers.ListExecutions(global,
 		connect.NewRequest(&pmv1.ListExecutionsRequest{
 			Search: "catalog", TypeFilter: pmv1.ActionType_ACTION_TYPE_SHELL,
 			StatusFilter: pmv1.ExecutionStatus_EXECUTION_STATUS_SUCCESS,
@@ -707,7 +723,7 @@ func TestDeviceHandlers_ExecutionReadsUseDirectKeysetAndScope(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, searched.Msg.Executions, 1)
 	assert.Equal(t, groupExecutionID, searched.Msg.Executions[0].Id)
-	_, err = f.handlers.ListExecutions(assigned,
+	_, err = f.handlers.ListExecutions(global,
 		connect.NewRequest(&pmv1.ListExecutionsRequest{StatusFilter: pmv1.ExecutionStatus(99)}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 

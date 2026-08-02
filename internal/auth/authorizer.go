@@ -1,6 +1,31 @@
 package auth
 
-import "context"
+import (
+	"context"
+	"sort"
+)
+
+// assignedPermissionBases is the complete set of actions whose :assigned
+// alternative is backed by an owner filter in the device handlers. Keeping the
+// admission list explicit makes a new :assigned permission fail closed until
+// its handler filtering and tests are deliberately added.
+var assignedPermissionBases = map[string]bool{
+	"GetDevice":                       true,
+	"GetDeviceCompliance":             true,
+	"GetDeviceCompliancePolicyStatus": true,
+	"ListDevices":                     true,
+}
+
+// AssignedPermissionBases returns a sorted copy of the actions that may use an
+// assigned-owner authorization tier.
+func AssignedPermissionBases() []string {
+	out := make([]string, 0, len(assignedPermissionBases))
+	for action := range assignedPermissionBases {
+		out = append(out, action)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // AuthzInput is one authorization question.
 type AuthzInput struct {
@@ -27,8 +52,9 @@ type AuthzInput struct {
 //  2. `:self` with no identified resource — a creation whose ownership
 //     the handler pins;
 //  3. `:self` where the resource IS the actor;
-//  4. `:assigned`, which admits the request so the handler's
-//     assigned-owner filter can decide which rows are visible.
+//  4. an explicitly classified `:assigned` alternative, which admits the
+//     request so the handler's assigned-owner filter can decide which rows are
+//     visible.
 //
 // Tiers 2 and 3 require a principal that can own resources.
 func Authorize(input AuthzInput) bool {
@@ -41,7 +67,7 @@ func Authorize(input AuthzInput) bool {
 				return true
 			}
 		}
-		if p == input.Action+":assigned" {
+		if assignedPermissionBases[input.Action] && p == input.Action+":assigned" {
 			return true
 		}
 	}

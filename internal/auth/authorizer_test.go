@@ -74,6 +74,15 @@ func TestAuthorize_AssignedTierDefersToTheOwnerFilter(t *testing.T) {
 	}), "the assigned tier admits the request so the row filter can decide what is visible")
 }
 
+func TestAuthorize_RejectsUnclassifiedAssignedAlternative(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, auth.Authorize(auth.AuthzInput{
+		Permissions: []string{"DeleteDevice:assigned"}, SubjectID: subjectA, SelfEligible: true,
+		Action: "DeleteDevice",
+	}), "an invented :assigned tier must not bypass the base permission")
+}
+
 func TestAuthorize_RefusesWhatTheActorDoesNotHold(t *testing.T) {
 	t.Parallel()
 	assert.False(t, auth.Authorize(auth.AuthzInput{

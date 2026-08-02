@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -11,6 +12,35 @@ import (
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	"github.com/manchtools/power-manage/server/internal/auth"
 )
+
+func TestAssignedPermissionAlternativesAreExactAndBackedByRPCs(t *testing.T) {
+	t.Parallel()
+
+	want := []string{
+		"GetDevice",
+		"GetDeviceCompliance",
+		"GetDeviceCompliancePolicyStatus",
+		"ListDevices",
+	}
+	got := auth.AssignedPermissionBases()
+	assert.Equal(t, want, got,
+		"each :assigned tier requires an explicit ownership-filter review")
+
+	registeredAssigned := make([]string, 0, len(want))
+	for _, permission := range auth.AllPermissions() {
+		if strings.HasSuffix(permission.Key, ":assigned") {
+			registeredAssigned = append(registeredAssigned, strings.TrimSuffix(permission.Key, ":assigned"))
+		}
+	}
+	sort.Strings(registeredAssigned)
+	assert.Equal(t, want, registeredAssigned,
+		"a registered :assigned permission without an ownership classification would fail open")
+
+	rpcs := controlRPCNames(t)
+	for _, base := range got {
+		assert.True(t, rpcs[base], "%q has an assigned tier but no matching RPC", base)
+	}
+}
 
 // controlRPCNames is the set of method names on the generated control
 // handler. Permission keys and public procedures are checked against
