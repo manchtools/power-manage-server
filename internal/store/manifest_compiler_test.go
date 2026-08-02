@@ -124,6 +124,60 @@ func TestManifestCompiler_DefinitionScheduleOverridesOnlyCompiledManifests(t *te
 		"independent ActionSet compilation still uses its own schedule")
 }
 
+func dispatchableAction() *pmv1.Action {
+	return &pmv1.Action{
+		Id: &pmv1.ActionId{Value: newID()}, Type: pmv1.ActionType_ACTION_TYPE_SHELL,
+		DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT, TimeoutSeconds: 300,
+		Params: &pmv1.Action_Shell{Shell: &pmv1.ShellParams{Script: "printf once"}},
+	}
+}
+
+func TestManifestCompiler_OneShotActionMarksManifestStructurally(t *testing.T) {
+	compiled, err := manifest.OneShotAction(dispatchableAction())
+	require.NoError(t, err)
+	assert.True(t, compiled.GetOneShot(),
+		"an explicit dispatch is one-shot by the structural manifest flag, not by schedule shape")
+}
+
+func TestManifestCompiler_FreshCopyPreservesOneShotMarking(t *testing.T) {
+	source, err := manifest.OneShotAction(dispatchableAction())
+	require.NoError(t, err)
+	source.OneShot = true
+
+	fresh, err := manifest.FreshCopy(source)
+	require.NoError(t, err)
+	assert.True(t, fresh.GetOneShot(), "a per-device copy stays one-shot")
+	assert.NotEqual(t, source.ManifestId, fresh.ManifestId)
+}
+
+func TestManifestCompiler_AssignedCompilationIsNotOneShot(t *testing.T) {
+	f := newManifestFixture(t)
+	unscheduled := newID()
+	_, err := f.raw.Exec(context.Background(), `
+		INSERT INTO actions
+			(id, name, action_type, desired_state, params, timeout_seconds, schedule, created_at)
+		VALUES ($1, 'unscheduled', $2, 1, '{}', 30, '{}', CURRENT_TIMESTAMP)
+	`, unscheduled, int32(pmv1.ActionType_ACTION_TYPE_REBOOT))
+	require.NoError(t, err)
+
+	single, err := f.compiler.Action(context.Background(), unscheduled)
+	require.NoError(t, err)
+	require.NotNil(t, single.Schedule)
+	assert.False(t, single.GetOneShot(),
+		"an empty compiled schedule is not what makes assigned work one-shot")
+
+	set, err := f.compiler.ActionSet(context.Background(), f.set1)
+	require.NoError(t, err)
+	assert.False(t, set.GetOneShot())
+
+	definitions, err := f.compiler.Definition(context.Background(), f.definition)
+	require.NoError(t, err)
+	require.NotEmpty(t, definitions)
+	for _, item := range definitions {
+		assert.False(t, item.GetOneShot())
+	}
+}
+
 func TestManifestCompiler_RejectsMalformedStoredParams(t *testing.T) {
 	f := newManifestFixture(t)
 	_, err := f.raw.Exec(context.Background(), `

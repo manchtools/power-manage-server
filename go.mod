@@ -9,7 +9,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/go-playground/validator/v10 v10.30.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/manchtools/power-manage-sdk v0.5.4-0.20260802115029-dd7fcf8895f9
+	github.com/manchtools/power-manage-sdk v0.5.4-0.20260802194823-693bde8f143e
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/stretchr/testify v1.11.1

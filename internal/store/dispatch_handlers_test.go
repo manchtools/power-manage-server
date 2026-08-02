@@ -261,6 +261,60 @@ func TestDispatchHandlers_ActionSetAndDefinitionPreserveComposition(t *testing.T
 	assert.JSONEq(t, `{"runOnAssign":true}`, set2Schedule)
 }
 
+func TestDispatchHandlers_ExplicitDispatchMarksEveryManifestOneShot(t *testing.T) {
+	f := newDispatchHandlerFixture(t)
+
+	_, err := f.handlers.DispatchAction(f.actor("DispatchAction"),
+		connect.NewRequest(&pmv1.DispatchActionRequest{
+			DeviceId:     f.deviceID,
+			ActionSource: &pmv1.DispatchActionRequest_ActionId{ActionId: f.actionID},
+		}))
+	require.NoError(t, err)
+	require.Len(t, f.waker.ids, 1)
+	catalog := f.manifest(f.waker.ids[0])
+	assert.True(t, catalog.GetOneShot(),
+		"an explicitly dispatched catalog action executes exactly once")
+	assert.Empty(t, catalog.Schedule.Cron)
+
+	_, err = f.handlers.DispatchActionSet(f.actor("DispatchActionSet"),
+		connect.NewRequest(&pmv1.DispatchActionSetRequest{
+			DeviceId: f.deviceID, ActionSetId: f.set1,
+		}))
+	require.NoError(t, err)
+	require.Len(t, f.waker.ids, 2)
+	set := f.manifest(f.waker.ids[1])
+	assert.True(t, set.GetOneShot(),
+		"an explicitly dispatched ActionSet executes exactly once")
+	assert.Empty(t, set.Schedule.Cron)
+
+	_, err = f.handlers.DispatchDefinition(f.actor("DispatchDefinition"),
+		connect.NewRequest(&pmv1.DispatchDefinitionRequest{
+			DeviceId: f.deviceID, DefinitionId: f.definition,
+		}))
+	require.NoError(t, err)
+	require.Len(t, f.waker.ids, 4)
+	for _, deliveryID := range f.waker.ids[2:] {
+		compiled := f.manifest(deliveryID)
+		assert.True(t, compiled.GetOneShot(),
+			"every manifest of an explicitly dispatched Definition executes exactly once")
+		assert.Empty(t, compiled.Schedule.Cron)
+	}
+}
+
+func TestDispatchHandlers_AssignedDispatchIsNotOneShot(t *testing.T) {
+	f := newDispatchHandlerFixture(t)
+	f.assign("action", f.actionID, "device", f.deviceID, pmv1.AssignmentMode_ASSIGNMENT_MODE_REQUIRED)
+
+	_, err := f.handlers.DispatchAssignedActions(f.actor("DispatchAssignedActions"),
+		connect.NewRequest(&pmv1.DispatchAssignedActionsRequest{DeviceId: f.deviceID}))
+	require.NoError(t, err)
+	require.Len(t, f.waker.ids, 1)
+	compiled := f.manifest(f.waker.ids[0])
+	assert.False(t, compiled.GetOneShot(),
+		"assigned work stays scheduled and never becomes one-shot")
+	assert.Equal(t, "0 4 * * *", compiled.Schedule.Cron)
+}
+
 func TestDispatchHandlers_AssignedDefinitionAbsorbsChildrenAndOverridesManifestSchedules(t *testing.T) {
 	f := newDispatchHandlerFixture(t)
 	f.assign("action", f.actionID, "device", f.deviceID, pmv1.AssignmentMode_ASSIGNMENT_MODE_REQUIRED)

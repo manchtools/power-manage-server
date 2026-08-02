@@ -123,8 +123,10 @@ func (c *Compiler) Definition(ctx context.Context, id string) ([]*pmv1.Manifest,
 }
 
 // OneShotAction creates the singleton manifest used by an explicit dispatch.
-// The Action schedule remains authoring/display data; the manifest schedule is
-// empty because receipt of this delivery is the one-shot execution trigger.
+// The Action schedule remains authoring/display data; the manifest carries the
+// structural one_shot flag, which is what makes the agent execute the delivery
+// exactly once on durable receipt instead of scheduling it. An empty manifest
+// schedule accompanies the flag but never stands in for it.
 func OneShotAction(action *pmv1.Action) (*pmv1.Manifest, error) {
 	if action == nil {
 		return nil, ErrInvalidInput
@@ -139,7 +141,22 @@ func OneShotAction(action *pmv1.Action) (*pmv1.Manifest, error) {
 		Schedule:         &pmv1.ActionSchedule{},
 		DefaultOnFailure: pmv1.OnFailure_ON_FAILURE_CONTINUE,
 		Occurrences:      []*pmv1.ManifestOccurrence{occurrence(cloned, pmv1.OnFailure_ON_FAILURE_CONTINUE)},
+		OneShot:          true,
 	})
+}
+
+// AsOneShot marks a manifest compiled from the catalog as an explicit dispatch.
+// The structural one_shot flag is what makes the agent execute the delivery
+// exactly once on durable receipt; clearing the compiled schedule stops the
+// authored cadence from also being installed. The nested Actions keep their
+// authoring/display schedules.
+func AsOneShot(compiled *pmv1.Manifest) *pmv1.Manifest {
+	if compiled == nil {
+		return nil
+	}
+	compiled.Schedule = &pmv1.ActionSchedule{}
+	compiled.OneShot = true
+	return compiled
 }
 
 // FreshCopy preserves compiled semantics while reminting delivery-local

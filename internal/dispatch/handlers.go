@@ -532,8 +532,7 @@ func (h *Handlers) catalogActionTemplate(ctx context.Context, actionID string) (
 	if !visible {
 		return nil, notFound(ctx, errActionNotFound, "action not found")
 	}
-	compiled.Schedule = &pmv1.ActionSchedule{}
-	return compiled, nil
+	return manifest.AsOneShot(compiled), nil
 }
 
 func (h *Handlers) catalogActionSetTemplate(ctx context.Context, setID string) (*pmv1.Manifest, error) {
@@ -548,8 +547,7 @@ func (h *Handlers) catalogActionSetTemplate(ctx context.Context, setID string) (
 	if !visible {
 		return nil, notFound(ctx, errActionSetMissing, "action set not found")
 	}
-	compiled.Schedule = &pmv1.ActionSchedule{}
-	return compiled, nil
+	return manifest.AsOneShot(compiled), nil
 }
 
 func (h *Handlers) catalogDefinitionTemplates(ctx context.Context, definitionID string) ([]*pmv1.Manifest, error) {
@@ -565,7 +563,7 @@ func (h *Handlers) catalogDefinitionTemplates(ctx context.Context, definitionID 
 		return nil, notFound(ctx, errDefinitionMissing, "definition not found")
 	}
 	for _, item := range compiled {
-		item.Schedule = &pmv1.ActionSchedule{}
+		manifest.AsOneShot(item)
 	}
 	return compiled, nil
 }
