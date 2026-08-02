@@ -49,6 +49,7 @@ test_secure_idempotent_setup() {
     grep -q '"public_tls_key_file": "/run/certs/control.key"' "$directory/config/control.json"
     grep -q '"artifact_path": "/var/lib/power-manage/artifacts"' "$directory/config/control.json"
     grep -q '"backup_path": "/var/lib/power-manage/backups"' "$directory/config/control.json"
+	grep -q '"webhook_url": ""' "$directory/config/control.json"
 	grep -q '"audit_retention": "2160h"' "$directory/config/control.json"
     if grep -R -iEq 'valkey|asynq|indexer|password_auth' "$directory/config"; then
         return 1

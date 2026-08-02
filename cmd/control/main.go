@@ -22,6 +22,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/jobs"
 	"github.com/manchtools/power-manage/server/internal/maintenance"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/webhook"
 )
 
 // version is set at build time.
@@ -86,8 +87,13 @@ func run(cfg *Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("open audit archive: %w", err)
 	}
+	notifier, err := webhook.New(cfg.WebhookURL)
+	if err != nil {
+		return fmt.Errorf("open webhook: %w", err)
+	}
 	maintenanceService := maintenance.New(maintenance.Config{
 		Store: st, Archive: auditArchive, Retention: cfg.AuditRetention,
+		Notifier: notifier,
 	})
 	if err := maintenanceService.EnsureScheduled(ctx); err != nil {
 		return fmt.Errorf("schedule maintenance: %w", err)

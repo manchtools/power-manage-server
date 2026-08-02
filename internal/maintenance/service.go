@@ -19,6 +19,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/archive"
 	"github.com/manchtools/power-manage/server/internal/jobs"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/webhook"
 )
 
 const (
@@ -26,11 +27,13 @@ const (
 	KindAuditAnchor      = "audit.anchor"
 	KindAuditRetention   = "audit.retention"
 	KindAuthStateCleanup = "identity.auth_state_cleanup"
+	KindSecurityInspect  = "security.inspect"
 
 	auditVerifyInterval      = time.Hour
 	auditAnchorInterval      = 15 * time.Minute
 	auditRetentionInterval   = 24 * time.Hour
 	authStateCleanupInterval = time.Hour
+	securityInspectInterval  = 15 * time.Minute
 	maintenanceMaxAttempts   = int32(100)
 	maxAnchorBytes           = 4 << 10
 	externalAnchorRef        = "audit-anchor-control-latest.json"
@@ -41,6 +44,12 @@ var recurring = map[string]time.Duration{
 	KindAuditAnchor:      auditAnchorInterval,
 	KindAuditRetention:   auditRetentionInterval,
 	KindAuthStateCleanup: authStateCleanupInterval,
+	KindSecurityInspect:  securityInspectInterval,
+}
+
+// Notifier is the only outbound notification capability maintenance needs.
+type Notifier interface {
+	Send(context.Context, webhook.Event) error
 }
 
 // Config supplies the fixed maintenance dependencies and operator retention
@@ -50,6 +59,7 @@ type Config struct {
 	Archive   archive.ArchiveStore
 	Retention time.Duration
 	Now       func() time.Time
+	Notifier  Notifier
 }
 
 // Service implements the production maintenance job handlers.
@@ -58,6 +68,7 @@ type Service struct {
 	archive   archive.ArchiveStore
 	retention time.Duration
 	now       func() time.Time
+	notifier  Notifier
 }
 
 // New constructs the maintenance service.
@@ -68,7 +79,10 @@ func New(cfg Config) *Service {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Service{store: cfg.Store, archive: cfg.Archive, retention: cfg.Retention, now: cfg.Now}
+	return &Service{
+		store: cfg.Store, archive: cfg.Archive, retention: cfg.Retention,
+		now: cfg.Now, notifier: cfg.Notifier,
+	}
 }
 
 // Handlers returns the complete fixed job registry.
@@ -78,6 +92,7 @@ func (s *Service) Handlers() map[string]jobs.Handler {
 		KindAuditAnchor:      s.AnchorAudit,
 		KindAuditRetention:   s.RetainAudit,
 		KindAuthStateCleanup: s.CleanupAuthStates,
+		KindSecurityInspect:  s.InspectSecurity,
 	}
 }
 
@@ -243,6 +258,47 @@ func (s *Service) RetainAudit(ctx context.Context, _ jobs.Job) error {
 func (s *Service) CleanupAuthStates(ctx context.Context, _ jobs.Job) error {
 	_, err := s.store.CleanupExpiredAuthStates(ctx)
 	return err
+}
+
+// InspectSecurity reports zero enabled global administrators. It does not
+// block identity changes: bootstrap-admin is the recovery path.
+func (s *Service) InspectSecurity(ctx context.Context, _ jobs.Job) error {
+	if ctx == nil {
+		return errors.New("security inspection requires a context")
+	}
+	if s.notifier == nil {
+		return nil
+	}
+	var count int64
+	opID := ulid.Make().String()
+	_, err := s.store.WithAudit(ctx, backgroundOperation(opID, "maintenance.security.inspect"),
+		func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+			var err error
+			count, err = tx.CountEnabledUnscopedAdmins(ctx)
+			if err != nil {
+				return err
+			}
+			rec.Effect(store.AuditEffect{
+				ResourceType: "security_posture", ResourceID: opID,
+				Action: "INSPECT", Outcome: store.EffectApplied, AfterCount: &count,
+			})
+			if count == 0 {
+				rec.Effect(store.AuditEffect{
+					ResourceType: "webhook", ResourceID: opID,
+					Action: "NOTIFY_INTENT", Outcome: store.EffectApplied,
+				})
+			}
+			return nil
+		})
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	return s.notifier.Send(ctx, webhook.Event{
+		Name: webhook.EventZeroEnabledAdministrators, OccurredAt: s.now().UTC(),
+	})
 }
 
 type externalAnchorFile struct {

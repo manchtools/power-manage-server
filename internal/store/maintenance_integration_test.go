@@ -16,9 +16,20 @@ import (
 	"github.com/manchtools/power-manage/server/internal/jobs"
 	"github.com/manchtools/power-manage/server/internal/maintenance"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/webhook"
 )
 
 type prefixFailArchive struct{ archive.ArchiveStore }
+
+type recordingWebhook struct {
+	events []webhook.Event
+	err    error
+}
+
+func (w *recordingWebhook) Send(_ context.Context, event webhook.Event) error {
+	w.events = append(w.events, event)
+	return w.err
+}
 
 func (a prefixFailArchive) Put(ctx context.Context, ref string, src io.Reader) (archive.ArchiveInfo, error) {
 	if strings.HasPrefix(ref, "audit-prefix-") {
@@ -57,6 +68,7 @@ func TestMaintenance_SeedsExactlyOneDurableJobPerKind(t *testing.T) {
 	want := []string{
 		maintenance.KindAuditAnchor, maintenance.KindAuditRetention,
 		maintenance.KindAuditVerify, maintenance.KindAuthStateCleanup,
+		maintenance.KindSecurityInspect,
 	}
 	sort.Strings(want)
 	assert.Equal(t, want, kinds)
@@ -68,6 +80,99 @@ func TestMaintenance_SeedsExactlyOneDurableJobPerKind(t *testing.T) {
 		SELECT count(*) FROM audit_effects WHERE resource_type = 'job' AND action = 'CREATE'
 	`).Scan(&created))
 	assert.Equal(t, len(want), created)
+}
+
+func TestMaintenance_NotifiesOnlyWhenNoEnabledGlobalAdministratorExists(t *testing.T) {
+	st, raw := setupPostgres(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	notifier := &recordingWebhook{}
+	archives, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
+	require.NoError(t, err)
+	service := maintenance.New(maintenance.Config{
+		Store: st, Archive: archives, Retention: 90 * 24 * time.Hour,
+		Now: func() time.Time { return now }, Notifier: notifier,
+	})
+
+	require.NoError(t, service.InspectSecurity(ctx, jobs.Job{}))
+	require.Len(t, notifier.events, 1)
+	assert.Equal(t, webhook.EventZeroEnabledAdministrators, notifier.events[0].Name)
+	assert.Equal(t, now, notifier.events[0].OccurredAt)
+	var inspections, intents int
+	require.NoError(t, raw.QueryRow(ctx, `SELECT count(*) FROM audit_effects WHERE action = 'INSPECT'`).Scan(&inspections))
+	require.NoError(t, raw.QueryRow(ctx, `SELECT count(*) FROM audit_effects WHERE action = 'NOTIFY_INTENT'`).Scan(&intents))
+	assert.Equal(t, 1, inspections)
+	assert.Equal(t, 1, intents)
+
+	userID := newID()
+	_, err = raw.Exec(ctx, `
+		INSERT INTO users (id, email, provisioning_source, created_at, updated_at)
+		VALUES ($1, 'admin@example.test', 'scim', $2, $2)
+	`, userID, now)
+	require.NoError(t, err)
+	_, err = raw.Exec(ctx, `
+		INSERT INTO user_roles (grant_id, user_id, role_id, assigned_at)
+		VALUES ($3, $1, '00000000000000000000000001', $2)
+	`, userID, now, newID())
+	require.NoError(t, err)
+	require.NoError(t, service.InspectSecurity(ctx, jobs.Job{}))
+	assert.Len(t, notifier.events, 1, "an enabled global administrator suppresses the alert")
+
+	_, err = raw.Exec(ctx, `UPDATE users SET disabled = TRUE WHERE id = $1`, userID)
+	require.NoError(t, err)
+	require.NoError(t, service.InspectSecurity(ctx, jobs.Job{}))
+	assert.Len(t, notifier.events, 2, "a disabled administrator does not provide recovery authority")
+
+	groupID := newID()
+	_, err = raw.Exec(ctx, `UPDATE users SET disabled = FALSE WHERE id = $1`, userID)
+	require.NoError(t, err)
+	_, err = raw.Exec(ctx, `DELETE FROM user_roles WHERE user_id = $1`, userID)
+	require.NoError(t, err)
+	_, err = raw.Exec(ctx, `INSERT INTO user_groups (id, name) VALUES ($1, 'SCIM administrators')`, groupID)
+	require.NoError(t, err)
+	_, err = raw.Exec(ctx, `INSERT INTO user_group_members (group_id, user_id) VALUES ($1, $2)`, groupID, userID)
+	require.NoError(t, err)
+	_, err = raw.Exec(ctx, `
+		INSERT INTO user_group_roles (grant_id, group_id, role_id)
+		VALUES ($1, $2, '00000000000000000000000001')
+	`, newID(), groupID)
+	require.NoError(t, err)
+	require.NoError(t, service.InspectSecurity(ctx, jobs.Job{}))
+	assert.Len(t, notifier.events, 2, "a live SCIM group may confer global administrator authority")
+}
+
+func TestMaintenance_WebhookFailureUsesDurableJobRetry(t *testing.T) {
+	st, raw := setupPostgres(t)
+	notifier := &recordingWebhook{err: errors.New("webhook unavailable")}
+	archives, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
+	require.NoError(t, err)
+	service := maintenance.New(maintenance.Config{
+		Store: st, Archive: archives, Retention: 90 * 24 * time.Hour, Notifier: notifier,
+	})
+
+	assert.ErrorContains(t, service.InspectSecurity(context.Background(), jobs.Job{}), "webhook unavailable")
+	var intents int
+	require.NoError(t, raw.QueryRow(context.Background(), `
+		SELECT count(*) FROM audit_effects WHERE action = 'NOTIFY_INTENT'
+	`).Scan(&intents))
+	assert.Equal(t, 1, intents, "the committed intent remains attributable while the durable job retries")
+}
+
+func TestMaintenance_AuditFailurePreventsWebhook(t *testing.T) {
+	st, raw := setupPostgres(t)
+	notifier := &recordingWebhook{}
+	archives, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
+	require.NoError(t, err)
+	service := maintenance.New(maintenance.Config{
+		Store: st, Archive: archives, Retention: 90 * 24 * time.Hour, Notifier: notifier,
+	})
+	_, err = raw.Exec(context.Background(), `
+		ALTER TABLE audit_effects ADD CONSTRAINT reject_webhook_intent CHECK (action <> 'NOTIFY_INTENT')
+	`)
+	require.NoError(t, err)
+
+	assert.Error(t, service.InspectSecurity(context.Background(), jobs.Job{}))
+	assert.Empty(t, notifier.events, "no network effect may precede committed audit evidence")
 }
 
 func TestMaintenance_ExternalAnchorAndArchiveBeforeDeleteRunEndToEnd(t *testing.T) {

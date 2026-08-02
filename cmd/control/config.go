@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/enrollment"
+	"github.com/manchtools/power-manage/server/internal/webhook"
 )
 
 const (
@@ -45,6 +46,7 @@ type configDocument struct {
 	AuditRetention        string   `json:"audit_retention"`
 	ArtifactPath          string   `json:"artifact_path"`
 	BackupPath            string   `json:"backup_path"`
+	WebhookURL            string   `json:"webhook_url"`
 	CACertFile            string   `json:"ca_cert_file"`
 	CAKeyFile             string   `json:"ca_key_file"`
 	AgentTLSCertFile      string   `json:"agent_tls_cert_file"`
@@ -75,6 +77,7 @@ type Config struct {
 	AuditRetention      time.Duration
 	ArtifactPath        string
 	BackupPath          string
+	WebhookURL          string
 	CACertFile          string
 	CAKeyFile           string
 	AgentTLSCertFile    string
@@ -151,6 +154,7 @@ func loadConfig(args []string) (*Config, error) {
 		AuditRetention:    auditRetention,
 		ArtifactPath:      document.ArtifactPath,
 		BackupPath:        document.BackupPath,
+		WebhookURL:        document.WebhookURL,
 		CACertFile:        document.CACertFile,
 		CAKeyFile:         pathOverride("POWER_MANAGE_CA_KEY_FILE", document.CAKeyFile),
 		AgentTLSCertFile:  document.AgentTLSCertFile,
@@ -258,6 +262,9 @@ func validateConfig(cfg *Config) error {
 		return err
 	}
 	if err := validateWritableDirectory("backup_path", cfg.BackupPath); err != nil {
+		return err
+	}
+	if _, err := webhook.New(cfg.WebhookURL); err != nil {
 		return err
 	}
 	for name, path := range map[string]string{

@@ -73,6 +73,7 @@ func TestAbolishedRuntimeAPIsCannotReturn(t *testing.T) {
 		"github.com/redis/go-redis",
 		"github.com/alicebob/miniredis",
 		"power-manage-sdk/verify",
+		"net/smtp",
 	}
 	forbiddenIdentifiers := []string{
 		"ActionEnvelope",
@@ -82,12 +83,15 @@ func TestAbolishedRuntimeAPIsCannotReturn(t *testing.T) {
 		"CRLDistribution",
 		"DomainEvent",
 		"EventStore",
+		"EmailNotifier",
+		"EmailSender",
 		"Gateway",
 		"GetCertificateRevocationList",
 		"Projector",
 		"Redis",
 		"ReplayEvent",
 		"SignedAction",
+		"SMTP",
 		"Valkey",
 	}
 

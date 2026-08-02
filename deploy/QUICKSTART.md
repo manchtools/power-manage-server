@@ -11,7 +11,7 @@ process, and PostgreSQL. The authoritative system design is
 Copy `.env.example` to `.env`, edit the three required public values, then run
 `./setup.sh`.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:c04bb228 -->
+<!-- docref: begin src=deploy/setup.sh#@generated-material:e65c9532 -->
 `setup.sh` creates the internal Ed25519 CA, the control and datastore
 certificates, the session and sealing keys, the PostgreSQL password, and
 `config/control.json` with a 90-day audit-retention policy. Existing complete
@@ -66,6 +66,12 @@ Control writes integrity-sealed audit anchors and archive-before-delete chain
 prefixes to `backup_path`; `audit_retention` defaults to 90 days. Mount or
 replicate that path off-host, and back up the database, artifacts, `certs`, and
 `secrets` as one deployment unit.
+<!-- docref: end -->
+
+<!-- docref: begin src=cmd/control/config.go#Config.WebhookURL:341af9cf,internal/maintenance/service.go#Service.InspectSecurity:223fcf91 -->
+Set the optional `webhook_url` to an HTTPS endpoint to receive generic security
+notifications. The payload contains only the event name and occurrence time;
+control has no email or provider-specific notification integration.
 <!-- docref: end -->
 
 <!-- docref: begin src=internal/store/reads.go#ListDueDeliveries:081847c0,internal/store/search.go#Search:12db8002 -->
