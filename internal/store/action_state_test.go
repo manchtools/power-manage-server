@@ -20,7 +20,7 @@ func actionOperation() store.AuditOperation {
 }
 
 func TestActionState_CRUDCommitsWithAudit(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	svc := authoring.New(authoring.Config{Store: st, Now: func() time.Time { return now }})
@@ -65,14 +65,11 @@ func TestActionState_CRUDCommitsWithAudit(t *testing.T) {
 	renamed, err := svc.RenameAction(ctx, renameOp, action.ID, "renamed shell", false)
 	require.NoError(t, err)
 	assert.Equal(t, "renamed shell", renamed.Name)
-	var searchable bool
-	require.NoError(t, raw.QueryRow(ctx, `
-		SELECT search_tsv @@ plainto_tsquery('simple', 'renamed') FROM actions WHERE id = $1
-	`, action.ID).Scan(&searchable))
-	assert.True(t, searchable, "the PostgreSQL FTS document changes in the mutation transaction")
+	assert.True(t, searchDocumentMatches(t, raw, "actions", action.ID, "renamed*"),
+		"the FTS5 document changes in the mutation transaction")
 
 	setID := newID()
-	_, err = raw.Exec(ctx, `INSERT INTO action_sets (id, name, created_at) VALUES ($1, 'holder', now())`, setID)
+	_, err = raw.Exec(ctx, `INSERT INTO action_sets (id, name, created_at) VALUES ($1, 'holder', CURRENT_TIMESTAMP)`, setID)
 	require.NoError(t, err)
 	_, err = raw.Exec(ctx, `INSERT INTO action_set_members (set_id, action_id) VALUES ($1, $2)`, setID, action.ID)
 	require.NoError(t, err)
@@ -91,7 +88,7 @@ func TestActionState_CRUDCommitsWithAudit(t *testing.T) {
 }
 
 func TestActionState_AuditFailureRollsBackCreate(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	svc := authoring.New(authoring.Config{Store: st})
 
 	_, err := svc.CreateAction(context.Background(), store.AuditOperation{}, authoring.CreateActionParams{
@@ -115,7 +112,7 @@ func TestActionState_AuditFailureRollsBackCreate(t *testing.T) {
 }
 
 func TestActionState_UserMutationCannotChangeSystemAction(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	svc := authoring.New(authoring.Config{Store: st})
 	createOp := actionOperation()
 	action, err := svc.CreateAction(context.Background(), createOp, authoring.CreateActionParams{

@@ -2,26 +2,26 @@
 SELECT g.id, g.name, g.description, g.created_at, g.created_by,
        g.is_dynamic, g.dynamic_query, g.sync_interval_minutes,
        g.inventory_interval_minutes, g.maintenance_window,
-       COUNT(d.id)::bigint AS live_member_count
+       COUNT(d.id) AS live_member_count
 FROM device_groups g
 LEFT JOIN device_group_members m ON m.group_id = g.id
 LEFT JOIN devices d ON d.id = m.device_id AND d.is_deleted = FALSE
-WHERE g.id = $1 AND g.is_deleted = FALSE
+WHERE g.id = ? AND g.is_deleted = FALSE
 GROUP BY g.id;
 
 -- name: ListDeviceGroups :many
 SELECT g.id, g.name, g.description, g.created_at, g.created_by,
        g.is_dynamic, g.dynamic_query, g.sync_interval_minutes,
        g.inventory_interval_minutes, g.maintenance_window,
-       COUNT(d.id)::bigint AS live_member_count
+       COUNT(d.id) AS live_member_count
 FROM device_groups g
 LEFT JOIN device_group_members m ON m.group_id = g.id
 LEFT JOIN devices d ON d.id = m.device_id AND d.is_deleted = FALSE
 WHERE g.is_deleted = FALSE
   AND g.id > sqlc.arg(after_id)
   AND (
-      NOT sqlc.arg(scope_restricted)::boolean
-      OR g.id = ANY(sqlc.arg(scope_group_ids)::text[])
+      NOT sqlc.arg(scope_restricted)
+      OR g.id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
   )
 GROUP BY g.id
 ORDER BY g.id
@@ -31,23 +31,23 @@ LIMIT sqlc.arg(row_limit);
 SELECT COUNT(*) FROM device_groups g
 WHERE g.is_deleted = FALSE
   AND (
-      NOT sqlc.arg(scope_restricted)::boolean
-      OR g.id = ANY(sqlc.arg(scope_group_ids)::text[])
+      NOT sqlc.arg(scope_restricted)
+      OR g.id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
   );
 
 -- name: ListDeviceGroupsForDevice :many
 SELECT g.id, g.name, g.description, g.created_at, g.created_by,
        g.is_dynamic, g.dynamic_query, g.sync_interval_minutes,
        g.inventory_interval_minutes, g.maintenance_window,
-       COUNT(live.id)::bigint AS live_member_count
+       COUNT(live.id) AS live_member_count
 FROM device_group_members requested
 JOIN device_groups g ON g.id = requested.group_id AND g.is_deleted = FALSE
 LEFT JOIN device_group_members members ON members.group_id = g.id
 LEFT JOIN devices live ON live.id = members.device_id AND live.is_deleted = FALSE
 WHERE requested.device_id = sqlc.arg(device_id)
   AND (
-      NOT sqlc.arg(scope_restricted)::boolean
-      OR g.id = ANY(sqlc.arg(scope_group_ids)::text[])
+      NOT sqlc.arg(scope_restricted)
+      OR g.id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
   )
 GROUP BY g.id
 ORDER BY g.id;
@@ -56,39 +56,42 @@ ORDER BY g.id;
 SELECT d.id AS device_id, d.hostname, d.agent_version, d.last_seen_at
 FROM device_group_members m
 JOIN devices d ON d.id = m.device_id AND d.is_deleted = FALSE
-WHERE m.group_id = $1
+WHERE m.group_id = ?
 ORDER BY d.id;
 
 -- name: ListDeviceGroupMemberIDs :many
 SELECT m.device_id
 FROM device_group_members m
-WHERE m.group_id = $1
+WHERE m.group_id = ?
 ORDER BY m.device_id;
 
 -- name: GetDynamicDeviceGroupQueryForUpdate :one
 SELECT is_dynamic, dynamic_query
 FROM device_groups
-WHERE id = $1 AND is_deleted = FALSE
-FOR UPDATE;
+WHERE id = ? AND is_deleted = FALSE;
 
 -- name: ListDevicesForDynamicEvaluation :many
 SELECT d.id, d.hostname,
-       convert_to(COALESCE((
-           SELECT jsonb_object_agg(dl.key, dl.value)
+       CAST(COALESCE((
+           SELECT json_group_object(dl.key, dl.value)
            FROM device_labels dl
            WHERE dl.device_id = d.id
-       ), '{}'::jsonb)::text, 'UTF8') AS labels_json,
-       convert_to(COALESCE((
-           SELECT jsonb_object_agg(di.table_name, di.rows)
+       ), '{}') AS BLOB) AS labels_json,
+       CAST(COALESCE((
+           SELECT json_group_object(di.table_name, json(di.rows))
            FROM device_inventory di
            WHERE di.device_id = d.id
-       ), '{}'::jsonb)::text, 'UTF8') AS inventory_json,
-       COALESCE((
-           SELECT array_agg(dg.name ORDER BY dg.name)
-           FROM device_group_members memberships
-           JOIN device_groups dg ON dg.id = memberships.group_id AND dg.is_deleted = FALSE
-           WHERE memberships.device_id = d.id
-       ), ARRAY[]::text[])::text[] AS group_names
+       ), '{}') AS BLOB) AS inventory_json,
+       CAST(COALESCE((
+           SELECT json_group_array(name)
+           FROM (
+               SELECT dg.name
+               FROM device_group_members memberships
+               JOIN device_groups dg ON dg.id = memberships.group_id AND dg.is_deleted = FALSE
+               WHERE memberships.device_id = d.id
+               ORDER BY dg.name
+           ) ordered_groups
+       ), '[]') AS BLOB) AS group_names_json
 FROM devices d
 WHERE d.is_deleted = FALSE
 ORDER BY d.id;
@@ -143,17 +146,21 @@ WHERE g.id = sqlc.arg(group_id) AND g.is_deleted = FALSE AND g.is_dynamic = FALS
 ON CONFLICT (group_id, device_id) DO NOTHING;
 
 -- name: RemoveDeviceGroupMember :execrows
-DELETE FROM device_group_members m
-USING device_groups g
-WHERE m.group_id = sqlc.arg(group_id)
-  AND m.device_id = sqlc.arg(device_id)
-  AND g.id = m.group_id AND g.is_deleted = FALSE AND g.is_dynamic = FALSE;
+DELETE FROM device_group_members
+WHERE group_id = sqlc.arg(group_id)
+  AND device_id = sqlc.arg(device_id)
+  AND EXISTS (
+      SELECT 1 FROM device_groups g
+      WHERE g.id = device_group_members.group_id
+        AND g.is_deleted = FALSE
+        AND g.is_dynamic = FALSE
+  );
 
 -- name: AddDynamicDeviceGroupMembers :many
 INSERT INTO device_group_members (group_id, device_id, added_at)
-SELECT sqlc.arg(group_id), wanted.device_id, sqlc.arg(added_at)
-FROM unnest(sqlc.arg(device_ids)::text[]) AS wanted(device_id)
-JOIN devices d ON d.id = wanted.device_id AND d.is_deleted = FALSE
+SELECT sqlc.arg(group_id), CAST(wanted.value AS TEXT), sqlc.arg(added_at)
+FROM json_each(sqlc.arg(device_ids_json)) AS wanted
+JOIN devices d ON d.id = CAST(wanted.value AS TEXT) AND d.is_deleted = FALSE
 WHERE EXISTS (
     SELECT 1 FROM device_groups g
     WHERE g.id = sqlc.arg(group_id) AND g.is_deleted = FALSE AND g.is_dynamic = TRUE
@@ -162,27 +169,33 @@ ON CONFLICT (group_id, device_id) DO NOTHING
 RETURNING device_id;
 
 -- name: RemoveDynamicDeviceGroupMembers :many
-DELETE FROM device_group_members m
-USING device_groups g
-WHERE m.group_id = sqlc.arg(group_id)
-  AND m.device_id = ANY(sqlc.arg(device_ids)::text[])
-  AND g.id = m.group_id AND g.is_deleted = FALSE AND g.is_dynamic = TRUE
-RETURNING m.device_id;
+DELETE FROM device_group_members
+WHERE group_id = sqlc.arg(group_id)
+  AND device_id IN (
+      SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(device_ids_json))
+  )
+  AND EXISTS (
+      SELECT 1 FROM device_groups g
+      WHERE g.id = device_group_members.group_id
+        AND g.is_deleted = FALSE
+        AND g.is_dynamic = TRUE
+  )
+RETURNING device_id;
 
 -- name: DeleteDeviceGroupMembers :execrows
-DELETE FROM device_group_members WHERE group_id = $1;
+DELETE FROM device_group_members WHERE group_id = ?;
 
 -- name: DeleteDeviceGroupAssignments :execrows
 UPDATE assignments SET is_deleted = TRUE
-WHERE target_type = 'device_group' AND target_id = $1 AND is_deleted = FALSE;
+WHERE target_type = 'device_group' AND target_id = ? AND is_deleted = FALSE;
 
 -- name: DeleteDeviceGroupUserRoleScopes :execrows
-DELETE FROM user_roles WHERE scope_kind = 'device_group' AND scope_id = $1;
+DELETE FROM user_roles WHERE scope_kind = 'device_group' AND scope_id = ?;
 
 -- name: DeleteDeviceGroupUserGroupRoleScopes :execrows
-DELETE FROM user_group_roles WHERE scope_kind = 'device_group' AND scope_id = $1;
+DELETE FROM user_group_roles WHERE scope_kind = 'device_group' AND scope_id = ?;
 
 -- name: SoftDeleteDeviceGroup :one
 UPDATE device_groups SET is_deleted = TRUE
-WHERE id = $1 AND is_deleted = FALSE
+WHERE id = ? AND is_deleted = FALSE
 RETURNING *;

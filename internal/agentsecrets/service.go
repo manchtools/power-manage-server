@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 
 	sdkcrypto "github.com/manchtools/power-manage-sdk/crypto"
@@ -79,7 +78,7 @@ func (s *Service) ValidateLuksToken(ctx context.Context, deviceID string, reques
 			token, err = tx.ConsumeLuksToken(ctx, db.ConsumeLuksTokenParams{
 				Token: hex.EncodeToString(hash[:]), DeviceID: deviceID, Now: now,
 			})
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return store.ErrNotFound
 			}
 			if err != nil {

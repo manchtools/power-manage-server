@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
 	"github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/store/sqlitetype"
 )
 
 // Reads are exported one at a time rather than by handing out the
@@ -24,10 +23,10 @@ type AuditEffectRow = generated.AuditEffect
 
 // AuditEventRow is one safe read-side projection of the append-only audit
 // evidence. Its query deliberately cannot select either sealed-detail column.
-type AuditEventRow = generated.ListAuditEventRowsRow
+type AuditEventRow = generated.AuditEventRow
 
 // AuditEventFilter is the common keyset/filter surface used by list and
-// export. Empty bounds cover the full supported PostgreSQL timestamp range.
+// export. Empty bounds cover the full supported SQLite timestamp range.
 type AuditEventFilter struct {
 	ActorID      string
 	StreamTypes  []string
@@ -166,8 +165,8 @@ func (s *Store) ListDeviceGroups(ctx context.Context, filter DeviceGroupListFilt
 		filter.Limit = 50
 	}
 	rows, err := s.queries.ListDeviceGroups(ctx, generated.ListDeviceGroupsParams{
-		AfterID: filter.AfterID, RowLimit: filter.Limit,
-		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		AfterID: filter.AfterID, RowLimit: int64(filter.Limit),
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("device group: list: %w", err)
@@ -182,7 +181,7 @@ func (s *Store) ListDeviceGroups(ctx context.Context, filter DeviceGroupListFilt
 // CountDeviceGroups counts the same scope selected by ListDeviceGroups.
 func (s *Store) CountDeviceGroups(ctx context.Context, filter DeviceGroupListFilter) (int64, error) {
 	n, err := s.queries.CountDeviceGroups(ctx, generated.CountDeviceGroupsParams{
-		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("device group: count: %w", err)
@@ -194,7 +193,7 @@ func (s *Store) CountDeviceGroups(ctx context.Context, filter DeviceGroupListFil
 // device.
 func (s *Store) ListDeviceGroupsForDevice(ctx context.Context, deviceID string, filter DeviceGroupListFilter) ([]DeviceGroupView, error) {
 	rows, err := s.queries.ListDeviceGroupsForDevice(ctx, generated.ListDeviceGroupsForDeviceParams{
-		DeviceID: deviceID, ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		DeviceID: deviceID, ScopeRestricted: filter.ScopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("device group: list for device: %w", err)
@@ -461,13 +460,13 @@ func (s *Store) ListAuditEventRows(ctx context.Context, filter AuditEventFilter)
 		filter.StreamTypes = []string{}
 	}
 	rows, err := s.queries.ListAuditEventRows(ctx, generated.ListAuditEventRowsParams{
-		ActorID:      filter.ActorID,
-		StreamTypes:  filter.StreamTypes,
-		EventType:    filter.EventType,
-		OccurredFrom: pgtype.Timestamptz{Time: filter.OccurredFrom, Valid: true},
-		OccurredTo:   pgtype.Timestamptz{Time: filter.OccurredTo, Valid: true},
-		BeforeSeq:    filter.BeforeSeq,
-		RowLimit:     filter.Limit,
+		ActorID:         filter.ActorID,
+		StreamTypesJson: sqlitetype.StringList(filter.StreamTypes),
+		EventType:       filter.EventType,
+		FilterFromTime:  filter.OccurredFrom,
+		FilterToTime:    filter.OccurredTo,
+		BeforeSeq:       filter.BeforeSeq,
+		RowLimit:        int64(filter.Limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("audit: list event rows: %w", err)
@@ -482,7 +481,7 @@ func (s *Store) CountAuditEventRows(ctx context.Context, filter AuditEventFilter
 		filter.StreamTypes = []string{}
 	}
 	n, err := s.queries.CountAuditEventRows(ctx, generated.CountAuditEventRowsParams{
-		ActorID: filter.ActorID, StreamTypes: filter.StreamTypes, EventType: filter.EventType,
+		ActorID: filter.ActorID, StreamTypesJson: sqlitetype.StringList(filter.StreamTypes), EventType: filter.EventType,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("audit: count event rows: %w", err)
@@ -545,7 +544,7 @@ func (s *Store) ListAuthoringActions(ctx context.Context, filter ActionListFilte
 	rows, err := s.queries.ListAuthoringActions(ctx, generated.ListAuthoringActionsParams{
 		AfterID: filter.AfterID, TypeFilter: filter.Type,
 		UnassignedOnly: filter.UnassignedOnly, ScopeRestricted: filter.ScopeRestricted,
-		RowLimit: filter.Limit, ScopeGroupIds: filter.ScopeGroupIDs,
+		RowLimit: int64(filter.Limit), ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("action: list: %w", err)
@@ -558,7 +557,7 @@ func (s *Store) ListAuthoringActions(ctx context.Context, filter ActionListFilte
 func (s *Store) CountAuthoringActions(ctx context.Context, filter ActionListFilter) (int64, error) {
 	n, err := s.queries.CountAuthoringActions(ctx, generated.CountAuthoringActionsParams{
 		TypeFilter: filter.Type, UnassignedOnly: filter.UnassignedOnly,
-		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("action: count: %w", err)
@@ -587,7 +586,7 @@ func (s *Store) GetAssignment(ctx context.Context, id string) (AssignmentView, e
 	}
 	return AssignmentView{
 		ID: row.ID, SourceType: row.SourceType, SourceID: row.SourceID,
-		TargetType: row.TargetType, TargetID: row.TargetID, Mode: row.Mode,
+		TargetType: row.TargetType, TargetID: row.TargetID, Mode: int32(row.Mode),
 		CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
 		SourceName: row.ResolvedSourceName, TargetName: row.ResolvedTargetName,
 	}, nil
@@ -603,7 +602,7 @@ func (s *Store) FindAssignment(ctx context.Context, sourceType, sourceID, target
 	}
 	return AssignmentView{
 		ID: row.ID, SourceType: row.SourceType, SourceID: row.SourceID,
-		TargetType: row.TargetType, TargetID: row.TargetID, Mode: row.Mode,
+		TargetType: row.TargetType, TargetID: row.TargetID, Mode: int32(row.Mode),
 		CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
 		SourceName: row.SourceName, TargetName: row.TargetName,
 	}, nil
@@ -619,7 +618,7 @@ func (s *Store) ListAssignments(ctx context.Context, filter AssignmentListFilter
 	}
 	rows, err := s.queries.ListAssignmentViews(ctx, generated.ListAssignmentViewsParams{
 		AfterID: filter.AfterID, SourceType: filter.SourceType, SourceID: filter.SourceID,
-		TargetType: filter.TargetType, TargetID: filter.TargetID, RowLimit: filter.Limit,
+		TargetType: filter.TargetType, TargetID: filter.TargetID, RowLimit: int64(filter.Limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("assignment: list: %w", err)
@@ -628,7 +627,7 @@ func (s *Store) ListAssignments(ctx context.Context, filter AssignmentListFilter
 	for i, row := range rows {
 		views[i] = AssignmentView{
 			ID: row.ID, SourceType: row.SourceType, SourceID: row.SourceID,
-			TargetType: row.TargetType, TargetID: row.TargetID, Mode: row.Mode,
+			TargetType: row.TargetType, TargetID: row.TargetID, Mode: int32(row.Mode),
 			CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
 			SourceName: row.ResolvedSourceName, TargetName: row.ResolvedTargetName,
 		}
@@ -659,7 +658,7 @@ func (s *Store) ListAssignmentsForUser(ctx context.Context, userID string) ([]As
 	for i, row := range rows {
 		views[i] = AssignmentView{
 			ID: row.ID, SourceType: row.SourceType, SourceID: row.SourceID,
-			TargetType: row.TargetType, TargetID: row.TargetID, Mode: row.Mode,
+			TargetType: row.TargetType, TargetID: row.TargetID, Mode: int32(row.Mode),
 			CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
 			SourceName: row.ResolvedSourceName, TargetName: row.ResolvedTargetName,
 		}
@@ -741,8 +740,8 @@ func (s *Store) CountActionSets(ctx context.Context) (int64, error) {
 func (s *Store) ListAuthoringActionSets(ctx context.Context, filter ActionSetListFilter) ([]ActionSetView, error) {
 	rows, err := s.queries.ListAuthoringActionSets(ctx, generated.ListAuthoringActionSetsParams{
 		AfterID: filter.AfterID, UnassignedOnly: filter.UnassignedOnly,
-		ScopeRestricted: filter.ScopeRestricted, RowLimit: filter.Limit,
-		ScopeGroupIds: filter.ScopeGroupIDs,
+		ScopeRestricted: filter.ScopeRestricted, RowLimit: int64(filter.Limit),
+		ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("action set: list: %w", err)
@@ -753,7 +752,7 @@ func (s *Store) ListAuthoringActionSets(ctx context.Context, filter ActionSetLis
 			ID: row.ID, Name: row.Name, Description: row.Description,
 			Schedule: row.Schedule, OnFailure: row.OnFailure,
 			CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy, UpdatedAt: row.UpdatedAt,
-			IsDeleted: row.IsDeleted, SearchTsv: row.SearchTsv,
+			IsDeleted: row.IsDeleted,
 		}, MemberCount: row.MemberCount}
 	}
 	return views, nil
@@ -764,7 +763,7 @@ func (s *Store) ListAuthoringActionSets(ctx context.Context, filter ActionSetLis
 func (s *Store) CountAuthoringActionSets(ctx context.Context, filter ActionSetListFilter) (int64, error) {
 	n, err := s.queries.CountAuthoringActionSets(ctx, generated.CountAuthoringActionSetsParams{
 		UnassignedOnly: filter.UnassignedOnly, ScopeRestricted: filter.ScopeRestricted,
-		ScopeGroupIds: filter.ScopeGroupIDs,
+		ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("action set: count: %w", err)
@@ -791,7 +790,7 @@ func (s *Store) CountDefinitions(ctx context.Context) (int64, error) {
 func (s *Store) ListAuthoringDefinitions(ctx context.Context, filter DefinitionListFilter) ([]DefinitionView, error) {
 	rows, err := s.queries.ListAuthoringDefinitions(ctx, generated.ListAuthoringDefinitionsParams{
 		AfterID: filter.AfterID, ScopeRestricted: filter.ScopeRestricted,
-		ScopeGroupIds: filter.ScopeGroupIDs, RowLimit: filter.Limit,
+		ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs), RowLimit: int64(filter.Limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("definition: list: %w", err)
@@ -801,7 +800,7 @@ func (s *Store) ListAuthoringDefinitions(ctx context.Context, filter DefinitionL
 		views[i] = DefinitionView{DefinitionRow: DefinitionRow{
 			ID: row.ID, Name: row.Name, Description: row.Description,
 			Schedule: row.Schedule, CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
-			UpdatedAt: row.UpdatedAt, IsDeleted: row.IsDeleted, SearchTsv: row.SearchTsv,
+			UpdatedAt: row.UpdatedAt, IsDeleted: row.IsDeleted,
 		}, LiveMemberCount: row.MemberCount}
 	}
 	return views, nil
@@ -811,7 +810,7 @@ func (s *Store) ListAuthoringDefinitions(ctx context.Context, filter DefinitionL
 // the list filter, ignoring its keyset and limit.
 func (s *Store) CountAuthoringDefinitions(ctx context.Context, filter DefinitionListFilter) (int64, error) {
 	n, err := s.queries.CountAuthoringDefinitions(ctx, generated.CountAuthoringDefinitionsParams{
-		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("definition: count: %w", err)
@@ -842,7 +841,7 @@ func (s *Store) GetAuthoringCompliancePolicy(ctx context.Context, id string) (Co
 func (s *Store) ListAuthoringCompliancePolicies(ctx context.Context, filter CompliancePolicyListFilter) ([]CompliancePolicyView, error) {
 	rows, err := s.queries.ListAuthoringCompliancePolicies(ctx, generated.ListAuthoringCompliancePoliciesParams{
 		AfterID: filter.AfterID, ScopeRestricted: filter.ScopeRestricted,
-		ScopeGroupIds: filter.ScopeGroupIDs, RowLimit: filter.Limit,
+		ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs), RowLimit: int64(filter.Limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compliance policy: list: %w", err)
@@ -852,7 +851,7 @@ func (s *Store) ListAuthoringCompliancePolicies(ctx context.Context, filter Comp
 		views[i] = CompliancePolicyView{CompliancePolicyRow: CompliancePolicyRow{
 			ID: row.ID, Name: row.Name, Description: row.Description,
 			CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
-			IsDeleted: row.IsDeleted, SearchTsv: row.SearchTsv,
+			IsDeleted: row.IsDeleted,
 		}, LiveRuleCount: row.RuleCount}
 	}
 	return views, nil
@@ -862,7 +861,7 @@ func (s *Store) ListAuthoringCompliancePolicies(ctx context.Context, filter Comp
 // policy list filter.
 func (s *Store) CountAuthoringCompliancePolicies(ctx context.Context, filter CompliancePolicyListFilter) (int64, error) {
 	n, err := s.queries.CountAuthoringCompliancePolicies(ctx, generated.CountAuthoringCompliancePoliciesParams{
-		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("compliance policy: count: %w", err)
@@ -893,7 +892,7 @@ func (s *Store) GetDelivery(ctx context.Context, id string) (DeliveryRow, error)
 // currently connected devices, oldest first.
 func (s *Store) ListDueDeliveries(ctx context.Context, deviceIDs []string, at time.Time, limit int32) ([]DeliveryRow, error) {
 	rows, err := s.queries.ListDueDeliveriesForDevices(ctx, generated.ListDueDeliveriesForDevicesParams{
-		DeviceIds: deviceIDs, AvailableAt: at, PageSize: limit,
+		DeviceIds: deviceIDs, AvailableAt: at, PageSize: int64(limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("delivery: list due for connected devices: %w", err)
@@ -905,7 +904,7 @@ func (s *Store) ListDueDeliveries(ctx context.Context, deviceIDs []string, at ti
 // reached durable agent receipt, oldest first.
 func (s *Store) ListDeviceDeliveries(ctx context.Context, deviceID string, limit int32) ([]DeliveryRow, error) {
 	rows, err := s.queries.ListSendableDeliveriesForDevice(ctx, generated.ListSendableDeliveriesForDeviceParams{
-		DeviceID: deviceID, Limit: limit,
+		DeviceID: deviceID, Limit: int64(limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("delivery: list sendable for device: %w", err)
@@ -920,7 +919,11 @@ func (s *Store) ListDeviceMaintenanceWindows(ctx context.Context, deviceID strin
 	if err != nil {
 		return nil, fmt.Errorf("device: list maintenance windows: %w", err)
 	}
-	return rows, nil
+	windows := make([][]byte, len(rows))
+	for i := range rows {
+		windows[i] = rows[i]
+	}
+	return windows, nil
 }
 
 // GetCurrentLuksKeyForAgent returns the current device-scoped key for one
@@ -956,7 +959,7 @@ func (s *Store) GetLiveJobByDedupe(ctx context.Context, key string) (JobRow, err
 
 // ListClaimableJobs returns due pending jobs and expired leases, oldest first.
 func (s *Store) ListClaimableJobs(ctx context.Context, at time.Time, limit int32) ([]JobRow, error) {
-	rows, err := s.queries.ListClaimableJobs(ctx, generated.ListClaimableJobsParams{DueAt: at, Limit: limit})
+	rows, err := s.queries.ListClaimableJobs(ctx, generated.ListClaimableJobsParams{Now: at, PageSize: int64(limit)})
 	if err != nil {
 		return nil, fmt.Errorf("job: list claimable: %w", err)
 	}
@@ -1027,7 +1030,7 @@ func (s *Store) ListManifestDefinitionActions(ctx context.Context, id string) ([
 				TimeoutSeconds: row.TimeoutSeconds, Schedule: row.Schedule,
 				IsSystem: row.IsSystem, CreatedAt: row.CreatedAt,
 				CreatedBy: row.CreatedBy, UpdatedAt: row.UpdatedAt,
-				IsDeleted: row.IsDeleted, SearchTsv: row.SearchTsv,
+				IsDeleted: row.IsDeleted,
 			},
 		})
 	}
@@ -1122,9 +1125,9 @@ func (s *Store) ListDeviceViews(ctx context.Context, filter DeviceListFilter) ([
 	}
 	rows, err := s.queries.ListDevices(ctx, generated.ListDevicesParams{
 		AfterID: f.afterID, AssignedUserID: f.assignedUserID,
-		ScopeRestricted: f.scopeRestricted, ScopeGroupIds: f.scopeGroupIDs,
+		ScopeRestricted: f.scopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(f.scopeGroupIDs),
 		LabelFilter: f.labels, StatusFilter: f.status,
-		OnlineSince: &f.onlineSince, RowLimit: f.limit,
+		OnlineSince: &f.onlineSince, RowLimit: int64(f.limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("device: list: %w", err)
@@ -1172,10 +1175,7 @@ func (s *Store) ListDeviceViews(ctx context.Context, filter DeviceListFilter) ([
 }
 
 func (s *Store) addDeviceFreshness(ctx context.Context, ids []string, views []DeviceView) error {
-	rows, err := s.queries.ListDeviceInventoryFreshness(ctx, generated.ListDeviceInventoryFreshnessParams{
-		DefaultIntervalMinutes: DefaultInventoryIntervalMinutes,
-		DeviceIds:              ids,
-	})
+	latest, err := s.queries.ListLatestInventoryTimesForDevices(ctx, ids)
 	if err != nil {
 		return fmt.Errorf("device: list inventory freshness: %w", err)
 	}
@@ -1183,16 +1183,33 @@ func (s *Store) addDeviceFreshness(ctx context.Context, ids []string, views []De
 	for i := range views {
 		byID[views[i].ID] = i
 	}
-	for _, row := range rows {
+	for _, row := range latest {
 		i, ok := byID[row.DeviceID]
 		if !ok {
 			continue
 		}
-		if row.LastInventoryAt.Valid {
-			collectedAt := row.LastInventoryAt.Time
-			views[i].LastInventoryAt = &collectedAt
+		collectedAt := row.CollectedAt
+		views[i].LastInventoryAt = &collectedAt
+	}
+	for i := range views {
+		views[i].ResolvedInventoryIntervalMinutes = DefaultInventoryIntervalMinutes
+		if views[i].InventoryIntervalMinutes != 0 {
+			views[i].ResolvedInventoryIntervalMinutes = int32(views[i].InventoryIntervalMinutes)
 		}
-		views[i].ResolvedInventoryIntervalMinutes = row.ResolvedIntervalMinutes
+	}
+	intervals, err := s.queries.ListGroupInventoryIntervalsForDevices(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("device: list group inventory intervals: %w", err)
+	}
+	for _, row := range intervals {
+		i, ok := byID[row.DeviceID]
+		if !ok || row.InventoryIntervalMinutes == 0 || views[i].InventoryIntervalMinutes != 0 {
+			continue
+		}
+		interval := int32(row.InventoryIntervalMinutes)
+		if interval < views[i].ResolvedInventoryIntervalMinutes {
+			views[i].ResolvedInventoryIntervalMinutes = interval
+		}
 	}
 	return nil
 }
@@ -1206,7 +1223,7 @@ func (s *Store) CountDeviceViews(ctx context.Context, filter DeviceListFilter) (
 	}
 	n, err := s.queries.CountDeviceViews(ctx, generated.CountDeviceViewsParams{
 		AssignedUserID: f.assignedUserID, ScopeRestricted: f.scopeRestricted,
-		ScopeGroupIds: f.scopeGroupIDs, LabelFilter: f.labels,
+		ScopeGroupIdsJson: sqlitetype.StringList(f.scopeGroupIDs), LabelFilter: f.labels,
 		StatusFilter: f.status, OnlineSince: &f.onlineSince,
 	})
 	if err != nil {
@@ -1273,7 +1290,7 @@ func (s *Store) ListDeviceAssignees(ctx context.Context, deviceID string) ([]Dev
 // order. An empty name list selects every table for the device.
 func (s *Store) ListDeviceInventory(ctx context.Context, deviceID string, tableNames []string) ([]DeviceInventoryTable, error) {
 	rows, err := s.queries.ListDeviceInventory(ctx, generated.ListDeviceInventoryParams{
-		DeviceID: deviceID, TableNames: tableNames,
+		DeviceID: deviceID, AllTableNames: len(tableNames) == 0, TableNames: tableNames,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("device: list inventory: %w", err)
@@ -1338,8 +1355,8 @@ func (s *Store) ListExecutions(ctx context.Context, filter ExecutionListFilter) 
 	rows, err := s.queries.ListExecutionViews(ctx, generated.ListExecutionViewsParams{
 		AfterID: filter.AfterID, DeviceID: filter.DeviceID,
 		Status: filter.Status, ActionType: filter.ActionType, Search: filter.Search,
-		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
-		AssignedUserID: filter.AssignedUserID, RowLimit: filter.Limit,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
+		AssignedUserID: filter.AssignedUserID, RowLimit: int64(filter.Limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("execution: list: %w", err)
@@ -1356,7 +1373,7 @@ func (s *Store) CountExecutions(ctx context.Context, filter ExecutionListFilter)
 	n, err := s.queries.CountExecutionViews(ctx, generated.CountExecutionViewsParams{
 		DeviceID: filter.DeviceID, Status: filter.Status,
 		ActionType: filter.ActionType, Search: filter.Search,
-		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 		AssignedUserID: filter.AssignedUserID,
 	})
 	if err != nil {
@@ -1368,7 +1385,7 @@ func (s *Store) CountExecutions(ctx context.Context, filter ExecutionListFilter)
 func executionView(row generated.GetExecutionViewRow) ExecutionView {
 	return ExecutionView{
 		ID: row.ID, DeliveryID: row.DeliveryID, DeviceID: row.DeviceID, ActionID: row.ActionID,
-		ActionType: row.ActionType, DesiredState: row.DesiredState,
+		ActionType: int32(row.ActionType), DesiredState: int32(row.DesiredState),
 		Status: row.Status, Error: row.Error, Output: row.Output,
 		DetectionOutput: row.DetectionOutput, Changed: row.Changed,
 		Compliant: row.Compliant, CreatedAt: row.CreatedAt,

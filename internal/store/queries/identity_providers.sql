@@ -12,26 +12,26 @@ INSERT INTO identity_providers (
     created_at, created_by, updated_at
 )
 VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7,
-    $8, $9, $10, $11,
-    $12, $13, $14, $15,
-    $16, $17, $18,
-    $19, $20, $19
+    ?, ?, ?, ?, ?,
+    ?, ?,
+    ?, ?, ?, ?,
+    ?, ?, ?, ?,
+    ?, ?, ?,
+    ?, ?, ?
 )
 RETURNING *;
 
 -- name: GetIdentityProvider :one
-SELECT * FROM identity_providers WHERE id = $1 AND is_deleted = FALSE;
+SELECT * FROM identity_providers WHERE id = ? AND is_deleted = FALSE;
 
 -- name: GetIdentityProviderBySlug :one
-SELECT * FROM identity_providers WHERE slug = $1 AND is_deleted = FALSE;
+SELECT * FROM identity_providers WHERE slug = ? AND is_deleted = FALSE;
 
 -- name: ListIdentityProviders :many
 SELECT * FROM identity_providers
-WHERE is_deleted = FALSE AND id > $1
+WHERE is_deleted = FALSE AND id > ?
 ORDER BY id
-LIMIT $2;
+LIMIT ?;
 
 -- name: ListEnabledIdentityProviders :many
 SELECT * FROM identity_providers
@@ -43,36 +43,36 @@ SELECT COUNT(*) FROM identity_providers WHERE is_deleted = FALSE;
 
 -- name: UpdateIdentityProvider :one
 UPDATE identity_providers
-SET name = $2,
-    enabled = $3,
-    client_id = $4,
-    client_secret_encrypted = $5,
-    issuer_url = $6,
-    authorization_url = $7,
-    token_url = $8,
-    userinfo_url = $9,
-    scopes = $10,
-    auto_create_users = $11,
-    auto_link_by_email = $12,
-    trust_email_assertions = $13,
-    default_role_id = $14,
-    group_claim = $15,
-    group_mapping = $16,
-    updated_at = $17
-WHERE id = $1 AND is_deleted = FALSE
+SET name = ?,
+    enabled = ?,
+    client_id = ?,
+    client_secret_encrypted = ?,
+    issuer_url = ?,
+    authorization_url = ?,
+    token_url = ?,
+    userinfo_url = ?,
+    scopes = ?,
+    auto_create_users = ?,
+    auto_link_by_email = ?,
+    trust_email_assertions = ?,
+    default_role_id = ?,
+    group_claim = ?,
+    group_mapping = ?,
+    updated_at = ?
+WHERE id = ? AND is_deleted = FALSE
 RETURNING *;
 
 -- name: SoftDeleteIdentityProvider :execrows
 -- Soft delete, not erasure: identity_links point at this row and must
 -- stay resolvable as evidence of who was once linked where.
-UPDATE identity_providers SET is_deleted = TRUE, updated_at = $2
-WHERE id = $1 AND is_deleted = FALSE;
+UPDATE identity_providers SET is_deleted = TRUE, updated_at = ?
+WHERE id = ? AND is_deleted = FALSE;
 
 -- name: SetIdentityProviderSCIM :one
 -- Enable, disable and rotate all land here: enabling writes a fresh
 -- token hash, disabling writes FALSE and an empty hash, so a disabled
 -- provider cannot be reached with a token issued before.
 UPDATE identity_providers
-SET scim_enabled = $2, scim_token_hash = $3, updated_at = $4
-WHERE id = $1 AND is_deleted = FALSE
+SET scim_enabled = ?, scim_token_hash = ?, updated_at = ?
+WHERE id = ? AND is_deleted = FALSE
 RETURNING *;

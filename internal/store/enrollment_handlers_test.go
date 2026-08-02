@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -33,7 +33,7 @@ import (
 type enrollmentFixture struct {
 	t        *testing.T
 	store    *store.Store
-	raw      *pgxpool.Pool
+	raw      *testdb.DB
 	handlers *enrollment.Handlers
 	ca       *ca.CA
 	now      time.Time
@@ -45,7 +45,7 @@ type enrollmentFixture struct {
 
 func newEnrollmentFixture(t *testing.T) *enrollmentFixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	certPEM, keyPEM := enrollmentTestCA(t, now)
 	certAuth, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour, ca.WithClock(func() time.Time { return now }))

@@ -1,7 +1,7 @@
 package identity_test
 
 // The request-boundary fixture: real handlers, real interceptor chain,
-// real Connect transport, real PostgreSQL.
+// real Connect transport, real SQLite.
 //
 // Nothing here stubs the store, the authorizer or the token manager. A
 // test that wants an unauthorized caller mints a real token for a real
@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/require"
 
@@ -45,7 +45,7 @@ const testBaseURL = "https://control.test.example"
 type fixture struct {
 	t        *testing.T
 	store    *store.Store
-	raw      *pgxpool.Pool
+	raw      *testdb.DB
 	handlers *identity.Handlers
 	boot     *identity.Bootstrapper
 	jwt      *auth.JWTManager
@@ -67,10 +67,10 @@ type fixture struct {
 // newFixture builds the whole identity surface over a fresh database.
 func newFixture(t *testing.T, opts ...fixtureOption) *fixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 
 	// The fixture clock is the real one, captured once. The handlers,
-	// the token manager and PostgreSQL's own now() all have to agree
+	// the token manager and SQLite timestamps all have to agree
 	// about freshness — a frozen clock in one of them and a live clock
 	// in another is skew, and skew is exactly what expiry checks are
 	// sensitive to. Determinism comes from capturing it, not freezing
@@ -96,6 +96,12 @@ func newFixture(t *testing.T, opts ...fixtureOption) *fixture {
 	require.NoError(t, err)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// Production reconciles these snapshots before serving. Seed the fixture at
+	// that post-boot boundary without adding unrelated audit rows to each test.
+	_, err = raw.Exec(t.Context(), `UPDATE roles SET permissions = $1 WHERE id = $2`, auth.AdminPermissions(), auth.AdminRoleID)
+	require.NoError(t, err)
+	_, err = raw.Exec(t.Context(), `UPDATE roles SET permissions = $1 WHERE id = $2`, auth.DefaultUserPermissions(), auth.UserRoleID)
+	require.NoError(t, err)
 	handlers := identity.New(identity.Config{
 		Store:         st,
 		Logger:        logger,

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -17,7 +17,7 @@ import (
 
 type jobFixture struct {
 	store   *store.Store
-	raw     *pgxpool.Pool
+	raw     *testdb.DB
 	now     time.Time
 	jobID   string
 	worker1 string
@@ -27,7 +27,7 @@ type jobFixture struct {
 
 func newJobFixture(t *testing.T) *jobFixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	now := time.Date(2026, 8, 1, 13, 0, 0, 0, time.UTC)
 	op := mutationOp()
 	op.OperationID = newID()
@@ -142,11 +142,7 @@ func TestJob_LeaseRetryAndCompletionRejectStaleWorkers(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, changed, "terminal replay must be absorbed")
 
-	var actions []string
-	require.NoError(t, f.raw.QueryRow(ctx, `
-		SELECT array_agg(action ORDER BY chain_seq)
-		FROM audit_effects WHERE resource_type = 'job' AND resource_id = $1
-	`, f.jobID).Scan(&actions))
+	actions := auditActions(t, f.raw, "job", f.jobID)
 	assert.Equal(t, []string{"CREATE", "CLAIM", "RELEASE", "CLAIM", "COMPLETE"}, actions)
 }
 
@@ -206,8 +202,7 @@ func TestJob_CompletionAuditFailureRollsBackState(t *testing.T) {
 	_, changed, err := f.service.Claim(ctx, f.jobID, f.worker1)
 	require.NoError(t, err)
 	require.True(t, changed)
-	_, err = f.raw.Exec(ctx, `ALTER TABLE audit_effects ADD CONSTRAINT reject_job_complete CHECK (action <> 'COMPLETE')`)
-	require.NoError(t, err)
+	rejectAuditEffect(t, f.raw, "COMPLETE")
 
 	changed, err = f.service.Finish(ctx, f.jobID, f.worker1, jobs.StateSucceeded, "OK")
 	require.Error(t, err)

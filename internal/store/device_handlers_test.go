@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,7 +35,7 @@ import (
 type deviceHandlerFixture struct {
 	t          *testing.T
 	store      *store.Store
-	raw        *pgxpool.Pool
+	raw        *testdb.DB
 	handlers   *device.Handlers
 	now        time.Time
 	actorID    string
@@ -65,7 +65,7 @@ func (s *fakeAgentSender) Send(_ string, message *pmv1.ServerMessage) error {
 
 func newDeviceHandlerFixture(t *testing.T) *deviceHandlerFixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	encryptor, err := pmcrypto.NewEncryptor(strings.Repeat("01", 32))
 	require.NoError(t, err)
@@ -787,10 +787,7 @@ func TestDeviceHandlers_CancelExecutionIsDirectAndIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, effects, "an idempotent no-op has no fabricated state-change effect")
 
-	_, err = f.raw.Exec(context.Background(), `
-		ALTER TABLE audit_operations ADD CONSTRAINT reject_cancel_evidence
-		CHECK (request_descriptor <> '/powermanage.v1.ControlService/CancelExecution') NOT VALID`)
-	require.NoError(t, err)
+	rejectAuditOperation(t, f.raw, "/powermanage.v1.ControlService/CancelExecution")
 	_, err = f.handlers.CancelExecution(ctx,
 		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: rollbackID}))
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
@@ -898,10 +895,7 @@ func TestDeviceHandlers_SecretListsAreMetadataAndRevealsAreIndividuallyAudited(t
 		connect.NewRequest(&pmv1.RevealLpsPasswordRequest{Id: lpsIDs[0]}))
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "plaintext storage must not get a compatibility path")
 
-	_, err = f.raw.Exec(context.Background(), `
-		ALTER TABLE audit_operations ADD CONSTRAINT reject_luks_reveal_audit
-		CHECK (request_descriptor <> '/powermanage.v1.ControlService/RevealLuksKey') NOT VALID`)
-	require.NoError(t, err)
+	rejectAuditOperation(t, f.raw, "/powermanage.v1.ControlService/RevealLuksKey")
 	blocked, err := f.handlers.RevealLuksKey(f.actor("RevealLuksKey"),
 		connect.NewRequest(&pmv1.RevealLuksKeyRequest{Id: luksIDs[1]}))
 	assert.Nil(t, blocked)
@@ -957,6 +951,8 @@ func TestDeviceHandlers_CreateLuksTokenIsOwnerOnlyHashedAndAudited(t *testing.T)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"group-derived visibility is not direct device ownership")
 
+	_, err = f.raw.Exec(context.Background(), `PRAGMA ignore_check_constraints = ON`)
+	require.NoError(t, err)
 	_, err = f.raw.Exec(context.Background(), `UPDATE actions SET params = '"corrupt"' WHERE id = $1`, actionID)
 	require.NoError(t, err)
 	_, err = f.handlers.CreateLuksToken(ctx, connect.NewRequest(&pmv1.CreateLuksTokenRequest{
@@ -965,11 +961,10 @@ func TestDeviceHandlers_CreateLuksTokenIsOwnerOnlyHashedAndAudited(t *testing.T)
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "corrupt policy must not fall back")
 	_, err = f.raw.Exec(context.Background(), `UPDATE actions SET params = '{}' WHERE id = $1`, actionID)
 	require.NoError(t, err)
-
-	_, err = f.raw.Exec(context.Background(), `
-		ALTER TABLE audit_operations ADD CONSTRAINT reject_luks_token_audit
-		CHECK (request_descriptor <> '/powermanage.v1.ControlService/CreateLuksToken') NOT VALID`)
+	_, err = f.raw.Exec(context.Background(), `PRAGMA ignore_check_constraints = OFF`)
 	require.NoError(t, err)
+
+	rejectAuditOperation(t, f.raw, "/powermanage.v1.ControlService/CreateLuksToken")
 	_, err = f.handlers.CreateLuksToken(ctx, connect.NewRequest(&pmv1.CreateLuksTokenRequest{
 		DeviceId: f.directID, ActionId: actionID,
 	}))
@@ -1087,12 +1082,9 @@ func TestDeviceHandlers_RevokeLuksDeviceKeyAuditFailurePreventsSend(t *testing.T
 	f := newDeviceHandlerFixture(t)
 	actionID := newID()
 	seedCurrentLuksKeys(t, f, actionID, 1)
-	_, err := f.raw.Exec(context.Background(), `
-		ALTER TABLE audit_operations ADD CONSTRAINT reject_luks_revoke_audit
-		CHECK (request_descriptor <> '/powermanage.v1.ControlService/RevokeLuksDeviceKey') NOT VALID`)
-	require.NoError(t, err)
+	rejectAuditOperation(t, f.raw, "/powermanage.v1.ControlService/RevokeLuksDeviceKey")
 
-	_, err = f.handlers.RevokeLuksDeviceKey(f.actor("RevokeLuksDeviceKey"),
+	_, err := f.handlers.RevokeLuksDeviceKey(f.actor("RevokeLuksDeviceKey"),
 		connect.NewRequest(&pmv1.RevokeLuksDeviceKeyRequest{DeviceId: f.directID, ActionId: actionID}))
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 	assert.Empty(t, f.sender.messages, "the irreversible command must not leave before its audit commits")
@@ -1123,7 +1115,7 @@ func seedCurrentLuksKeys(t *testing.T, f *deviceHandlerFixture, actionID string,
 	}
 }
 
-func TestDeviceHandlers_InstantQueriesUseDirectStreamAndPostgresResults(t *testing.T) {
+func TestDeviceHandlers_InstantQueriesUseDirectStreamAndSQLiteResults(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	ctx := f.actor("DispatchOSQuery", "QueryDeviceLogs", "RefreshDeviceInventory")
 
@@ -1299,11 +1291,8 @@ func TestDeviceHandlers_AgentQueryResultsAndInventoryCommitDirectly(t *testing.T
 
 func TestDeviceHandlers_OSQueryAuditFailurePreventsSendAndPendingRow(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
-	_, err := f.raw.Exec(context.Background(), `
-		ALTER TABLE audit_operations ADD CONSTRAINT reject_osquery_audit
-		CHECK (request_descriptor <> '/powermanage.v1.ControlService/DispatchOSQuery') NOT VALID`)
-	require.NoError(t, err)
-	_, err = f.handlers.DispatchOSQuery(f.actor("DispatchOSQuery"),
+	rejectAuditOperation(t, f.raw, "/powermanage.v1.ControlService/DispatchOSQuery")
+	_, err := f.handlers.DispatchOSQuery(f.actor("DispatchOSQuery"),
 		connect.NewRequest(&pmv1.DispatchOSQueryRequest{DeviceId: f.directID, Table: "packages"}))
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 	assert.Empty(t, f.sender.messages)
@@ -1499,12 +1488,9 @@ func TestDeviceHandlers_TerminateTerminalSurfacesSendFailureThenCommitsRetry(t *
 
 func TestDeviceHandlers_SensitiveReadFailsClosedWhenEvidenceFails(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
-	_, err := f.raw.Exec(context.Background(), `
-		ALTER TABLE audit_operations ADD CONSTRAINT reject_inventory_evidence
-		CHECK (request_descriptor <> '/powermanage.v1.ControlService/GetDeviceInventory')`)
-	require.NoError(t, err)
+	rejectAuditOperation(t, f.raw, "/powermanage.v1.ControlService/GetDeviceInventory")
 
-	_, err = f.handlers.GetDeviceInventory(f.actor("GetDeviceInventory"),
+	_, err := f.handlers.GetDeviceInventory(f.actor("GetDeviceInventory"),
 		connect.NewRequest(&pmv1.GetDeviceInventoryRequest{DeviceId: f.groupID}))
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 }
@@ -1642,12 +1628,9 @@ func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 func TestDeviceHandlers_DeleteRollsBackWhenRevocationFails(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	fingerprint := strings.Repeat("a", 64)
-	_, err := f.raw.Exec(context.Background(), `
-		ALTER TABLE revoked_certificates
-		ADD CONSTRAINT reject_fixture_fingerprint CHECK (fingerprint <> repeat('a', 64))`)
-	require.NoError(t, err)
+	rejectRevocationFingerprint(t, f.raw, fingerprint)
 
-	_, err = f.handlers.DeleteDevice(f.actor("DeleteDevice"), connect.NewRequest(&pmv1.DeleteDeviceRequest{Id: f.directID}))
+	_, err := f.handlers.DeleteDevice(f.actor("DeleteDevice"), connect.NewRequest(&pmv1.DeleteDeviceRequest{Id: f.directID}))
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 	_, err = f.store.GetDevice(context.Background(), f.directID)
 	require.NoError(t, err, "the device deletion must roll back with revocation")
@@ -1751,7 +1734,7 @@ func assertSecretReveal(
 	assert.Empty(t, want)
 }
 
-func latestOperationFor(t *testing.T, st *store.Store, raw *pgxpool.Pool, procedure string) (store.AuditOperationRow, error) {
+func latestOperationFor(t *testing.T, st *store.Store, raw *testdb.DB, procedure string) (store.AuditOperationRow, error) {
 	t.Helper()
 	var operationID string
 	if err := raw.QueryRow(context.Background(), `

@@ -207,9 +207,9 @@ func TestDefinitionHandlers_AddRequiresVisibleActionSet(t *testing.T) {
 	require.NoError(t, err)
 	_, err = f.raw.Exec(context.Background(), `
 		INSERT INTO assignments (id, source_type, source_id, target_type, target_id, created_at, created_by)
-		VALUES ($1, 'definition', $2, 'device_group', $3, now(), $4),
-		       ($5, 'action_set', $6, 'device_group', $3, now(), $4),
-		       ($7, 'action_set', $8, 'device_group', $9, now(), $4)`,
+		VALUES ($1, 'definition', $2, 'device_group', $3, CURRENT_TIMESTAMP, $4),
+		       ($5, 'action_set', $6, 'device_group', $3, CURRENT_TIMESTAMP, $4),
+		       ($7, 'action_set', $8, 'device_group', $9, CURRENT_TIMESTAMP, $4)`,
 		newID(), definition.ID, groupA, f.actorID,
 		newID(), inScope, newID(), outOfScope, groupB)
 	require.NoError(t, err)

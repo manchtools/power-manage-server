@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -24,7 +24,7 @@ import (
 type agentSecretFixture struct {
 	t              *testing.T
 	store          *store.Store
-	raw            *pgxpool.Pool
+	raw            *testdb.DB
 	service        *agentsecrets.Service
 	atRest         *pmcrypto.Encryptor
 	controlPrivate *ecdh.PrivateKey
@@ -37,7 +37,7 @@ type agentSecretFixture struct {
 
 func newAgentSecretFixture(t *testing.T) *agentSecretFixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	controlPrivate, err := sdkcrypto.GenerateX25519()
 	require.NoError(t, err)
 	agentPrivate, err := sdkcrypto.GenerateX25519()
@@ -57,8 +57,8 @@ func newAgentSecretFixture(t *testing.T) *agentSecretFixture {
 	require.NoError(t, err)
 	_, err = raw.Exec(context.Background(), `
 		INSERT INTO actions (id, name, action_type, params, created_at, updated_at)
-		VALUES ($1, 'disk encryption', $3, '{}'::jsonb, $4, $4),
-		       ($2, 'local passwords', $5, '{}'::jsonb, $4, $4)`,
+		VALUES ($1, 'disk encryption', $3, '{}', $4, $4),
+		       ($2, 'local passwords', $5, '{}', $4, $4)`,
 		fixture.luksActionID, fixture.lpsActionID,
 		int32(pmv1.ActionType_ACTION_TYPE_ENCRYPTION), now,
 		int32(pmv1.ActionType_ACTION_TYPE_LPS))
@@ -117,7 +117,7 @@ func TestAgentSecrets_LuksFieldsAreSealedInTransitAndEncryptedAtRest(t *testing.
 
 	otherAction := newID()
 	_, err = f.raw.Exec(ctx, `
-		INSERT INTO actions (id, name, action_type, params) VALUES ($1, 'other encryption', $2, '{}'::jsonb)`,
+		INSERT INTO actions (id, name, action_type, params) VALUES ($1, 'other encryption', $2, '{}')`,
 		otherAction, int32(pmv1.ActionType_ACTION_TYPE_ENCRYPTION))
 	require.NoError(t, err)
 	wrongContext := proto.Clone(request).(*pmv1.StoreLuksKeyRequest)

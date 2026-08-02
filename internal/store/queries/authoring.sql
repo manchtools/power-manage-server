@@ -3,10 +3,10 @@
 
 -- name: GetManifestAction :one
 SELECT * FROM actions
-WHERE id = $1 AND is_deleted = FALSE;
+WHERE id = ? AND is_deleted = FALSE;
 
 -- name: ListAuthoringActions :many
-WITH assignment_groups AS (
+WITH assignment_groups(source_type, source_id, group_id) AS (
     SELECT a.source_type, a.source_id, a.target_id AS group_id
     FROM assignments a
     WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
@@ -32,13 +32,13 @@ WITH assignment_groups AS (
     SELECT ag.source_id AS action_id
     FROM assignment_groups ag
     WHERE ag.source_type = 'action'
-      AND ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+      AND ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
     UNION
     SELECT m.action_id
     FROM action_set_members m
     JOIN action_sets s ON s.id = m.set_id AND s.is_deleted = FALSE
     JOIN assignment_groups ag ON ag.source_type = 'action_set' AND ag.source_id = s.id
-    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    WHERE ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
     UNION
     SELECT sm.action_id
     FROM definition_members dm
@@ -46,36 +46,36 @@ WITH assignment_groups AS (
     JOIN action_sets s ON s.id = dm.action_set_id AND s.is_deleted = FALSE
     JOIN action_set_members sm ON sm.set_id = s.id
     JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
-    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    WHERE ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
     UNION
     SELECT r.action_id
     FROM compliance_policy_rules r
     JOIN compliance_policies p ON p.id = r.policy_id AND p.is_deleted = FALSE
     JOIN assignment_groups ag ON ag.source_type = 'compliance_policy' AND ag.source_id = p.id
-    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    WHERE ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
 )
 SELECT a.*
 FROM actions a
 WHERE a.is_deleted = FALSE
   AND a.is_system = FALSE
   AND a.id > sqlc.arg(after_id)
-  AND (sqlc.arg(type_filter)::integer = 0 OR a.action_type = sqlc.arg(type_filter)::integer)
+  AND (sqlc.arg(type_filter) = 0 OR a.action_type = sqlc.arg(type_filter))
   AND (
-      NOT sqlc.arg(unassigned_only)::boolean
+      NOT sqlc.arg(unassigned_only)
       OR NOT EXISTS (
           SELECT 1 FROM assignments x
           WHERE x.source_type = 'action' AND x.source_id = a.id AND x.is_deleted = FALSE
       )
   )
   AND (
-      NOT sqlc.arg(scope_restricted)::boolean
+      NOT sqlc.arg(scope_restricted)
       OR EXISTS (SELECT 1 FROM visible_action_ids v WHERE v.action_id = a.id)
   )
 ORDER BY a.id
 LIMIT sqlc.arg(row_limit);
 
 -- name: CountAuthoringActions :one
-WITH assignment_groups AS (
+WITH assignment_groups(source_type, source_id, group_id) AS (
     SELECT a.source_type, a.source_id, a.target_id AS group_id
     FROM assignments a
     WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
@@ -101,13 +101,13 @@ WITH assignment_groups AS (
     SELECT ag.source_id AS action_id
     FROM assignment_groups ag
     WHERE ag.source_type = 'action'
-      AND ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+      AND ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
     UNION
     SELECT m.action_id
     FROM action_set_members m
     JOIN action_sets s ON s.id = m.set_id AND s.is_deleted = FALSE
     JOIN assignment_groups ag ON ag.source_type = 'action_set' AND ag.source_id = s.id
-    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    WHERE ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
     UNION
     SELECT sm.action_id
     FROM definition_members dm
@@ -115,28 +115,28 @@ WITH assignment_groups AS (
     JOIN action_sets s ON s.id = dm.action_set_id AND s.is_deleted = FALSE
     JOIN action_set_members sm ON sm.set_id = s.id
     JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
-    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    WHERE ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
     UNION
     SELECT r.action_id
     FROM compliance_policy_rules r
     JOIN compliance_policies p ON p.id = r.policy_id AND p.is_deleted = FALSE
     JOIN assignment_groups ag ON ag.source_type = 'compliance_policy' AND ag.source_id = p.id
-    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    WHERE ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
 )
 SELECT COUNT(*)
 FROM actions a
 WHERE a.is_deleted = FALSE
   AND a.is_system = FALSE
-  AND (sqlc.arg(type_filter)::integer = 0 OR a.action_type = sqlc.arg(type_filter)::integer)
+  AND (sqlc.arg(type_filter) = 0 OR a.action_type = sqlc.arg(type_filter))
   AND (
-      NOT sqlc.arg(unassigned_only)::boolean
+      NOT sqlc.arg(unassigned_only)
       OR NOT EXISTS (
           SELECT 1 FROM assignments x
           WHERE x.source_type = 'action' AND x.source_id = a.id AND x.is_deleted = FALSE
       )
   )
   AND (
-      NOT sqlc.arg(scope_restricted)::boolean
+      NOT sqlc.arg(scope_restricted)
       OR EXISTS (SELECT 1 FROM visible_action_ids v WHERE v.action_id = a.id)
   );
 
@@ -152,14 +152,14 @@ ORDER BY target_type, target_id;
 SELECT m.set_id
 FROM action_set_members m
 JOIN action_sets s ON s.id = m.set_id AND s.is_deleted = FALSE
-WHERE m.action_id = $1
+WHERE m.action_id = ?
 ORDER BY m.set_id;
 
 -- name: ListContainingDefinitionIDs :many
 SELECT m.definition_id
 FROM definition_members m
 JOIN definitions d ON d.id = m.definition_id AND d.is_deleted = FALSE
-WHERE m.action_set_id = $1
+WHERE m.action_set_id = ?
 ORDER BY m.definition_id;
 
 -- name: InsertAuthoringAction :one
@@ -168,7 +168,7 @@ INSERT INTO actions (
     params_canonical, timeout_seconds, schedule, is_system,
     created_at, created_by
 ) VALUES (
-    sqlc.arg(id), sqlc.arg(name), NULLIF(sqlc.arg(description)::text, ''),
+    sqlc.arg(id), sqlc.arg(name), NULLIF(sqlc.arg(description), ''),
     sqlc.arg(action_type), sqlc.arg(desired_state), sqlc.arg(params),
     sqlc.arg(params_canonical), sqlc.arg(timeout_seconds), sqlc.narg(schedule),
     sqlc.arg(is_system), sqlc.arg(created_at), sqlc.arg(created_by)
@@ -180,16 +180,16 @@ UPDATE actions
 SET name = sqlc.arg(name), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND is_deleted = FALSE
-  AND (is_system = FALSE OR sqlc.arg(allow_system)::boolean)
+  AND (is_system = FALSE OR sqlc.arg(allow_system))
 RETURNING *;
 
 -- name: UpdateAuthoringActionDescription :one
 UPDATE actions
-SET description = NULLIF(sqlc.arg(description)::text, ''),
+SET description = NULLIF(sqlc.arg(description), ''),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND is_deleted = FALSE
-  AND (is_system = FALSE OR sqlc.arg(allow_system)::boolean)
+  AND (is_system = FALSE OR sqlc.arg(allow_system))
 RETURNING *;
 
 -- name: UpdateAuthoringActionParams :one
@@ -198,22 +198,22 @@ SET desired_state = sqlc.arg(desired_state),
     params = sqlc.arg(params),
     params_canonical = sqlc.arg(params_canonical),
     timeout_seconds = CASE
-        WHEN sqlc.arg(timeout_set)::boolean THEN sqlc.arg(timeout_seconds)::integer
+        WHEN sqlc.arg(has_timeout) THEN sqlc.arg(timeout_seconds)
         ELSE timeout_seconds
     END,
     schedule = CASE
-        WHEN sqlc.arg(schedule_set)::boolean THEN sqlc.narg(schedule)::jsonb
+        WHEN sqlc.arg(has_schedule) = 1 THEN sqlc.narg(schedule)
         ELSE schedule
     END,
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND is_deleted = FALSE
-  AND (is_system = FALSE OR sqlc.arg(allow_system)::boolean)
+  AND (is_system = FALSE OR sqlc.arg(allow_system))
 RETURNING *;
 
 -- name: DeleteActionMemberships :many
 DELETE FROM action_set_members
-WHERE action_id = $1
+WHERE action_id = ?
 RETURNING set_id;
 
 -- name: SoftDeleteAuthoringAction :one
@@ -221,15 +221,15 @@ UPDATE actions
 SET is_deleted = TRUE, updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND is_deleted = FALSE
-  AND (is_system = FALSE OR sqlc.arg(allow_system)::boolean)
+  AND (is_system = FALSE OR sqlc.arg(allow_system))
 RETURNING *;
 
 -- name: GetManifestActionSet :one
 SELECT * FROM action_sets
-WHERE id = $1 AND is_deleted = FALSE;
+WHERE id = ? AND is_deleted = FALSE;
 
 -- name: ListAuthoringActionSets :many
-WITH assignment_groups AS (
+WITH assignment_groups(source_type, source_id, group_id) AS (
     SELECT a.source_type, a.source_id, a.target_id AS group_id
     FROM assignments a
     WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
@@ -255,13 +255,13 @@ WITH assignment_groups AS (
     SELECT ag.source_id AS set_id
     FROM assignment_groups ag
     WHERE ag.source_type = 'action_set'
-      AND ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+      AND ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
     UNION
     SELECT m.action_set_id
     FROM definition_members m
     JOIN definitions d ON d.id = m.definition_id AND d.is_deleted = FALSE
     JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
-    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    WHERE ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
 )
 SELECT s.*,
        (
@@ -274,21 +274,21 @@ FROM action_sets s
 WHERE s.is_deleted = FALSE
   AND s.id > sqlc.arg(after_id)
   AND (
-      NOT sqlc.arg(unassigned_only)::boolean
+      NOT sqlc.arg(unassigned_only)
       OR NOT EXISTS (
           SELECT 1 FROM assignments x
           WHERE x.source_type = 'action_set' AND x.source_id = s.id AND x.is_deleted = FALSE
       )
   )
   AND (
-      NOT sqlc.arg(scope_restricted)::boolean
+      NOT sqlc.arg(scope_restricted)
       OR EXISTS (SELECT 1 FROM visible_set_ids v WHERE v.set_id = s.id)
   )
 ORDER BY s.id
 LIMIT sqlc.arg(row_limit);
 
 -- name: CountAuthoringActionSets :one
-WITH assignment_groups AS (
+WITH assignment_groups(source_type, source_id, group_id) AS (
     SELECT a.source_type, a.source_id, a.target_id AS group_id
     FROM assignments a
     WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
@@ -314,26 +314,26 @@ WITH assignment_groups AS (
     SELECT ag.source_id AS set_id
     FROM assignment_groups ag
     WHERE ag.source_type = 'action_set'
-      AND ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+      AND ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
     UNION
     SELECT m.action_set_id
     FROM definition_members m
     JOIN definitions d ON d.id = m.definition_id AND d.is_deleted = FALSE
     JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
-    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    WHERE ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
 )
 SELECT COUNT(*)
 FROM action_sets s
 WHERE s.is_deleted = FALSE
   AND (
-      NOT sqlc.arg(unassigned_only)::boolean
+      NOT sqlc.arg(unassigned_only)
       OR NOT EXISTS (
           SELECT 1 FROM assignments x
           WHERE x.source_type = 'action_set' AND x.source_id = s.id AND x.is_deleted = FALSE
       )
   )
   AND (
-      NOT sqlc.arg(scope_restricted)::boolean
+      NOT sqlc.arg(scope_restricted)
       OR EXISTS (SELECT 1 FROM visible_set_ids v WHERE v.set_id = s.id)
   );
 
@@ -395,17 +395,17 @@ RETURNING *;
 SELECT m.action_id, m.sort_order, a.name AS action_name, a.action_type
 FROM action_set_members m
 JOIN actions a ON a.id = m.action_id AND a.is_deleted = FALSE
-WHERE m.set_id = $1
+WHERE m.set_id = ?
 ORDER BY m.sort_order, m.action_id;
 
 -- name: DeleteAuthoringActionSetMembers :many
 DELETE FROM action_set_members
-WHERE set_id = $1
+WHERE set_id = ?
 RETURNING action_id;
 
 -- name: DeleteDefinitionMembershipsForActionSet :many
 DELETE FROM definition_members
-WHERE action_set_id = $1
+WHERE action_set_id = ?
 RETURNING definition_id;
 
 -- name: SoftDeleteAuthoringActionSet :one
@@ -415,7 +415,7 @@ WHERE id = sqlc.arg(id) AND is_deleted = FALSE
 RETURNING *;
 
 -- name: ListAuthoringDefinitions :many
-WITH assignment_groups AS (
+WITH assignment_groups(source_type, source_id, group_id) AS (
     SELECT a.source_type, a.source_id, a.target_id AS group_id
     FROM assignments a
     WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
@@ -439,7 +439,7 @@ WITH assignment_groups AS (
     WHERE a.is_deleted = FALSE AND a.target_type = 'user'
 )
 SELECT d.id, d.name, d.description, d.schedule, d.created_at, d.created_by,
-       d.updated_at, d.is_deleted, d.search_tsv,
+       d.updated_at, d.is_deleted,
        (
            SELECT COUNT(*)
            FROM definition_members m
@@ -450,19 +450,19 @@ FROM definitions d
 WHERE d.is_deleted = FALSE
   AND d.id > sqlc.arg(after_id)
   AND (
-      NOT sqlc.arg(scope_restricted)::boolean
+      NOT sqlc.arg(scope_restricted)
       OR EXISTS (
           SELECT 1 FROM assignment_groups ag
           WHERE ag.source_type = 'definition'
             AND ag.source_id = d.id
-            AND ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+            AND ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
       )
   )
 ORDER BY d.id
 LIMIT sqlc.arg(row_limit);
 
 -- name: CountAuthoringDefinitions :one
-WITH assignment_groups AS (
+WITH assignment_groups(source_type, source_id, group_id) AS (
     SELECT a.source_type, a.source_id, a.target_id AS group_id
     FROM assignments a
     WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
@@ -489,12 +489,12 @@ SELECT COUNT(*)
 FROM definitions d
 WHERE d.is_deleted = FALSE
   AND (
-      NOT sqlc.arg(scope_restricted)::boolean
+      NOT sqlc.arg(scope_restricted)
       OR EXISTS (
           SELECT 1 FROM assignment_groups ag
           WHERE ag.source_type = 'definition'
             AND ag.source_id = d.id
-            AND ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+            AND ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
       )
   );
 
@@ -554,12 +554,12 @@ RETURNING *;
 SELECT m.action_set_id, m.sort_order, s.name AS action_set_name
 FROM definition_members m
 JOIN action_sets s ON s.id = m.action_set_id AND s.is_deleted = FALSE
-WHERE m.definition_id = $1
+WHERE m.definition_id = ?
 ORDER BY m.sort_order, m.action_set_id;
 
 -- name: DeleteAuthoringDefinitionMembers :many
 DELETE FROM definition_members
-WHERE definition_id = $1
+WHERE definition_id = ?
 RETURNING action_set_id;
 
 -- name: SoftDeleteAuthoringDefinition :one
@@ -572,18 +572,18 @@ RETURNING *;
 SELECT a.*
 FROM action_set_members m
 JOIN actions a ON a.id = m.action_id AND a.is_deleted = FALSE
-WHERE m.set_id = $1
+WHERE m.set_id = ?
 ORDER BY m.sort_order, a.id;
 
 -- name: GetManifestDefinition :one
 SELECT * FROM definitions
-WHERE id = $1 AND is_deleted = FALSE;
+WHERE id = ? AND is_deleted = FALSE;
 
 -- name: ListManifestDefinitionActionSets :many
 SELECT s.*
 FROM definition_members m
 JOIN action_sets s ON s.id = m.action_set_id AND s.is_deleted = FALSE
-WHERE m.definition_id = $1
+WHERE m.definition_id = ?
 ORDER BY m.sort_order, s.id;
 
 -- name: ListManifestDefinitionActions :many
@@ -592,5 +592,5 @@ FROM definition_members m
 JOIN action_sets s ON s.id = m.action_set_id AND s.is_deleted = FALSE
 JOIN action_set_members sm ON sm.set_id = s.id
 JOIN actions a ON a.id = sm.action_id AND a.is_deleted = FALSE
-WHERE m.definition_id = $1
+WHERE m.definition_id = ?
 ORDER BY m.sort_order, s.id, sm.sort_order, a.id;

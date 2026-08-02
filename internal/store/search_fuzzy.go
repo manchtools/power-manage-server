@@ -2,17 +2,10 @@ package store
 
 import (
 	"container/heap"
-	"context"
-	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 	"unicode"
-
-	"github.com/jackc/pgx/v5"
 )
-
-const fuzzyCandidateSimilarity = 0.1
 
 type fuzzyRank struct {
 	edits, fieldCost int
@@ -25,7 +18,7 @@ type fuzzySearchResult struct {
 
 // matchFuzzyDocument owns the engine-independent fuzzy contract. Primary is
 // the entity ID and display name, description is the explicit description,
-// and related is the remaining facet document assembled by PostgreSQL.
+// and related is the remaining facet document assembled by SQLite.
 func matchFuzzyDocument(query, primary, description, related string) (fuzzyRank, bool, bool) {
 	queryTokens := tokenizeSearchText(query)
 	if len(queryTokens) == 0 {
@@ -180,101 +173,6 @@ func fuzzyEligibleQueryTokens(query string) []string {
 		eligible = append(eligible, token)
 	}
 	return eligible
-}
-
-func (f searchFacet) fuzzyRelatedSQL() string {
-	if f.fuzzyRelated == "" {
-		return "''::text"
-	}
-	return f.fuzzyRelated
-}
-
-// searchFuzzy streams PostgreSQL's trigram candidates through the bounded
-// application matcher. It counts every accepted row but retains only the best
-// prefix needed to serve the requested page.
-func (s *Store) searchFuzzy(
-	ctx context.Context,
-	p SearchParams,
-	facet searchFacet,
-	args pgx.NamedArgs,
-	baseConditions []string,
-	keep int,
-) ([]fuzzySearchResult, int64, error) {
-	tokens := fuzzyEligibleQueryTokens(p.Query)
-	if len(tokens) == 0 {
-		return nil, 0, nil
-	}
-	args["fuzzy_tokens"] = tokens
-	args["fuzzy_candidate_similarity"] = fuzzyCandidateSimilarity
-
-	query := fmt.Sprintf(`WITH %s,
-prefix_query AS (
-    SELECT to_tsquery('simple'::regconfig,
-        string_agg(quote_literal(term) || ':*', ' & ' ORDER BY term)) AS value
-    FROM unnest(tsvector_to_array(to_tsvector('simple'::regconfig, @query::text))) AS term
-), eligible AS (
-    SELECT %s AS id, %s AS name, %s AS description, %s AS member_count,
-           %s AS fields, %s AS fuzzy_related
-    FROM %s CROSS JOIN prefix_query pq
-    WHERE %s AND NOT (pq.value IS NOT NULL AND (%s))
-), candidates AS (
-    SELECT * FROM eligible
-    WHERE NOT EXISTS (
-        SELECT 1 FROM unnest(@fuzzy_tokens::text[]) AS q(token)
-        WHERE strict_word_similarity(q.token,
-            lower(concat_ws(' ', eligible.id, eligible.name, eligible.description,
-                eligible.fields::text, eligible.fuzzy_related)))
-            < @fuzzy_candidate_similarity
-    )
-)
-SELECT id, name, description, member_count, fields, fuzzy_related FROM candidates`,
-		assignmentGroupsCTE, facet.id, facet.name, facet.description, facet.memberCount,
-		facet.fields, facet.fuzzyRelatedSQL(), facet.from,
-		strings.Join(baseConditions, " AND "), facet.textMatch)
-
-	rows, err := s.pool.Query(ctx, query, args)
-	if err != nil {
-		return nil, 0, fmt.Errorf("search %s fuzzy candidates: %w", p.Scope, err)
-	}
-	defer rows.Close()
-
-	best := newFuzzyResultHeap(keep)
-	var total int64
-	for rows.Next() {
-		if err := ctx.Err(); err != nil {
-			return nil, 0, err
-		}
-		var row SearchRow
-		var name, description, related *string
-		var fields []byte
-		if err := rows.Scan(&row.ID, &name, &description, &row.MemberCount, &fields, &related); err != nil {
-			return nil, 0, fmt.Errorf("search %s fuzzy scan: %w", p.Scope, err)
-		}
-		if name != nil {
-			row.Name = *name
-		}
-		if description != nil {
-			row.Description = *description
-		}
-		row.Fields = make(map[string]string)
-		if err := json.Unmarshal(fields, &row.Fields); err != nil {
-			return nil, 0, fmt.Errorf("search %s fuzzy fields: %w", p.Scope, err)
-		}
-		relatedText := ""
-		if related != nil {
-			relatedText = *related
-		}
-		rank, fuzzyOnly, matches := matchFuzzyDocument(p.Query, row.ID+" "+row.Name, row.Description, relatedText)
-		if !matches || !fuzzyOnly {
-			continue
-		}
-		total++
-		best.add(fuzzySearchResult{row: row, rank: rank})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("search %s fuzzy rows: %w", p.Scope, err)
-	}
-	return best.sorted(), total, nil
 }
 
 type fuzzyResultHeap struct {

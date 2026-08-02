@@ -1,11 +1,11 @@
 -- name: CreateAuthState :exec
 INSERT INTO auth_states (state, provider_id, nonce, code_verifier, redirect_uri, created_at, expires_at)
-VALUES ($1, $2, $3, $4, $5, now(), $6);
+VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?);
 
 -- name: ConsumeAuthState :one
 DELETE FROM auth_states
-WHERE state = $1 AND expires_at > now()
+WHERE state = ? AND expires_at > CURRENT_TIMESTAMP
 RETURNING *;
 
 -- name: CleanupExpiredAuthStates :execrows
-DELETE FROM auth_states WHERE expires_at < now();
+DELETE FROM auth_states WHERE expires_at < CURRENT_TIMESTAMP;

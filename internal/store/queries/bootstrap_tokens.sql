@@ -7,7 +7,8 @@
 
 -- name: InsertBootstrapAdminToken :one
 INSERT INTO tokens (id, value_hash, name, one_time, max_uses, current_uses, expires_at, created_at, created_by, owner_id, disabled, is_deleted)
-VALUES ($1, $2, sqlc.arg(reserved_name), TRUE, 1, 0, $3, $4, sqlc.arg(created_by), NULL, FALSE, FALSE)
+VALUES (sqlc.arg(id), sqlc.arg(value_hash), sqlc.arg(reserved_name), TRUE, 1, 0,
+        sqlc.arg(expires_at), sqlc.arg(created_at), sqlc.arg(created_by), NULL, FALSE, FALSE)
 RETURNING *;
 
 -- name: ConsumeBootstrapAdminToken :one
@@ -17,7 +18,7 @@ RETURNING *;
 -- second finds no row.
 UPDATE tokens
 SET current_uses = current_uses + 1
-WHERE value_hash = $1
+WHERE value_hash = ?
   AND name = sqlc.arg(reserved_name)
   AND is_deleted = FALSE
   AND disabled = FALSE

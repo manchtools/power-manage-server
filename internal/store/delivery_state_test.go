@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -19,7 +19,7 @@ import (
 type deliveryFixture struct {
 	t          *testing.T
 	store      *store.Store
-	raw        *pgxpool.Pool
+	raw        *testdb.DB
 	now        time.Time
 	deviceID   string
 	manifest   *pmv1.Manifest
@@ -29,7 +29,7 @@ type deliveryFixture struct {
 
 func newDeliveryFixture(t *testing.T) *deliveryFixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	deviceID := seedDevice(t, raw)
 	actionID, manifestID := newID(), newID()
@@ -145,11 +145,7 @@ func TestDelivery_PushEpochAndReceiptStateMachine(t *testing.T) {
 	assert.Equal(t, delivery.StateSucceeded, row.State)
 	assert.Equal(t, int64(7), row.PushEpoch)
 	assert.Equal(t, int32(1), row.AttemptCount, "a refused stale push must not count as an attempt")
-	var actions []string
-	require.NoError(t, f.raw.QueryRow(ctx, `
-		SELECT array_agg(action ORDER BY chain_seq)
-		FROM audit_effects WHERE resource_type = 'delivery' AND resource_id = $1
-	`, f.deliveryID).Scan(&actions))
+	actions := auditActions(t, f.raw, "delivery", f.deliveryID)
 	assert.Equal(t, []string{"CREATE", "PUSH", "ACK", "RESULT"}, actions)
 }
 
@@ -181,8 +177,7 @@ func TestDelivery_ReceiptAuditFailureRollsBackState(t *testing.T) {
 	_, err := f.service.MarkPushed(ctx, f.deliveryID, f.deviceID, 1)
 	require.NoError(t, err)
 
-	_, err = f.raw.Exec(ctx, `ALTER TABLE audit_effects ADD CONSTRAINT reject_delivery_ack CHECK (action <> 'ACK')`)
-	require.NoError(t, err)
+	rejectAuditEffect(t, f.raw, "ACK")
 
 	changed, err := f.service.AcknowledgeReceipt(ctx, f.deliveryID, f.deviceID)
 	require.Error(t, err)

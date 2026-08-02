@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -23,7 +23,7 @@ import (
 type executionResultFixture struct {
 	t          *testing.T
 	store      *store.Store
-	raw        *pgxpool.Pool
+	raw        *testdb.DB
 	service    *execution.Service
 	now        time.Time
 	deviceID   string
@@ -35,7 +35,7 @@ type executionResultFixture struct {
 
 func newExecutionResultFixture(t *testing.T, deliveryState, executionState string) *executionResultFixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	f := &executionResultFixture{
 		t: t, store: st, raw: raw, now: now,
@@ -72,7 +72,7 @@ func newExecutionResultFixture(t *testing.T, deliveryState, executionState strin
 		INSERT INTO executions (
 			id, delivery_id, device_id, action_type, desired_state, params,
 			timeout_seconds, status, created_at, created_by_type, created_by_id
-		) VALUES ($1, $2, $3, 1, 0, '{}'::jsonb, 300, $4, $5, 'user', $6)`,
+		) VALUES ($1, $2, $3, 1, 0, '{}', 300, $4, $5, 'user', $6)`,
 		f.execution, f.deliveryID, f.deviceID, executionState, now, newID())
 	require.NoError(t, err)
 	f.service = execution.New(execution.Config{Store: st, Now: func() time.Time { return now }})

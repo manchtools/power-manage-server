@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 
 	"github.com/manchtools/power-manage/server/internal/store/generated"
@@ -362,7 +363,7 @@ func (s *Store) RecordPublishedAuditAnchor(ctx context.Context, tip AuditChainTi
 	}
 
 	var out AuditAnchor
-	err := s.withTx(ctx, func(_ pgx.Tx, q *generated.Queries) error {
+	err := s.withTx(ctx, func(_ *sql.Tx, q *generated.Queries) error {
 		local, err := s.rowHashAt(ctx, q, stream, tip.Height)
 		if err != nil {
 			return fmt.Errorf("%w: %s", ErrAuditAnchorMismatch, err)
@@ -495,21 +496,18 @@ func (s *Store) PruneAuditPrefix(ctx context.Context, req AuditRetentionRequest)
 	}
 
 	var out AuditCheckpoint
-	err := s.withTx(ctx, func(tx pgx.Tx, q *generated.Queries) error {
-		// The append-only trigger refuses every DELETE unless both
-		// guards are set. SET LOCAL scopes them to this transaction,
-		// so they are cleared at COMMIT or ROLLBACK and can never
-		// reach the next user of this pooled connection.
-		if _, err := tx.Exec(ctx, "SET LOCAL pm.audit_retention_active = 'on'"); err != nil {
+	err := s.withTx(ctx, func(_ *sql.Tx, q *generated.Queries) error {
+		// The append-only trigger permits the archived prefix only while this
+		// transaction's guard row exists. Rollback removes it automatically;
+		// the success path removes it explicitly before commit.
+		if err := q.ArmAuditRetentionGuard(ctx, generated.ArmAuditRetentionGuardParams{
+			Stream: stream, BoundarySeq: req.BoundarySeq,
+		}); err != nil {
+			if strings.Contains(err.Error(), "audit retention boundary is not a closed prefix") {
+				return fmt.Errorf("%w: boundary position %d", ErrAuditBoundaryNotClosed, req.BoundarySeq)
+			}
 			return fmt.Errorf("audit: arm retention guard: %w", err)
 		}
-		// Not a bound parameter: SET LOCAL takes no placeholders. The
-		// value is an int64 this package formats, never caller text.
-		if _, err := tx.Exec(ctx,
-			fmt.Sprintf("SET LOCAL pm.audit_retention_up_to_seq = '%d'", req.BoundarySeq)); err != nil {
-			return fmt.Errorf("audit: bound retention range: %w", err)
-		}
-
 		stranded, err := q.CountAuditEffectsStrandedByBoundary(ctx, generated.CountAuditEffectsStrandedByBoundaryParams{
 			Stream:   stream,
 			ChainSeq: req.BoundarySeq,
@@ -580,6 +578,9 @@ func (s *Store) PruneAuditPrefix(ctx context.Context, req AuditRetentionRequest)
 			// The deletion is in this transaction, so it goes with it.
 			return fmt.Errorf("audit: write retention checkpoint: %w", err)
 		}
+		if err := q.DisarmAuditRetentionGuard(ctx, stream); err != nil {
+			return fmt.Errorf("audit: disarm retention guard: %w", err)
+		}
 		out = checkpointFromRow(row)
 		return nil
 	})
@@ -598,7 +599,7 @@ func (s *Store) rowHashAt(ctx context.Context, q *generated.Queries, stream stri
 	if err == nil {
 		return h, nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("audit: read operation hash at position %d: %w", seq, err)
 	}
 	h, err = q.GetAuditEffectRowHashAt(ctx, generated.GetAuditEffectRowHashAtParams{
@@ -606,7 +607,7 @@ func (s *Store) rowHashAt(ctx context.Context, q *generated.Queries, stream stri
 		ChainSeq: seq,
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("audit: no chain row at position %d", seq)
 		}
 		return nil, fmt.Errorf("audit: read effect hash at position %d: %w", seq, err)

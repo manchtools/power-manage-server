@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -27,7 +27,7 @@ import (
 type tokenHandlerFixture struct {
 	t        *testing.T
 	store    *store.Store
-	raw      *pgxpool.Pool
+	raw      *testdb.DB
 	handlers *registrationtoken.Handlers
 	now      time.Time
 	actorID  string
@@ -38,7 +38,7 @@ const tokenCAPin = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab
 
 func newTokenHandlerFixture(t *testing.T) *tokenHandlerFixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	f := &tokenHandlerFixture{
 		t: t, store: st, raw: raw, now: now, actorID: newID(), otherID: newID(),

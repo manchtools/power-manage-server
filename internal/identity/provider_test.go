@@ -58,7 +58,7 @@ func TestCreateIdentityProvider_SealsTheSecretAndNeverReturnsIt(t *testing.T) {
 	require.NoError(t, f.raw.QueryRow(f.ctx(), `
 		SELECT count(*) FROM audit_effects
 		 WHERE evidence_fingerprint LIKE '%' || $1 || '%'
-		    OR encode(coalesce(sealed_detail, ''::bytea), 'escape') LIKE '%' || $1 || '%'`, secret).Scan(&hits))
+		    OR CAST(coalesce(sealed_detail, X'') AS TEXT) LIKE '%' || $1 || '%'`, secret).Scan(&hits))
 	assert.Zero(t, hits, "the client secret never reaches the audit log in the clear")
 }
 

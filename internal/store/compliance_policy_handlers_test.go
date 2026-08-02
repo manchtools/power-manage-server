@@ -170,9 +170,9 @@ func TestCompliancePolicyHandlers_RejectsOrdinaryAndOutOfScopeActions(t *testing
 	require.NoError(t, err)
 	_, err = f.raw.Exec(context.Background(), `
 		INSERT INTO assignments (id, source_type, source_id, target_type, target_id, created_at, created_by)
-		VALUES ($1, 'compliance_policy', $2, 'device_group', $3, now(), $4),
-		       ($5, 'action', $6, 'device_group', $3, now(), $4),
-		       ($7, 'action', $8, 'device_group', $9, now(), $4)`,
+		VALUES ($1, 'compliance_policy', $2, 'device_group', $3, CURRENT_TIMESTAMP, $4),
+		       ($5, 'action', $6, 'device_group', $3, CURRENT_TIMESTAMP, $4),
+		       ($7, 'action', $8, 'device_group', $9, CURRENT_TIMESTAMP, $4)`,
 		newID(), policy.ID, groupA, f.actorID,
 		newID(), inScope, newID(), outOfScope, groupB)
 	require.NoError(t, err)
@@ -287,7 +287,7 @@ func TestCompliancePolicyRules_ProvideTransitiveActionReadScope(t *testing.T) {
 	require.NoError(t, err)
 	_, err = f.raw.Exec(context.Background(), `
 		INSERT INTO assignments (id, source_type, source_id, target_type, target_id, created_at, created_by)
-		VALUES ($1, 'compliance_policy', $2, 'device_group', $3, now(), $4)`,
+		VALUES ($1, 'compliance_policy', $2, 'device_group', $3, CURRENT_TIMESTAMP, $4)`,
 		newID(), policy.ID, groupID, f.actorID)
 	require.NoError(t, err)
 

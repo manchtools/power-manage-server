@@ -463,6 +463,35 @@ func TestGroupInheritedRole_ConfersItsPermissions(t *testing.T) {
 	assert.Equal(t, group, inherited[0].GroupID)
 }
 
+func TestGroupInheritedRole_SoftDeletedGroupConfersNoPermissions(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	group := f.insertUserGroup()
+	role := f.insertRole([]string{"UpdateUserProfile"})
+	_, err := f.raw.Exec(f.ctx(),
+		`INSERT INTO user_group_roles (grant_id, group_id, role_id, assigned_at, assigned_by, scope_kind, scope_id)
+		 VALUES ($1, $2, $3, $4, '', 'user_group', $2)`, newULID(), group, role, f.now)
+	require.NoError(t, err)
+
+	member := f.seedSubject()
+	f.addUserToGroup(group, member.ID)
+	permissions, err := f.store.ListUserPermissions(f.ctx(), member.ID)
+	require.NoError(t, err)
+	assert.Contains(t, permissions, "UpdateUserProfile")
+	scoped, err := f.store.ListUserScopedGrants(f.ctx(), member.ID)
+	require.NoError(t, err)
+	require.Len(t, scoped, 1)
+
+	_, err = f.raw.Exec(f.ctx(), `UPDATE user_groups SET is_deleted = TRUE WHERE id = $1`, group)
+	require.NoError(t, err)
+	permissions, err = f.store.ListUserPermissions(f.ctx(), member.ID)
+	require.NoError(t, err)
+	assert.NotContains(t, permissions, "UpdateUserProfile")
+	scoped, err = f.store.ListUserScopedGrants(f.ctx(), member.ID)
+	require.NoError(t, err)
+	assert.Empty(t, scoped)
+}
+
 func TestListPermissions_ExposesTheRegistryWithTargetKinds(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)

@@ -236,6 +236,9 @@ func (h *Handler) provisionSubject(w http.ResponseWriter, r *http.Request, s *se
 		if err != nil {
 			return err
 		}
+		if linuxUID > 2147483647 {
+			return errors.New("assign linux uid: int32 range exhausted")
+		}
 		linuxUsername := idp.DeriveLinuxUsername(email, resource.UserName)
 		if linuxUsername == "" {
 			linuxUsername = "user_" + strings.ToLower(userID[:8])
@@ -248,7 +251,7 @@ func (h *Handler) provisionSubject(w http.ResponseWriter, r *http.Request, s *se
 			GivenName:          nameField(resource.Name, func(n *SCIMName) string { return n.GivenName }),
 			FamilyName:         nameField(resource.Name, func(n *SCIMName) string { return n.FamilyName }),
 			LinuxUsername:      linuxUsername,
-			LinuxUid:           linuxUID,
+			LinuxUid:           int32(linuxUID),
 			ProvisioningSource: store.UserProvisioningSourceSCIM,
 			CreatedAt:          &at,
 		})

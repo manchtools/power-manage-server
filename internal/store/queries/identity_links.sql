@@ -4,25 +4,25 @@
 
 -- name: InsertIdentityLink :one
 INSERT INTO identity_links (id, user_id, provider_id, external_id, external_email, external_name, linked_at, last_login_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetIdentityLink :one
-SELECT * FROM identity_links WHERE id = $1;
+SELECT * FROM identity_links WHERE id = ?;
 
 -- name: GetIdentityLinkByProviderAndExternalID :one
-SELECT * FROM identity_links WHERE provider_id = $1 AND external_id = $2;
+SELECT * FROM identity_links WHERE provider_id = ? AND external_id = ?;
 
 -- name: GetIdentityLinkByProviderAndUser :one
 -- The ownership question: is this subject bound to this provider? No
 -- row is the answer a provider gets for every subject it did not
 -- provision, which is what keeps one directory out of another's users.
-SELECT * FROM identity_links WHERE provider_id = $1 AND user_id = $2;
+SELECT * FROM identity_links WHERE provider_id = ? AND user_id = ?;
 
 -- name: UpdateIdentityLinkExternalIdentity :one
 UPDATE identity_links
-SET external_id = $2, external_email = $3, external_name = $4
-WHERE id = $1
+SET external_id = ?, external_email = ?, external_name = ?
+WHERE id = ?
 RETURNING *;
 
 -- name: ListIdentityLinksForUser :many
@@ -39,17 +39,17 @@ SELECT
     p.slug AS provider_slug
 FROM identity_links l
 JOIN identity_providers p ON p.id = l.provider_id
-WHERE l.user_id = $1
+WHERE l.user_id = ?
 ORDER BY l.id;
 
 -- name: TouchIdentityLinkLogin :one
 UPDATE identity_links
-SET last_login_at = $2, external_email = $3, external_name = $4
-WHERE id = $1
+SET last_login_at = ?, external_email = ?, external_name = ?
+WHERE id = ?
 RETURNING *;
 
 -- name: DeleteIdentityLink :one
-DELETE FROM identity_links WHERE id = $1 RETURNING *;
+DELETE FROM identity_links WHERE id = ? RETURNING *;
 
 -- name: DeleteIdentityLinksForUser :execrows
-DELETE FROM identity_links WHERE user_id = $1;
+DELETE FROM identity_links WHERE user_id = ?;

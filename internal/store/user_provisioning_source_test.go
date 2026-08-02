@@ -37,10 +37,10 @@ func TestUserProvisioningSource_HasNoUpdateQuery(t *testing.T) {
 }
 
 func TestUserProvisioningSource_RejectsUnknownValues(t *testing.T) {
-	_, pool := setupPostgres(t)
+	_, pool := setupSQLite(t)
 
 	err := execFails(t, pool,
 		`INSERT INTO users (id, email, provisioning_source) VALUES ($1, $2, 'manual')`,
 		newID(), "manual@example.test")
-	assert.Contains(t, err.Error(), "users_provisioning_source_valid")
+	assert.Contains(t, err.Error(), "provisioning_source IN ('scim', 'oidc_jit')")
 }

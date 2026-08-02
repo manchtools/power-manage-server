@@ -9,24 +9,24 @@
 SELECT sqlc.embed(u), l.external_id
 FROM users u
 JOIN identity_links l ON l.user_id = u.id
-WHERE l.provider_id = $1 AND u.is_deleted = FALSE
+WHERE l.provider_id = ? AND u.is_deleted = FALSE
 ORDER BY u.id
-LIMIT $2 OFFSET $3;
+LIMIT ? OFFSET ?;
 
 -- name: CountSCIMUsers :one
 SELECT COUNT(*)
 FROM users u
 JOIN identity_links l ON l.user_id = u.id
-WHERE l.provider_id = $1 AND u.is_deleted = FALSE;
+WHERE l.provider_id = ? AND u.is_deleted = FALSE;
 
 -- name: FindSCIMUserByEmail :one
 SELECT sqlc.embed(u), l.external_id
 FROM users u
 JOIN identity_links l ON l.user_id = u.id
-WHERE l.provider_id = $1 AND u.email = $2 AND u.is_deleted = FALSE;
+WHERE l.provider_id = ? AND u.email = ? AND u.is_deleted = FALSE;
 
 -- name: FindSCIMUserByExternalID :one
 SELECT sqlc.embed(u), l.external_id
 FROM users u
 JOIN identity_links l ON l.user_id = u.id
-WHERE l.provider_id = $1 AND l.external_id = $2 AND u.is_deleted = FALSE;
+WHERE l.provider_id = ? AND l.external_id = ? AND u.is_deleted = FALSE;

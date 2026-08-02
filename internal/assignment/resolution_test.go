@@ -13,7 +13,7 @@ import (
 func TestResolveSourcesAppliesModePrecedence(t *testing.T) {
 	path := func(sourceID string, mode pmv1.AssignmentMode, selected bool) store.ResolvedAssignmentSource {
 		return store.ResolvedAssignmentSource{
-			SourceType: "action", SourceID: sourceID, Mode: int32(mode), Selected: selected,
+			SourceType: "action", SourceID: sourceID, Mode: int64(mode), Selected: selected,
 		}
 	}
 	paths := []store.ResolvedAssignmentSource{

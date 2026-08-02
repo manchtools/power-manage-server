@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -24,7 +24,7 @@ import (
 type actionHandlerFixture struct {
 	t        *testing.T
 	store    *store.Store
-	raw      *pgxpool.Pool
+	raw      *testdb.DB
 	handlers *authoring.Handlers
 	now      time.Time
 	actorID  string
@@ -32,7 +32,7 @@ type actionHandlerFixture struct {
 
 func newActionHandlerFixture(t *testing.T) *actionHandlerFixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	f := &actionHandlerFixture{t: t, store: st, raw: raw, now: now, actorID: newID()}
 	f.handlers = authoring.NewHandlers(authoring.HandlersConfig{

@@ -1,6 +1,6 @@
 package store_test
 
-// The audit spine, driven against a real PostgreSQL.
+// The audit spine, driven against real SQLite.
 //
 // Every test here exercises the property through the real primitive
 // and the real schema. The failure paths are produced by genuine
@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -72,12 +72,12 @@ func deviceEffect(id string) store.AuditEffect {
 	}
 }
 
-func countRows(t *testing.T, pool *pgxpool.Pool, table string) int64 {
+func countRows(t *testing.T, pool *testdb.DB, table string) int64 {
 	t.Helper()
 	var n int64
 	// table is a constant from this file, never caller input.
 	require.NoError(t, pool.QueryRow(context.Background(),
-		fmt.Sprintf("SELECT count(*) FROM public.%s", table)).Scan(&n))
+		fmt.Sprintf("SELECT count(*) FROM %s", table)).Scan(&n))
 	return n
 }
 
@@ -89,7 +89,7 @@ func countRows(t *testing.T, pool *pgxpool.Pool, table string) int64 {
 // even run: refusing after the callback has written rows would rely on
 // rollback, and the guarantee is stronger than that.
 func TestWithAudit_RefusesMutationWithoutOperation(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	ran := false
@@ -109,7 +109,7 @@ func TestWithAudit_RefusesMutationWithoutOperation(t *testing.T) {
 // one names itself rather than being masked by whichever check runs
 // first.
 func TestWithAudit_RefusesIncompleteOperationDescriptor(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	cases := map[string]func(*store.AuditOperation){
@@ -141,7 +141,7 @@ func TestWithAudit_RefusesIncompleteOperationDescriptor(t *testing.T) {
 // The initial operation row, its effects and the state change commit
 // together, at consecutive chain positions, and the chain verifies.
 func TestWithAudit_CommitsMutationOperationAndEffectsInOneTransaction(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	deviceID := newID()
@@ -177,8 +177,8 @@ func TestWithAudit_CommitsMutationOperationAndEffectsInOneTransaction(t *testing
 	effects, err := st.ListAuditEffects(ctx, rec.OperationID)
 	require.NoError(t, err)
 	require.Len(t, effects, 2)
-	assert.Equal(t, int32(0), effects[0].EffectSeq)
-	assert.Equal(t, int32(1), effects[1].EffectSeq)
+	assert.Equal(t, int64(0), effects[0].EffectSeq)
+	assert.Equal(t, int64(1), effects[1].EffectSeq)
 
 	v, err := st.VerifyAuditChain(ctx, store.AuditVerifyOptions{})
 	require.NoError(t, err)
@@ -190,7 +190,7 @@ func TestWithAudit_CommitsMutationOperationAndEffectsInOneTransaction(t *testing
 // A mutation callback error rolls the whole transaction back, audit
 // rows included, and leaves the chain head where it was.
 func TestWithAudit_MutationFailureLeavesNoAuditRecord(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	sentinel := errors.New("domain rejected the request")
@@ -217,7 +217,7 @@ func TestWithAudit_MutationFailureLeavesNoAuditRecord(t *testing.T) {
 // that is not a ULID, which the schema's typed reference CHECK
 // refuses. Nothing in the production type knows this is a test.
 func TestWithAudit_AuditWriteFailureRollsBackTheMutation(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	deviceID := newID()
@@ -232,7 +232,7 @@ func TestWithAudit_AuditWriteFailureRollsBackTheMutation(t *testing.T) {
 		return nil
 	})
 	require.Error(t, err, "the schema must refuse a reference value that is not a ULID")
-	assert.Contains(t, err.Error(), "audit_effects_after_ref_ulid")
+	assert.Contains(t, err.Error(), "after_ref")
 
 	_, getErr := st.GetDevice(ctx, deviceID)
 	assert.True(t, store.IsNotFound(getErr),
@@ -252,7 +252,7 @@ func TestWithAudit_AuditWriteFailureRollsBackTheMutation(t *testing.T) {
 // password that happens to use only identifier characters, and a
 // lowercase hex token.
 func TestAuditEffect_ReferenceValuesRejectCredentialShapedStrings(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	rejected := map[string]string{
@@ -270,7 +270,7 @@ func TestAuditEffect_ReferenceValuesRejectCredentialShapedStrings(t *testing.T) 
 			e.AfterRef = &v
 			_, err := st.RecordOperation(ctx, mutationOp(), e)
 			require.Error(t, err, "a reference value must be a ULID, %q is not", value)
-			assert.Contains(t, err.Error(), "audit_effects_after_ref_ulid")
+			assert.Contains(t, err.Error(), "after_ref")
 		})
 		t.Run(name+" as before_ref", func(t *testing.T) {
 			v := value
@@ -278,7 +278,7 @@ func TestAuditEffect_ReferenceValuesRejectCredentialShapedStrings(t *testing.T) 
 			e.BeforeRef = &v
 			_, err := st.RecordOperation(ctx, mutationOp(), e)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "audit_effects_before_ref_ulid")
+			assert.Contains(t, err.Error(), "before_ref")
 		})
 	}
 
@@ -290,7 +290,7 @@ func TestAuditEffect_ReferenceValuesRejectCredentialShapedStrings(t *testing.T) 
 // lowercase identifier is refused, so it cannot be repurposed as the
 // value slot the typed columns deny.
 func TestAuditEffect_ChangedFieldsRejectNonIdentifiers(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	rejected := map[string]string{
@@ -307,7 +307,7 @@ func TestAuditEffect_ChangedFieldsRejectNonIdentifiers(t *testing.T) {
 			e.ChangedFields = []string{value}
 			_, err := st.RecordOperation(ctx, mutationOp(), e)
 			require.Error(t, err, "%q is not a field name", value)
-			assert.Contains(t, err.Error(), "audit_effects_changed_fields_identifiers")
+			assert.Contains(t, err.Error(), "invalid field name")
 		})
 	}
 
@@ -324,7 +324,7 @@ func TestAuditEffect_ChangedFieldsRejectNonIdentifiers(t *testing.T) {
 // and a digest without a kind — or a kind without a digest — is not
 // admissible.
 func TestAuditEffect_EvidenceIsADigestWithAKind(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	ctx := context.Background()
 
 	t.Run("a plaintext value is not a digest", func(t *testing.T) {
@@ -333,7 +333,7 @@ func TestAuditEffect_EvidenceIsADigestWithAKind(t *testing.T) {
 		e.EvidenceFingerprint = "-----BEGIN CERTIFICATE-----"
 		_, err := st.RecordOperation(ctx, mutationOp(), e)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "audit_effects_evidence_fingerprint_sha256")
+		assert.Contains(t, err.Error(), "evidence_fingerprint")
 	})
 
 	t.Run("a digest without a kind is uninterpretable", func(t *testing.T) {
@@ -341,7 +341,7 @@ func TestAuditEffect_EvidenceIsADigestWithAKind(t *testing.T) {
 		e.EvidenceFingerprint = sha256hex("leaf certificate")
 		_, err := st.RecordOperation(ctx, mutationOp(), e)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "audit_effects_evidence_paired")
+		assert.Contains(t, err.Error(), "evidence_kind")
 	})
 
 	t.Run("a kind with a digest is accepted", func(t *testing.T) {
@@ -369,15 +369,15 @@ func seedOperation(t *testing.T, st *store.Store) store.AuditRecord {
 }
 
 func TestAuditTables_RejectUpdateAndDelete(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 	rec := seedOperation(t, st)
 
 	statements := map[string]string{
-		"update an operation": `UPDATE public.audit_operations SET result = 'SUCCESS' WHERE operation_id = $1`,
-		"delete an operation": `DELETE FROM public.audit_operations WHERE operation_id = $1`,
-		"update an effect":    `UPDATE public.audit_effects SET outcome = 'FAILED' WHERE operation_id = $1`,
-		"delete an effect":    `DELETE FROM public.audit_effects WHERE operation_id = $1`,
+		"update an operation": `UPDATE audit_operations SET result = 'SUCCESS' WHERE operation_id = $1`,
+		"delete an operation": `DELETE FROM audit_operations WHERE operation_id = $1`,
+		"update an effect":    `UPDATE audit_effects SET outcome = 'FAILED' WHERE operation_id = $1`,
+		"delete an effect":    `DELETE FROM audit_effects WHERE operation_id = $1`,
 	}
 	require.NotEmpty(t, statements, "matches-zero guard: the append-only statement table is empty")
 
@@ -399,17 +399,16 @@ func TestAuditTables_RejectUpdateAndDelete(t *testing.T) {
 	assert.Equal(t, int64(2), v.Rows)
 }
 
-// TRUNCATE fires no row triggers, so it needs its own statement-level
-// guard; without one it would bypass the retention range bound
-// entirely.
-func TestAuditTables_RejectTruncate(t *testing.T) {
-	st, pool := setupPostgres(t)
+// SQLite has no TRUNCATE statement. A whole-table DELETE still visits the
+// append-only row guards and must be refused.
+func TestAuditTables_RejectBulkDelete(t *testing.T) {
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 	seedOperation(t, st)
 
-	for _, table := range []string{"audit_operations", "audit_effects", "audit_chain_anchors", "audit_chain_checkpoints"} {
+	for _, table := range []string{"audit_operations", "audit_effects"} {
 		t.Run(table, func(t *testing.T) {
-			_, err := pool.Exec(ctx, fmt.Sprintf("TRUNCATE public.%s CASCADE", table))
+			_, err := pool.Exec(ctx, fmt.Sprintf("DELETE FROM %s", table))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "append-only")
 		})
@@ -421,17 +420,17 @@ func TestAuditTables_RejectTruncate(t *testing.T) {
 // anchor is a published fact and a checkpoint explains a gap, and
 // editing either would defeat the guard it exists to provide.
 func TestAuditAnchorsAndCheckpoints_RejectUpdateAndDelete(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 	seedOperation(t, st)
 
 	anchor := publishAnchor(t, st, "s3://audit-anchors/2026-07-31")
 
-	_, err := pool.Exec(ctx, `UPDATE public.audit_chain_anchors SET external_ref = 'elsewhere' WHERE anchor_id = $1`, anchor.AnchorID)
+	_, err := pool.Exec(ctx, `UPDATE audit_chain_anchors SET external_ref = 'elsewhere' WHERE anchor_id = $1`, anchor.AnchorID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "append-only")
 
-	_, err = pool.Exec(ctx, `DELETE FROM public.audit_chain_anchors WHERE anchor_id = $1`, anchor.AnchorID)
+	_, err = pool.Exec(ctx, `DELETE FROM audit_chain_anchors WHERE anchor_id = $1`, anchor.AnchorID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "append-only")
 
@@ -445,23 +444,20 @@ func TestAuditAnchorsAndCheckpoints_RejectUpdateAndDelete(t *testing.T) {
 // disableAuditTriggers simulates the one adversary the triggers cannot
 // stop — someone with rights over the table itself — so the hash chain
 // can be tested as the guard that still holds when they are gone.
-func disableAuditTriggers(t *testing.T, pool *pgxpool.Pool) {
+func disableAuditTriggers(t *testing.T, pool *testdb.DB) {
 	t.Helper()
 	ctx := context.Background()
-	for _, table := range []string{"audit_operations", "audit_effects"} {
-		_, err := pool.Exec(ctx, fmt.Sprintf("ALTER TABLE public.%s DISABLE TRIGGER USER", table))
+	for _, trigger := range []string{
+		"audit_operations_block_update", "audit_operations_block_delete",
+		"audit_effects_block_update", "audit_effects_block_delete",
+	} {
+		_, err := pool.Exec(ctx, "DROP TRIGGER "+trigger)
 		require.NoError(t, err, "the fixture needs table ownership to simulate a privileged edit")
 	}
-	t.Cleanup(func() {
-		for _, table := range []string{"audit_operations", "audit_effects"} {
-			_, _ = pool.Exec(context.Background(),
-				fmt.Sprintf("ALTER TABLE public.%s ENABLE TRIGGER USER", table))
-		}
-	})
 }
 
 func TestVerifyAuditChain_DetectsATamperedOperation(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	rec := seedOperation(t, st)
@@ -473,7 +469,7 @@ func TestVerifyAuditChain_DetectsATamperedOperation(t *testing.T) {
 
 	disableAuditTriggers(t, pool)
 	_, err = pool.Exec(ctx,
-		`UPDATE public.audit_operations SET authorization_outcome = 'ALLOWED', result = 'SUCCESS', authorization_detail = 'Rewritten' WHERE operation_id = $1`,
+		`UPDATE audit_operations SET authorization_outcome = 'ALLOWED', result = 'SUCCESS', authorization_detail = 'Rewritten' WHERE operation_id = $1`,
 		rec.OperationID)
 	require.NoError(t, err, "with the guard disabled the edit lands — that is the point")
 
@@ -488,14 +484,14 @@ func TestVerifyAuditChain_DetectsATamperedOperation(t *testing.T) {
 // hashed effects only as part of their operation would miss this the
 // moment an effect arrived after its operation was written.
 func TestVerifyAuditChain_DetectsATamperedEffect(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	rec := seedOperation(t, st)
 
 	disableAuditTriggers(t, pool)
 	_, err := pool.Exec(ctx,
-		`UPDATE public.audit_effects SET outcome = 'REJECTED' WHERE operation_id = $1`, rec.OperationID)
+		`UPDATE audit_effects SET outcome = 'REJECTED' WHERE operation_id = $1`, rec.OperationID)
 	require.NoError(t, err)
 
 	_, err = st.VerifyAuditChain(ctx, store.AuditVerifyOptions{})
@@ -507,7 +503,7 @@ func TestVerifyAuditChain_DetectsATamperedEffect(t *testing.T) {
 // A removed row leaves a gap no checkpoint explains, which is a break
 // rather than a shorter chain.
 func TestVerifyAuditChain_DetectsAnUnexplainedGap(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	seedOperation(t, st)
@@ -515,7 +511,7 @@ func TestVerifyAuditChain_DetectsAnUnexplainedGap(t *testing.T) {
 	seedOperation(t, st)
 
 	disableAuditTriggers(t, pool)
-	_, err := pool.Exec(ctx, `DELETE FROM public.audit_effects WHERE operation_id = $1`, rec.OperationID)
+	_, err := pool.Exec(ctx, `DELETE FROM audit_effects WHERE operation_id = $1`, rec.OperationID)
 	require.NoError(t, err)
 
 	_, err = st.VerifyAuditChain(ctx, store.AuditVerifyOptions{})
@@ -532,7 +528,7 @@ func TestVerifyAuditChain_DetectsAnUnexplainedGap(t *testing.T) {
 // it through the mutation template would have forced an actor that
 // does not exist.
 func TestRecordOperation_RejectedAuthentication(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	ctx := context.Background()
 
 	rec, err := st.RecordOperation(ctx, store.AuditOperation{
@@ -567,7 +563,7 @@ func TestRecordOperation_RejectedAuthentication(t *testing.T) {
 // A sensitive read changes nothing and still produces an operation and
 // an effect naming what was read.
 func TestRecordOperation_SensitiveRead(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	subject := newID()
@@ -611,7 +607,7 @@ func TestRecordOperation_SensitiveRead(t *testing.T) {
 // Rows written in between do not interfere and nothing already
 // committed is rewritten.
 func TestWithAuditEffects_LateEffectAppendsAfterInterveningRows(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	ctx := context.Background()
 
 	deliveryID := newID()
@@ -645,8 +641,8 @@ func TestWithAuditEffects_LateEffectAppendsAfterInterveningRows(t *testing.T) {
 	effects, err := st.ListAuditEffects(ctx, dispatch.OperationID)
 	require.NoError(t, err)
 	require.Len(t, effects, 2, "both effects belong to the same operation")
-	assert.Equal(t, int32(0), effects[0].EffectSeq)
-	assert.Equal(t, int32(1), effects[1].EffectSeq, "the late effect continues the numbering within the operation")
+	assert.Equal(t, int64(0), effects[0].EffectSeq)
+	assert.Equal(t, int64(1), effects[1].EffectSeq, "the late effect continues the numbering within the operation")
 	assert.Equal(t, "ACK_RECEIPT", effects[1].Action)
 
 	v, err := st.VerifyAuditChain(ctx, store.AuditVerifyOptions{})
@@ -659,7 +655,7 @@ func TestWithAuditEffects_LateEffectAppendsAfterInterveningRows(t *testing.T) {
 // asserted directly: every prior row's hash is identical before and
 // after.
 func TestWithAuditEffects_RewritesNothingAlreadyCommitted(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	dispatch, err := st.RecordOperation(ctx, mutationOp(), store.AuditEffect{
@@ -694,12 +690,12 @@ func TestWithAuditEffects_RewritesNothingAlreadyCommitted(t *testing.T) {
 }
 
 // chainSnapshot maps every chain position to its stored row hash.
-func chainSnapshot(t *testing.T, pool *pgxpool.Pool) map[int64]string {
+func chainSnapshot(t *testing.T, pool *testdb.DB) map[int64]string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `
-		SELECT chain_seq, encode(row_hash, 'hex') FROM public.audit_operations
+		SELECT chain_seq, hex(row_hash) FROM audit_operations
 		UNION ALL
-		SELECT chain_seq, encode(row_hash, 'hex') FROM public.audit_effects`)
+		SELECT chain_seq, hex(row_hash) FROM audit_effects`)
 	require.NoError(t, err)
 	defer rows.Close()
 
@@ -717,7 +713,7 @@ func chainSnapshot(t *testing.T, pool *pgxpool.Pool) map[int64]string {
 // A continuation that records nothing is refused: it would advance
 // nothing and claim an outcome it never wrote.
 func TestWithAuditEffects_RefusesAnEmptyContinuation(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	ctx := context.Background()
 	rec := seedOperation(t, st)
 
@@ -728,7 +724,7 @@ func TestWithAuditEffects_RefusesAnEmptyContinuation(t *testing.T) {
 }
 
 func TestWithAuditEffects_RefusesAnUnknownOperation(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 
 	_, err := st.WithAuditEffects(context.Background(), newID(), func(_ context.Context, _ *store.Tx, r *store.AuditRecorder) error {
 		r.Effect(deviceEffect(newID()))
@@ -759,7 +755,7 @@ func publishAnchor(t *testing.T, st *store.Store, ref string) store.AuditAnchor 
 // nothing is written: an anchor that disagrees with its own chain is
 // worse than no anchor.
 func TestRecordPublishedAuditAnchor_RefusesAHashTheChainDoesNotCarry(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 	seedOperation(t, st)
 
@@ -784,7 +780,7 @@ func TestRecordPublishedAuditAnchor_RefusesAHashTheChainDoesNotCarry(t *testing.
 // An anchor with no off-host reference attests nothing: the value it
 // pins exists only in the database an attacker would already control.
 func TestRecordPublishedAuditAnchor_RefusesAnEmptyExternalReference(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 	seedOperation(t, st)
 
@@ -802,7 +798,7 @@ func TestRecordPublishedAuditAnchor_RefusesAnEmptyExternalReference(t *testing.T
 // pins the position it captured, not wherever the head has since
 // moved.
 func TestRecordPublishedAuditAnchor_AcceptsACapturedTipAfterFurtherAppends(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	ctx := context.Background()
 
 	seedOperation(t, st)
@@ -831,7 +827,7 @@ func TestRecordPublishedAuditAnchor_AcceptsACapturedTipAfterFurtherAppends(t *te
 // appended afterwards must not disturb it — which is the whole reason
 // a row hash covers only itself.
 func TestAuditAnchor_PrefixStillVerifiesAfterALateEffect(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	ctx := context.Background()
 
 	dispatch, err := st.RecordOperation(ctx, mutationOp(), store.AuditEffect{
@@ -870,7 +866,7 @@ func TestAuditAnchor_PrefixStillVerifiesAfterALateEffect(t *testing.T) {
 // every hash locally still cannot produce a value already held
 // elsewhere.
 func TestVerifyAuditChain_FailsWhenAnAnchoredPositionIsAltered(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	ctx := context.Background()
 
 	rec := seedOperation(t, st)
@@ -895,16 +891,16 @@ func TestVerifyAuditChain_FailsWhenAnAnchoredPositionIsAltered(t *testing.T) {
 // verified, and silence is not the answer: the anchor says the
 // position was there.
 func TestVerifyAuditChain_FailsWhenAnAnchoredPositionIsGone(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	seedOperation(t, st)
 	anchor := publishAnchor(t, st, "s3://audit-anchors/pinned")
 
 	disableAuditTriggers(t, pool)
-	_, err := pool.Exec(ctx, `DELETE FROM public.audit_effects`)
+	_, err := pool.Exec(ctx, `DELETE FROM audit_effects`)
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `DELETE FROM public.audit_operations`)
+	_, err = pool.Exec(ctx, `DELETE FROM audit_operations`)
 	require.NoError(t, err)
 
 	_, err = st.VerifyAuditChain(ctx, store.AuditVerifyOptions{ExpectedAnchor: &anchor})
@@ -921,16 +917,16 @@ func TestVerifyAuditChain_FailsWhenAnAnchoredPositionIsGone(t *testing.T) {
 // perfect: every remaining hash still follows from its predecessor.
 // Comparing the walk against the recorded head is what catches it.
 func TestVerifyAuditChain_DetectsARemovedTail(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	seedOperation(t, st)
 	last := seedOperation(t, st)
 
 	disableAuditTriggers(t, pool)
-	_, err := pool.Exec(ctx, `DELETE FROM public.audit_effects WHERE operation_id = $1`, last.OperationID)
+	_, err := pool.Exec(ctx, `DELETE FROM audit_effects WHERE operation_id = $1`, last.OperationID)
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `DELETE FROM public.audit_operations WHERE operation_id = $1`, last.OperationID)
+	_, err = pool.Exec(ctx, `DELETE FROM audit_operations WHERE operation_id = $1`, last.OperationID)
 	require.NoError(t, err)
 
 	_, err = st.VerifyAuditChain(ctx, store.AuditVerifyOptions{})
@@ -941,12 +937,12 @@ func TestVerifyAuditChain_DetectsARemovedTail(t *testing.T) {
 
 // A head row edited to match a truncated chain is caught by its hash.
 func TestVerifyAuditChain_DetectsAnEditedChainHead(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	seedOperation(t, st)
 	_, err := pool.Exec(ctx,
-		`UPDATE public.audit_chain_head SET head_hash = decode(repeat('00', 32), 'hex') WHERE stream = $1`,
+		`UPDATE audit_chain_head SET head_hash = zeroblob(32) WHERE stream = $1`,
 		store.DefaultAuditStream)
 	require.NoError(t, err)
 
@@ -960,35 +956,31 @@ func TestVerifyAuditChain_DetectsAnEditedChainHead(t *testing.T) {
 // Concurrency
 // ---------------------------------------------------------------------------
 
-// Two audited writers must be able to be inside their domain callbacks
-// at the same time. The barrier makes that a requirement rather than a
-// hope: neither is released until both have arrived, so a
-// implementation that held the chain head across the callback could
-// not get both in and would deadlock until the timeout.
-//
-// Both must then commit, and the resulting chain must be gapless.
-func TestWithAudit_ConcurrentWritersOverlapAndTheChainStaysGapless(t *testing.T) {
-	st, _ := setupPostgresPool(t, 8)
+// SQLite admits one writer. Concurrent callers must serialize without losing
+// either mutation, and the resulting chain must remain gapless.
+func TestWithAudit_ConcurrentWritersSerializeAndTheChainStaysGapless(t *testing.T) {
+	st, _ := setupSQLitePool(t, 8)
 	ctx := context.Background()
 
-	var arrived sync.WaitGroup
-	arrived.Add(2)
-	release := make(chan struct{})
-	inside := make(chan string, 2)
+	var mu sync.Mutex
+	concurrent, maxConcurrent := 0, 0
 
 	run := func(hostname string) error {
 		_, err := st.WithAudit(ctx, mutationOp(), func(ctx context.Context, tx *store.Tx, r *store.AuditRecorder) error {
+			mu.Lock()
+			concurrent++
+			maxConcurrent = max(maxConcurrent, concurrent)
+			mu.Unlock()
+			defer func() {
+				mu.Lock()
+				concurrent--
+				mu.Unlock()
+			}()
 			id := newID()
 			if err := insertDevice(ctx, tx, id, hostname); err != nil {
 				return err
 			}
-			inside <- hostname
-			arrived.Done()
-			select {
-			case <-release:
-			case <-time.After(30 * time.Second):
-				return fmt.Errorf("%s never released: the other writer could not enter its domain callback", hostname)
-			}
+			time.Sleep(10 * time.Millisecond)
 			r.Effect(deviceEffect(id))
 			return nil
 		})
@@ -999,25 +991,10 @@ func TestWithAudit_ConcurrentWritersOverlapAndTheChainStaysGapless(t *testing.T)
 	go func() { errs <- run("concurrent-a.example.test") }()
 	go func() { errs <- run("concurrent-b.example.test") }()
 
-	// Both must be inside before either proceeds.
-	done := make(chan struct{})
-	go func() { arrived.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("both writers must be inside their domain callbacks concurrently; the audited path must not serialise domain work")
-	}
-	close(release)
-
 	for i := 0; i < 2; i++ {
 		require.NoError(t, <-errs)
 	}
-	close(inside)
-	seen := map[string]bool{}
-	for h := range inside {
-		seen[h] = true
-	}
-	assert.Len(t, seen, 2)
+	assert.Equal(t, 1, maxConcurrent)
 
 	n, err := st.CountDevices(ctx)
 	require.NoError(t, err)

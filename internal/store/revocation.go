@@ -70,7 +70,7 @@ func RevokeInTx(ctx context.Context, tx *Tx, fingerprint string, notAfter time.T
 // mutation, so it runs inside a BACKGROUND_WRITER-class audited
 // operation and is attributable like any other.
 func DeleteExpiredRevocationsInTx(ctx context.Context, tx *Tx) (int64, error) {
-	n, err := tx.DeleteExpiredRevocations(ctx)
+	n, err := tx.DeleteExpiredRevocations(ctx, time.Now().UTC().Add(-7*24*time.Hour))
 	if err != nil {
 		return 0, fmt.Errorf("delete expired revocations: %w", err)
 	}

@@ -1,9 +1,9 @@
 -- name: GetAuthoringCompliancePolicy :one
 SELECT * FROM compliance_policies
-WHERE id = $1 AND is_deleted = FALSE;
+WHERE id = ? AND is_deleted = FALSE;
 
 -- name: ListAuthoringCompliancePolicies :many
-WITH assignment_groups AS (
+WITH assignment_groups(source_type, source_id, group_id) AS (
     SELECT a.source_type, a.source_id, a.target_id AS group_id
     FROM assignments a
     WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
@@ -27,7 +27,7 @@ WITH assignment_groups AS (
     WHERE a.is_deleted = FALSE AND a.target_type = 'user'
 )
 SELECT p.id, p.name, p.description, p.created_at, p.created_by,
-       p.is_deleted, p.search_tsv,
+       p.is_deleted,
        (
            SELECT COUNT(*)
            FROM compliance_policy_rules r
@@ -38,19 +38,19 @@ FROM compliance_policies p
 WHERE p.is_deleted = FALSE
   AND p.id > sqlc.arg(after_id)
   AND (
-      NOT sqlc.arg(scope_restricted)::boolean
+      NOT sqlc.arg(scope_restricted)
       OR EXISTS (
           SELECT 1 FROM assignment_groups ag
           WHERE ag.source_type = 'compliance_policy'
             AND ag.source_id = p.id
-            AND ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+            AND ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
       )
   )
 ORDER BY p.id
 LIMIT sqlc.arg(row_limit);
 
 -- name: CountAuthoringCompliancePolicies :one
-WITH assignment_groups AS (
+WITH assignment_groups(source_type, source_id, group_id) AS (
     SELECT a.source_type, a.source_id, a.target_id AS group_id
     FROM assignments a
     WHERE a.is_deleted = FALSE AND a.target_type = 'device_group'
@@ -77,12 +77,12 @@ SELECT COUNT(*)
 FROM compliance_policies p
 WHERE p.is_deleted = FALSE
   AND (
-      NOT sqlc.arg(scope_restricted)::boolean
+      NOT sqlc.arg(scope_restricted)
       OR EXISTS (
           SELECT 1 FROM assignment_groups ag
           WHERE ag.source_type = 'compliance_policy'
             AND ag.source_id = p.id
-            AND ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+            AND ag.group_id IN (SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(scope_group_ids_json)))
       )
   );
 
@@ -136,48 +136,48 @@ SELECT r.policy_id, r.action_id, a.name AS action_name,
        r.grace_period_hours, r.added_at
 FROM compliance_policy_rules r
 JOIN actions a ON a.id = r.action_id AND a.is_deleted = FALSE
-WHERE r.policy_id = $1
+WHERE r.policy_id = ?
 ORDER BY r.action_id;
 
 -- name: ListContainingCompliancePolicyIDs :many
 SELECT r.policy_id
 FROM compliance_policy_rules r
 JOIN compliance_policies p ON p.id = r.policy_id AND p.is_deleted = FALSE
-WHERE r.action_id = $1
+WHERE r.action_id = ?
 ORDER BY r.policy_id;
 
 -- name: DeleteCompliancePolicyRulesForAction :many
 DELETE FROM compliance_policy_rules
-WHERE action_id = $1
+WHERE action_id = ?
 RETURNING policy_id;
 
 -- name: DeleteCompliancePolicyEvaluationsForAction :many
 DELETE FROM compliance_policy_evaluation
-WHERE action_id = $1
+WHERE action_id = ?
 RETURNING policy_id;
 
 -- name: DeleteComplianceResultsForAction :many
 DELETE FROM compliance_results
-WHERE action_id = $1
+WHERE action_id = ?
 RETURNING device_id;
 
 -- name: DeleteAuthoringCompliancePolicyRules :many
 DELETE FROM compliance_policy_rules
-WHERE policy_id = $1
+WHERE policy_id = ?
 RETURNING action_id;
 
 -- name: DeleteCompliancePolicyEvaluations :many
 DELETE FROM compliance_policy_evaluation
-WHERE policy_id = $1
+WHERE policy_id = ?
 RETURNING device_id;
 
 -- name: DeleteCompliancePolicyAssignments :many
 DELETE FROM assignments
-WHERE source_type = 'compliance_policy' AND source_id = $1
+WHERE source_type = 'compliance_policy' AND source_id = ?
 RETURNING id;
 
 -- name: SoftDeleteAuthoringCompliancePolicy :one
 UPDATE compliance_policies
 SET is_deleted = TRUE
-WHERE id = $1 AND is_deleted = FALSE
+WHERE id = ? AND is_deleted = FALSE
 RETURNING *;

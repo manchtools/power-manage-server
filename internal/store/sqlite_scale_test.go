@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	osexec "os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sync"
@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -24,6 +23,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/delivery"
 	"github.com/manchtools/power-manage/server/internal/jobs"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 )
 
 const (
@@ -79,7 +79,7 @@ type latencySummary struct {
 	MaxMillis float64 `json:"max_ms"`
 }
 
-type postgresScaleResult struct {
+type sqliteScaleResult struct {
 	Agents                 int            `json:"agents"`
 	Deliveries             int            `json:"deliveries"`
 	ElapsedSeconds         float64        `json:"elapsed_seconds"`
@@ -102,19 +102,19 @@ type postgresScaleResult struct {
 	JobQueueDropped        int            `json:"job_queue_dropped"`
 }
 
-// TestPostgresScale_MixedWorkloadAtTenThousandAgents is the repeatable
-// pre-SQLite baseline. Normal suites skip it; run explicitly with
+// TestSQLiteScale_MixedWorkloadAtTenThousandAgents is the repeatable target
+// database gate. Normal suites skip it; run explicitly with
 // POWER_MANAGE_RUN_SCALE_TEST=1.
-func TestPostgresScale_MixedWorkloadAtTenThousandAgents(t *testing.T) {
+func TestSQLiteScale_MixedWorkloadAtTenThousandAgents(t *testing.T) {
 	if os.Getenv("POWER_MANAGE_RUN_SCALE_TEST") != "1" {
-		t.Skip("set POWER_MANAGE_RUN_SCALE_TEST=1 to run the 10,000-agent PostgreSQL gate")
+		t.Skip("set POWER_MANAGE_RUN_SCALE_TEST=1 to run the 10,000-agent SQLite gate")
 	}
 	if testing.Short() {
 		t.Fatal("the explicit scale gate cannot run in short mode")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
-	st, raw := setupPostgresPool(t, 32)
+	st, raw := setupSQLitePool(t, 32)
 	now := time.Now().UTC()
 	deviceIDs := seedScaleDevices(t, raw, now)
 	deliveries := seedScaleDeliveries(t, raw, deviceIDs, now)
@@ -199,7 +199,7 @@ func TestPostgresScale_MixedWorkloadAtTenThousandAgents(t *testing.T) {
 	}()
 	go func() {
 		<-start
-		duration, completed, err := exerciseBackup(ctx, raw.Config().ConnString(), backupDirectory)
+		duration, completed, err := exerciseBackup(ctx, raw, backupDirectory)
 		results <- workloadResult{name: "backup", duration: duration, completed: completed, err: err}
 	}()
 	close(start)
@@ -228,7 +228,7 @@ func TestPostgresScale_MixedWorkloadAtTenThousandAgents(t *testing.T) {
 	require.Equal(t, int64(scaleDeliveries), router.sent.Load())
 	assertScaleDatabaseState(t, ctx, raw, scaleAgents, scaleDeliveries)
 	backupLag := time.Since(backupCompleted)
-	result := postgresScaleResult{
+	result := sqliteScaleResult{
 		Agents: scaleAgents, Deliveries: scaleDeliveries,
 		ElapsedSeconds: elapsed.Seconds(), RegistrationMillis: milliseconds(registrationDuration),
 		HeartbeatFlush: summarizeLatency(latencies["heartbeat"]),
@@ -244,7 +244,7 @@ func TestPostgresScale_MixedWorkloadAtTenThousandAgents(t *testing.T) {
 	}
 	encoded, err := json.Marshal(result)
 	require.NoError(t, err)
-	t.Logf("POSTGRES_SCALE_RESULT %s", encoded)
+	t.Logf("SQLITE_SCALE_RESULT %s", encoded)
 
 	assert.Equal(t, scaleQueueSize, deliveryAccepted)
 	assert.Equal(t, scaleQueueSize, jobAccepted)
@@ -260,26 +260,25 @@ func TestPostgresScale_MixedWorkloadAtTenThousandAgents(t *testing.T) {
 	assert.Less(t, result.PeakGoroutines, int64(512))
 }
 
-func seedScaleDevices(t *testing.T, raw interface {
-	CopyFrom(context.Context, pgx.Identifier, []string, pgx.CopyFromSource) (int64, error)
-}, now time.Time) []string {
+func seedScaleDevices(t *testing.T, raw *testdb.DB, now time.Time) []string {
 	t.Helper()
 	ids := make([]string, scaleAgents)
-	rows := make([][]any, scaleAgents)
+	tx, err := raw.Begin(context.Background())
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(context.Background()) }()
 	for index := range scaleAgents {
 		ids[index] = newID()
-		rows[index] = []any{ids[index], fmt.Sprintf("scale-device-%05d", index), make([]byte, 32), now, now.Add(-time.Minute)}
+		_, err = tx.Exec(context.Background(), `
+			INSERT INTO devices (id, hostname, agent_sealing_public_key, registered_at, last_seen_at)
+			VALUES (?, ?, ?, ?, ?)`,
+			ids[index], fmt.Sprintf("scale-device-%05d", index), make([]byte, 32), now, now.Add(-time.Minute))
+		require.NoError(t, err)
 	}
-	copied, err := raw.CopyFrom(context.Background(), pgx.Identifier{"public", "devices"},
-		[]string{"id", "hostname", "agent_sealing_public_key", "registered_at", "last_seen_at"}, pgx.CopyFromRows(rows))
-	require.NoError(t, err)
-	require.Equal(t, int64(scaleAgents), copied)
+	require.NoError(t, tx.Commit(context.Background()))
 	return ids
 }
 
-func seedScaleDeliveries(t *testing.T, raw interface {
-	CopyFrom(context.Context, pgx.Identifier, []string, pgx.CopyFromSource) (int64, error)
-}, deviceIDs []string, now time.Time) []scaleDelivery {
+func seedScaleDeliveries(t *testing.T, raw *testdb.DB, deviceIDs []string, now time.Time) []scaleDelivery {
 	t.Helper()
 	manifestID, actionID := newID(), newID()
 	manifest := &pmv1.Manifest{
@@ -293,16 +292,20 @@ func seedScaleDeliveries(t *testing.T, raw interface {
 	}
 	payload, err := protojson.Marshal(manifest)
 	require.NoError(t, err)
-	rows := make([][]any, scaleDeliveries)
 	items := make([]scaleDelivery, scaleDeliveries)
+	tx, err := raw.Begin(context.Background())
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(context.Background()) }()
 	for index := range scaleDeliveries {
 		items[index] = scaleDelivery{deliveryID: newID(), deviceID: deviceIDs[index], manifestID: manifestID}
-		rows[index] = []any{items[index].deliveryID, items[index].deviceID, manifestID, payload, delivery.StatePending, now, now}
+		_, err = tx.Exec(context.Background(), `
+			INSERT INTO deliveries
+				(delivery_id, device_id, manifest_id, manifest, state, created_at, available_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			items[index].deliveryID, items[index].deviceID, manifestID, payload, delivery.StatePending, now, now)
+		require.NoError(t, err)
 	}
-	copied, err := raw.CopyFrom(context.Background(), pgx.Identifier{"public", "deliveries"},
-		[]string{"delivery_id", "device_id", "manifest_id", "manifest", "state", "created_at", "available_at"}, pgx.CopyFromRows(rows))
-	require.NoError(t, err)
-	require.Equal(t, int64(scaleDeliveries), copied)
+	require.NoError(t, tx.Commit(context.Background()))
 	return items
 }
 
@@ -455,20 +458,40 @@ func exerciseTerminal(ctx context.Context, registry *connection.TerminalSessionR
 	return latencies, nil
 }
 
-func exerciseBackup(ctx context.Context, databaseURL, directory string) (time.Duration, time.Time, error) {
-	if _, err := osexec.LookPath("pg_dump"); err != nil {
-		return 0, time.Time{}, err
-	}
-	if _, err := osexec.LookPath("pg_restore"); err != nil {
-		return 0, time.Time{}, err
-	}
-	path := directory + "/postgres-scale.dump"
+func exerciseBackup(ctx context.Context, raw *testdb.DB, directory string) (time.Duration, time.Time, error) {
+	path := filepath.Join(directory, "power-manage-scale.db")
 	started := time.Now()
-	if err := osexec.CommandContext(ctx, "pg_dump", "--format=custom", "--file", path, databaseURL).Run(); err != nil {
-		return 0, time.Time{}, fmt.Errorf("pg_dump: %w", err)
+	if err := raw.Backup(ctx, path); err != nil {
+		return 0, time.Time{}, err
 	}
-	if err := osexec.CommandContext(ctx, "pg_restore", "--list", path).Run(); err != nil {
-		return 0, time.Time{}, fmt.Errorf("pg_restore verification: %w", err)
+	backup, err := testdb.Open(ctx, path)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	defer backup.Close()
+	var integrity string
+	if err := backup.QueryRow(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
+		return 0, time.Time{}, fmt.Errorf("verify SQLite backup: %w", err)
+	}
+	if integrity != "ok" {
+		return 0, time.Time{}, fmt.Errorf("verify SQLite backup: %s", integrity)
+	}
+	violations, err := backup.Query(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("verify SQLite backup foreign keys: %w", err)
+	}
+	defer violations.Close()
+	if violations.Next() {
+		var table, parent string
+		var rowID any
+		var foreignKeyID int
+		if err := violations.Scan(&table, &rowID, &parent, &foreignKeyID); err != nil {
+			return 0, time.Time{}, fmt.Errorf("read SQLite backup foreign-key violation: %w", err)
+		}
+		return 0, time.Time{}, fmt.Errorf("verify SQLite backup foreign keys: table %s row %v references %s (constraint %d)", table, rowID, parent, foreignKeyID)
+	}
+	if err := violations.Err(); err != nil {
+		return 0, time.Time{}, fmt.Errorf("verify SQLite backup foreign keys: %w", err)
 	}
 	return time.Since(started), time.Now().UTC(), nil
 }
@@ -521,9 +544,7 @@ func positiveDelta(after, before uint64) uint64 {
 	return after - before
 }
 
-func assertScaleDatabaseState(t *testing.T, ctx context.Context, raw interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, agents, deliveries int) {
+func assertScaleDatabaseState(t *testing.T, ctx context.Context, raw *testdb.DB, agents, deliveries int) {
 	t.Helper()
 	var storedAgents, seenAgents, completedDeliveries int
 	require.NoError(t, raw.QueryRow(ctx, `SELECT count(*) FROM devices`).Scan(&storedAgents))

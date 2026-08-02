@@ -44,7 +44,7 @@ func dispatchManifest() *pmv1.Manifest {
 }
 
 func TestDispatchSubmission_CommitsManifestExecutionsAndAuditBeforeWake(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	deviceID := seedDevice(t, raw)
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	waker := &committedWaker{store: st}
@@ -82,7 +82,7 @@ func TestDispatchSubmission_CommitsManifestExecutionsAndAuditBeforeWake(t *testi
 }
 
 func TestDispatchSubmission_SchedulingAndAuditFailure(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	deviceID := seedDevice(t, raw)
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	waker := &committedWaker{store: st}
@@ -102,10 +102,7 @@ func TestDispatchSubmission_SchedulingAndAuditFailure(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, deliveryRow.AvailableAt.Equal(scheduledFor))
 
-	_, err = raw.Exec(context.Background(), `
-		ALTER TABLE audit_operations ADD CONSTRAINT reject_dispatch_submission_audit
-		CHECK (request_descriptor <> 'dispatch.rollback') NOT VALID`)
-	require.NoError(t, err)
+	rejectAuditOperation(t, raw, "dispatch.rollback")
 	beforeWakes := len(waker.ids)
 	op = mutationOp()
 	op.RequestDescriptor = "dispatch.rollback"
@@ -121,7 +118,7 @@ func TestDispatchSubmission_SchedulingAndAuditFailure(t *testing.T) {
 }
 
 func TestDispatchSubmission_MultiDeviceFailureRollsBackWholeFanout(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	deviceID := seedDevice(t, raw)
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	waker := &committedWaker{store: st}

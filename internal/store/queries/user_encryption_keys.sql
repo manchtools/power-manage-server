@@ -1,7 +1,7 @@
 -- Per-subject data-encryption keys. wrapped_dek is the subject's DEK
 -- wrapped under the deployment KEK; every value sealed for that
--- subject — including class-three audit detail, which is never
--- deleted — is readable only through it.
+-- subject, including class-three audit detail which is never
+-- deleted, is readable only through it.
 
 -- name: InsertUserEncryptionKey :execrows
 -- ON CONFLICT DO NOTHING: minting is first-write-wins, so a
@@ -9,18 +9,19 @@
 -- sealed data. Replacing it would be an accidental, irreversible
 -- erasure.
 INSERT INTO user_encryption_keys (user_id, wrapped_dek)
-VALUES ($1, $2)
+VALUES (?, ?)
 ON CONFLICT (user_id) DO NOTHING;
 
 -- name: GetUserEncryptionKey :one
-SELECT * FROM user_encryption_keys WHERE user_id = $1;
+SELECT * FROM user_encryption_keys WHERE user_id = ?;
 
 -- name: DeleteUserEncryptionKey :execrows
--- The erasure itself: destroying the wrapped key makes every copy of
--- the subject's sealed data — live rows, archives, backups —
--- permanently unreadable at once. There is no recovery path, which is
--- the point.
-DELETE FROM user_encryption_keys WHERE user_id = $1;
+-- Deletes the live wrapped key, immediately making sealed subject data in the
+-- live database unreadable. A retained SQLite snapshot may still contain an
+-- older wrapped-key copy; operators must expire or rewrite those snapshots
+-- under the deployment's documented backup-retention policy before claiming
+-- permanent erasure across every copy.
+DELETE FROM user_encryption_keys WHERE user_id = ?;
 
 -- name: CountUserEncryptionKeys :one
 SELECT COUNT(*) FROM user_encryption_keys;

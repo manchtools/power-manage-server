@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -14,7 +14,7 @@ import (
 
 type manifestFixture struct {
 	compiler         *manifest.Compiler
-	raw              *pgxpool.Pool
+	raw              *testdb.DB
 	action1, action2 string
 	set1, set2       string
 	definition       string
@@ -22,38 +22,38 @@ type manifestFixture struct {
 
 func newManifestFixture(t *testing.T) *manifestFixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	action1, action2 := newID(), newID()
 	_, err := raw.Exec(ctx, `
 		INSERT INTO actions
 			(id, name, action_type, desired_state, params, timeout_seconds, schedule, created_at)
 		VALUES
-			($1, 'first', $3, 1, '{}'::jsonb, 30, '{"runOnAssign":true}'::jsonb, now()),
-			($2, 'second', $4, 2, '{}'::jsonb, 60, '{"cron":"0 3 * * *"}'::jsonb, now())
+			($1, 'first', $3, 1, '{}', 30, '{"runOnAssign":true}', CURRENT_TIMESTAMP),
+			($2, 'second', $4, 2, '{}', 60, '{"cron":"0 3 * * *"}', CURRENT_TIMESTAMP)
 	`, action1, action2, int32(pmv1.ActionType_ACTION_TYPE_REBOOT), int32(pmv1.ActionType_ACTION_TYPE_SYNC))
 	require.NoError(t, err)
 	set1, set2 := newID(), newID()
 	_, err = raw.Exec(ctx, `
 		INSERT INTO action_sets (id, name, schedule, on_failure, created_at) VALUES
-			($1, 'daily', '{"cron":"0 4 * * *"}'::jsonb, $3, now()),
-			($2, 'on assign', '{"runOnAssign":true}'::jsonb, $4, now())
+			($1, 'daily', '{"cron":"0 4 * * *"}', $3, CURRENT_TIMESTAMP),
+			($2, 'on assign', '{"runOnAssign":true}', $4, CURRENT_TIMESTAMP)
 	`, set1, set2, int32(pmv1.OnFailure_ON_FAILURE_STOP), int32(pmv1.OnFailure_ON_FAILURE_CONTINUE))
 	require.NoError(t, err)
 	_, err = raw.Exec(ctx, `
 		INSERT INTO action_set_members (set_id, action_id, sort_order, added_at) VALUES
-			($1, $4, 20, now()), ($1, $3, 10, now()), ($2, $3, 0, now())
+			($1, $4, 20, CURRENT_TIMESTAMP), ($1, $3, 10, CURRENT_TIMESTAMP), ($2, $3, 0, CURRENT_TIMESTAMP)
 	`, set1, set2, action1, action2)
 	require.NoError(t, err)
 	definition := newID()
 	_, err = raw.Exec(ctx, `
 		INSERT INTO definitions (id, name, schedule, created_at)
-		VALUES ($1, 'workstation', '{"cron":"0 1 * * *"}'::jsonb, now())
+		VALUES ($1, 'workstation', '{"cron":"0 1 * * *"}', CURRENT_TIMESTAMP)
 	`, definition)
 	require.NoError(t, err)
 	_, err = raw.Exec(ctx, `
 		INSERT INTO definition_members (definition_id, action_set_id, sort_order, added_at)
-		VALUES ($1, $3, 10, now()), ($1, $2, 20, now())
+		VALUES ($1, $3, 10, CURRENT_TIMESTAMP), ($1, $2, 20, CURRENT_TIMESTAMP)
 	`, definition, set1, set2)
 	require.NoError(t, err)
 	return &manifestFixture{
@@ -114,7 +114,7 @@ func TestManifestCompiler_DefinitionScheduleOverridesOnlyCompiledManifests(t *te
 
 	var unchanged bool
 	require.NoError(t, f.raw.QueryRow(context.Background(), `
-		SELECT schedule = '{"cron":"0 4 * * *"}'::jsonb
+		SELECT schedule = '{"cron":"0 4 * * *"}'
 		FROM action_sets WHERE id = $1`, f.set1).Scan(&unchanged))
 	assert.True(t, unchanged, "compilation must not rewrite the ActionSet schedule")
 
@@ -127,7 +127,7 @@ func TestManifestCompiler_DefinitionScheduleOverridesOnlyCompiledManifests(t *te
 func TestManifestCompiler_RejectsMalformedStoredParams(t *testing.T) {
 	f := newManifestFixture(t)
 	_, err := f.raw.Exec(context.Background(), `
-		UPDATE actions SET action_type = $2, params = '{"unexpected":true}'::jsonb WHERE id = $1
+		UPDATE actions SET action_type = $2, params = '{"unexpected":true}' WHERE id = $1
 	`, f.action2, int32(pmv1.ActionType_ACTION_TYPE_SHELL))
 	require.NoError(t, err)
 	_, err = f.compiler.Action(context.Background(), f.action2)

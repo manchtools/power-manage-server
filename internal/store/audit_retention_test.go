@@ -26,7 +26,7 @@ func archiveRequest(boundary int64) store.AuditRetentionRequest {
 // refuses before it opens a transaction, so an unarchived prefix is
 // not even read, let alone deleted.
 func TestPruneAuditPrefix_RefusesWithoutArchiveConfirmation(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 	seedOperation(t, st)
 	seedOperation(t, st)
@@ -62,7 +62,7 @@ func TestPruneAuditPrefix_RefusesWithoutArchiveConfirmation(t *testing.T) {
 // operation is refused atomically. Archiving half an operation would
 // keep a record of a consequence whose cause is gone.
 func TestPruneAuditPrefix_RefusesABoundaryThatSplitsAnOperation(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	dispatch, err := st.RecordOperation(ctx, mutationOp(), store.AuditEffect{
@@ -111,7 +111,7 @@ func TestPruneAuditPrefix_RefusesABoundaryThatSplitsAnOperation(t *testing.T) {
 // together, the checkpoint commits with the deletion, and the
 // remaining chain verifies from that boundary.
 func TestPruneAuditPrefix_ArchivesAClosedPrefixAndTheChainVerifiesFromTheCheckpoint(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	dispatch, err := st.RecordOperation(ctx, mutationOp(), store.AuditEffect{
@@ -146,7 +146,7 @@ func TestPruneAuditPrefix_ArchivesAClosedPrefixAndTheChainVerifiesFromTheCheckpo
 	assert.Equal(t, int64(5), cp.BoundarySeq)
 	assert.Equal(t, int64(6), cp.ResumeSeq)
 	assert.Equal(t, int64(5), cp.DeletedRows)
-	assert.Equal(t, boundaryHash, hexOf(cp.BoundaryHash))
+	assert.Equal(t, strings.ToLower(boundaryHash), hexOf(cp.BoundaryHash))
 	assert.Equal(t, "s3://audit-archive/2026-07-31.tar.zst", cp.ArchiveRef)
 
 	assert.Equal(t, int64(1), countRows(t, pool, "audit_operations"))
@@ -169,7 +169,7 @@ func TestPruneAuditPrefix_ArchivesAClosedPrefixAndTheChainVerifiesFromTheCheckpo
 // exceeds the bounded length the schema allows, and the checkpoint
 // insert is the statement that discovers it.
 func TestPruneAuditPrefix_CheckpointFailureRollsBackTheDeletion(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	seedOperation(t, st)
@@ -182,7 +182,7 @@ func TestPruneAuditPrefix_CheckpointFailureRollsBackTheDeletion(t *testing.T) {
 
 	_, err := st.PruneAuditPrefix(ctx, req)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "audit_chain_checkpoints_archive_ref_token")
+	assert.Contains(t, err.Error(), "archive_ref")
 
 	assert.Equal(t, before, chainSnapshot(t, pool),
 		"the deletion and the checkpoint commit together; a failed checkpoint must restore every deleted row")
@@ -198,7 +198,7 @@ func TestPruneAuditPrefix_CheckpointFailureRollsBackTheDeletion(t *testing.T) {
 // or rolls back they are gone, so a later statement on the same pooled
 // connection is refused exactly like any other.
 func TestPruneAuditPrefix_RetentionExemptionDoesNotOutliveItsTransaction(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	seedOperation(t, st)
@@ -207,7 +207,7 @@ func TestPruneAuditPrefix_RetentionExemptionDoesNotOutliveItsTransaction(t *test
 	require.NoError(t, err)
 
 	// A plain delete afterwards must be refused again.
-	_, err = pool.Exec(ctx, `DELETE FROM public.audit_operations`)
+	_, err = pool.Exec(ctx, `DELETE FROM audit_operations`)
 	require.Error(t, err)
 	assert.True(t, store.IsAppendOnlyViolation(err),
 		"the retention exemption must not survive its transaction: %v", err)
@@ -217,7 +217,7 @@ func TestPruneAuditPrefix_RetentionExemptionDoesNotOutliveItsTransaction(t *test
 // Retention cannot reach beyond the range it archived even while the
 // guard is armed: the trigger bounds the delete by chain position.
 func TestAuditRetentionGuard_BoundsDeletionToTheArchivedRange(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 
 	seedOperation(t, st)
@@ -228,16 +228,14 @@ func TestAuditRetentionGuard_BoundsDeletionToTheArchivedRange(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	_, err = tx.Exec(ctx, "SET LOCAL pm.audit_retention_active = 'on'")
-	require.NoError(t, err)
-	_, err = tx.Exec(ctx, "SET LOCAL pm.audit_retention_up_to_seq = '2'")
+	_, err = tx.Exec(ctx, `INSERT INTO audit_retention_guard (stream, boundary_seq) VALUES ('control', 2)`)
 	require.NoError(t, err)
 
 	// Position 2 is inside the armed range; position 3 is not.
-	_, err = tx.Exec(ctx, `DELETE FROM public.audit_effects WHERE chain_seq = 2`)
+	_, err = tx.Exec(ctx, `DELETE FROM audit_effects WHERE chain_seq = 2`)
 	require.NoError(t, err, "a row inside the archived range is deletable")
 
-	_, err = tx.Exec(ctx, `DELETE FROM public.audit_operations WHERE chain_seq = 3`)
+	_, err = tx.Exec(ctx, `DELETE FROM audit_operations WHERE chain_seq = 3`)
 	require.Error(t, err, "a row beyond the archived range must be refused even with the guard armed")
 	assert.Contains(t, err.Error(), "append-only")
 }

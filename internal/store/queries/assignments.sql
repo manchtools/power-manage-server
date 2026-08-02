@@ -1,10 +1,10 @@
 -- name: GetDeviceGroupID :one
-SELECT id FROM device_groups WHERE id = $1 AND is_deleted = FALSE;
+SELECT id FROM device_groups WHERE id = ? AND is_deleted = FALSE;
 
 -- name: GetAssignmentByID :one
 SELECT a.*,
-       COALESCE(sa.name, ss.name, sd.name, sp.name, '')::text AS resolved_source_name,
-       COALESCE(td.hostname, tdg.name, tu.display_name, tug.name, '')::text AS resolved_target_name
+       COALESCE(sa.name, ss.name, sd.name, sp.name, '') AS resolved_source_name,
+       COALESCE(td.hostname, tdg.name, tu.display_name, tug.name, '') AS resolved_target_name
 FROM assignments a
 LEFT JOIN actions sa ON a.source_type = 'action' AND sa.id = a.source_id AND sa.is_deleted = FALSE
 LEFT JOIN action_sets ss ON a.source_type = 'action_set' AND ss.id = a.source_id AND ss.is_deleted = FALSE
@@ -14,14 +14,14 @@ LEFT JOIN devices td ON a.target_type = 'device' AND td.id = a.target_id AND td.
 LEFT JOIN device_groups tdg ON a.target_type = 'device_group' AND tdg.id = a.target_id AND tdg.is_deleted = FALSE
 LEFT JOIN users tu ON a.target_type = 'user' AND tu.id = a.target_id AND tu.is_deleted = FALSE
 LEFT JOIN user_groups tug ON a.target_type = 'user_group' AND tug.id = a.target_id AND tug.is_deleted = FALSE
-WHERE a.id = $1 AND a.is_deleted = FALSE
+WHERE a.id = ? AND a.is_deleted = FALSE
   AND COALESCE(sa.id, ss.id, sd.id, sp.id) IS NOT NULL
   AND COALESCE(td.id, tdg.id, tu.id, tug.id) IS NOT NULL;
 
 -- name: GetAssignmentByTuple :one
 SELECT a.*,
-       COALESCE(sa.name, ss.name, sd.name, sp.name, '')::text AS source_name,
-       COALESCE(td.hostname, tdg.name, tu.display_name, tug.name, '')::text AS target_name
+       COALESCE(sa.name, ss.name, sd.name, sp.name, '') AS source_name,
+       COALESCE(td.hostname, tdg.name, tu.display_name, tug.name, '') AS target_name
 FROM assignments a
 LEFT JOIN actions sa ON a.source_type = 'action' AND sa.id = a.source_id AND sa.is_deleted = FALSE
 LEFT JOIN action_sets ss ON a.source_type = 'action_set' AND ss.id = a.source_id AND ss.is_deleted = FALSE
@@ -41,8 +41,8 @@ WHERE a.source_type = sqlc.arg(source_type)
 
 -- name: ListAssignmentViews :many
 SELECT a.*,
-       COALESCE(sa.name, ss.name, sd.name, sp.name, '')::text AS resolved_source_name,
-       COALESCE(td.hostname, tdg.name, tu.display_name, tug.name, '')::text AS resolved_target_name
+       COALESCE(sa.name, ss.name, sd.name, sp.name, '') AS resolved_source_name,
+       COALESCE(td.hostname, tdg.name, tu.display_name, tug.name, '') AS resolved_target_name
 FROM assignments a
 LEFT JOIN actions sa ON a.source_type = 'action' AND sa.id = a.source_id AND sa.is_deleted = FALSE
 LEFT JOIN action_sets ss ON a.source_type = 'action_set' AND ss.id = a.source_id AND ss.is_deleted = FALSE
@@ -54,10 +54,10 @@ LEFT JOIN users tu ON a.target_type = 'user' AND tu.id = a.target_id AND tu.is_d
 LEFT JOIN user_groups tug ON a.target_type = 'user_group' AND tug.id = a.target_id AND tug.is_deleted = FALSE
 WHERE a.is_deleted = FALSE
   AND a.id > sqlc.arg(after_id)
-  AND (sqlc.arg(source_type)::text = '' OR a.source_type = sqlc.arg(source_type))
-  AND (sqlc.arg(source_id)::text = '' OR a.source_id = sqlc.arg(source_id))
-  AND (sqlc.arg(target_type)::text = '' OR a.target_type = sqlc.arg(target_type))
-  AND (sqlc.arg(target_id)::text = '' OR a.target_id = sqlc.arg(target_id))
+  AND (sqlc.arg(source_type) = '' OR a.source_type = sqlc.arg(source_type))
+  AND (sqlc.arg(source_id) = '' OR a.source_id = sqlc.arg(source_id))
+  AND (sqlc.arg(target_type) = '' OR a.target_type = sqlc.arg(target_type))
+  AND (sqlc.arg(target_id) = '' OR a.target_id = sqlc.arg(target_id))
   AND COALESCE(sa.id, ss.id, sd.id, sp.id) IS NOT NULL
   AND COALESCE(td.id, tdg.id, tu.id, tug.id) IS NOT NULL
 ORDER BY a.id
@@ -75,10 +75,10 @@ LEFT JOIN device_groups tdg ON a.target_type = 'device_group' AND tdg.id = a.tar
 LEFT JOIN users tu ON a.target_type = 'user' AND tu.id = a.target_id AND tu.is_deleted = FALSE
 LEFT JOIN user_groups tug ON a.target_type = 'user_group' AND tug.id = a.target_id AND tug.is_deleted = FALSE
 WHERE a.is_deleted = FALSE
-  AND (sqlc.arg(source_type)::text = '' OR a.source_type = sqlc.arg(source_type))
-  AND (sqlc.arg(source_id)::text = '' OR a.source_id = sqlc.arg(source_id))
-  AND (sqlc.arg(target_type)::text = '' OR a.target_type = sqlc.arg(target_type))
-  AND (sqlc.arg(target_id)::text = '' OR a.target_id = sqlc.arg(target_id))
+  AND (sqlc.arg(source_type) = '' OR a.source_type = sqlc.arg(source_type))
+  AND (sqlc.arg(source_id) = '' OR a.source_id = sqlc.arg(source_id))
+  AND (sqlc.arg(target_type) = '' OR a.target_type = sqlc.arg(target_type))
+  AND (sqlc.arg(target_id) = '' OR a.target_id = sqlc.arg(target_id))
   AND COALESCE(sa.id, ss.id, sd.id, sp.id) IS NOT NULL
   AND COALESCE(td.id, tdg.id, tu.id, tug.id) IS NOT NULL;
 
@@ -87,8 +87,8 @@ WHERE a.is_deleted = FALSE
 -- memberships. Dynamic group evaluation updates the same membership table, so
 -- this read needs no second query language or compatibility path.
 SELECT a.*,
-       COALESCE(sa.name, ss.name, sd.name, sp.name, '')::text AS resolved_source_name,
-       COALESCE(tu.display_name, tug.name, '')::text AS resolved_target_name
+       COALESCE(sa.name, ss.name, sd.name, sp.name, '') AS resolved_source_name,
+       COALESCE(tu.display_name, tug.name, '') AS resolved_target_name
 FROM assignments a
 LEFT JOIN actions sa ON a.source_type = 'action' AND sa.id = a.source_id AND sa.is_deleted = FALSE
 LEFT JOIN action_sets ss ON a.source_type = 'action_set' AND ss.id = a.source_id AND ss.is_deleted = FALSE
@@ -193,9 +193,9 @@ WITH resolved_sources AS (
 SELECT resolved_sources.source_type,
        resolved_sources.source_id,
        resolved_sources.mode,
-       COALESCE(sa.name, ss.name, sd.name, sp.name, '')::text AS source_name,
-       COALESCE(sa.description, ss.description, sd.description, sp.description, '')::text AS source_description,
-       COALESCE(us.selected, FALSE)::boolean AS selected
+       COALESCE(sa.name, ss.name, sd.name, sp.name, '') AS source_name,
+       COALESCE(sa.description, ss.description, sd.description, sp.description, '') AS source_description,
+       COALESCE(us.selected, FALSE) AS selected
 FROM resolved_sources
 LEFT JOIN actions sa ON resolved_sources.source_type = 'action' AND sa.id = resolved_sources.source_id AND sa.is_deleted = FALSE
 LEFT JOIN action_sets ss ON resolved_sources.source_type = 'action_set' AND ss.id = resolved_sources.source_id AND ss.is_deleted = FALSE
@@ -238,5 +238,5 @@ RETURNING *;
 
 -- name: SoftDeleteAssignment :one
 UPDATE assignments SET is_deleted = TRUE
-WHERE id = $1 AND is_deleted = FALSE
+WHERE id = ? AND is_deleted = FALSE
 RETURNING *;

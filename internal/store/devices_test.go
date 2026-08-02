@@ -16,7 +16,7 @@ import (
 )
 
 func TestDeviceCRUD_ViewsAndFilters(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 
@@ -223,7 +223,7 @@ func TestDeviceCRUD_ViewsAndFilters(t *testing.T) {
 }
 
 func TestHeartbeatTelemetryUpdatesWithoutGrowingAudit(t *testing.T) {
-	st, pool := setupPostgres(t)
+	st, pool := setupSQLite(t)
 	ctx := context.Background()
 	before := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
 	after := before.Add(2 * time.Minute)
@@ -254,7 +254,7 @@ func TestHeartbeatTelemetryUpdatesWithoutGrowingAudit(t *testing.T) {
 }
 
 func TestInsertDevice_RejectsInvalidAgentSealingKey(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
 
@@ -266,7 +266,7 @@ func TestInsertDevice_RejectsInvalidAgentSealingKey(t *testing.T) {
 		return err
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "devices_agent_sealing_public_key_length")
+	assert.Contains(t, err.Error(), "agent_sealing_public_key")
 }
 
 func requireOneRow(op string, n int64, err error) error {

@@ -12,7 +12,7 @@ SELECT * FROM tokens
 WHERE is_deleted = FALSE
   AND name <> sqlc.arg(reserved_name)
   AND id > sqlc.arg(after_id)
-  AND (sqlc.arg(include_disabled)::boolean OR disabled = FALSE)
+  AND (sqlc.arg(include_disabled) OR disabled = FALSE)
 ORDER BY id
 LIMIT sqlc.arg(row_limit);
 
@@ -20,7 +20,7 @@ LIMIT sqlc.arg(row_limit);
 SELECT COUNT(*) FROM tokens
 WHERE is_deleted = FALSE
   AND name <> sqlc.arg(reserved_name)
-  AND (sqlc.arg(include_disabled)::boolean OR disabled = FALSE);
+  AND (sqlc.arg(include_disabled) OR disabled = FALSE);
 
 -- name: InsertRegistrationToken :one
 INSERT INTO tokens (

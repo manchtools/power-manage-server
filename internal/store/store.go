@@ -12,19 +12,19 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
+	"net/url"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver, used by the migration runner
-	"github.com/pressly/goose/v3"
+	_ "modernc.org/sqlite"
 
 	"github.com/manchtools/power-manage/server/internal/store/generated"
-	"github.com/manchtools/power-manage/server/internal/store/migrations"
+	"github.com/manchtools/power-manage/server/internal/store/sqliteschema"
 )
 
 // Tx is the transaction-bound query handle handed to a WithAudit callback.
@@ -33,11 +33,11 @@ import (
 // surface.
 type Tx struct {
 	*generated.Queries
-	raw pgx.Tx
+	raw *sql.Tx
 }
 
 func (tx *Tx) exec(ctx context.Context, statement string) error {
-	_, err := tx.raw.Exec(ctx, statement)
+	_, err := tx.raw.ExecContext(ctx, statement)
 	return err
 }
 
@@ -46,16 +46,12 @@ func (tx *Tx) exec(ctx context.Context, statement string) error {
 // verification and the migration runner.
 type Store struct {
 	now     func() time.Time // clock seam; time.Now in production
-	pool    *pgxpool.Pool
+	db      *sql.DB
 	queries *generated.Queries
 
-	// advisoryMu serialises LOCAL goroutines competing for an advisory
-	// lock BEFORE they take a pooled connection. Without it, N
-	// concurrent callers each hold a connection while blocking on
-	// pg_advisory_lock; once N reaches the pool size the lock holder
-	// cannot acquire the extra connections its callback needs and the
-	// whole set deadlocks. Waiters queue here holding nothing.
-	advisoryMu sync.Mutex
+	// A single control process owns the SQLite file. This mutex serializes the
+	// audited writer before it enters SQLite's own single-writer path.
+	writeMu sync.Mutex
 
 	// wireMu guards the fields wired once at boot and read afterwards.
 	wireMu sync.RWMutex
@@ -70,164 +66,156 @@ func (s *Store) SetLogger(logger *slog.Logger) {
 	s.wireMu.Unlock()
 }
 
-// Pool tuning. statementTimeout bounds a SINGLE statement's wall clock
-// so a pathological query cannot pin a connection indefinitely; it is
-// per-statement, not per-transaction. Migrations run on a separate
-// database/sql connection and are exempt.
-const (
-	statementTimeout    = 30 * time.Second
-	poolMaxConns        = 20
-	poolMaxConnLifetime = time.Hour
-)
+const sqliteOpenConnections = 10
 
-func newPool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
-	cfg, err := pgxpool.ParseConfig(connString)
-	if err != nil {
-		return nil, fmt.Errorf("parse pool config: %w", err)
-	}
-	if cfg.ConnConfig.RuntimeParams == nil {
-		cfg.ConnConfig.RuntimeParams = map[string]string{}
-	}
-	// Respect an operator-provided statement_timeout in the DSN;
-	// otherwise apply ours. Postgres reads a bare integer as milliseconds.
-	if _, set := cfg.ConnConfig.RuntimeParams["statement_timeout"]; !set {
-		cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(statementTimeout.Milliseconds(), 10)
-	}
-	cfg.MaxConns = poolMaxConns
-	cfg.MaxConnLifetime = poolMaxConnLifetime
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("create connection pool: %w", err)
-	}
-	return pool, nil
-}
-
-// New connects and brings the schema up to date. Only the control
-// process manages the schema.
-func New(ctx context.Context, connString string) (*Store, error) {
-	pool, err := newPool(ctx, connString)
+// New opens the authoritative SQLite file and creates the clean baseline when
+// the file is empty. The project is pre-alpha, so there is no PostgreSQL data
+// migration or compatibility path.
+func New(ctx context.Context, path string) (*Store, error) {
+	db, err := openSQLite(ctx, path)
 	if err != nil {
 		return nil, err
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
+	if err := initializeSQLite(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
-
-	// goose speaks database/sql, so migrations run on the stdlib
-	// adapter rather than the pgx pool.
-	sqlDB, err := sql.Open("pgx", connString)
-	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("open database for migrations: %w", err)
-	}
-	defer func() { _ = sqlDB.Close() }()
-
-	goose.SetBaseFS(migrations.FS)
-	if err := goose.SetDialect("postgres"); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("set goose dialect: %w", err)
-	}
-	if err := goose.Up(sqlDB, "."); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("run migrations: %w", err)
-	}
-
-	return newStore(pool), nil
+	return newStore(db), nil
 }
 
-// NewWithoutMigrations connects to a database whose schema is already
-// current.
-func NewWithoutMigrations(ctx context.Context, connString string) (*Store, error) {
-	pool, err := newPool(ctx, connString)
+// NewWithoutMigrations opens an already-initialized SQLite file. It is used by
+// one-shot commands that must not create a database accidentally.
+func NewWithoutMigrations(ctx context.Context, path string) (*Store, error) {
+	db, err := openSQLite(ctx, path)
 	if err != nil {
 		return nil, err
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
+	version, err := sqliteSchemaVersion(ctx, db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
 	}
-	return newStore(pool), nil
+	if version != 1 {
+		_ = db.Close()
+		return nil, fmt.Errorf("open SQLite database: schema version is %d, want 1", version)
+	}
+	return newStore(db), nil
 }
 
-func newStore(pool *pgxpool.Pool) *Store {
+func openSQLite(ctx context.Context, path string) (*sql.DB, error) {
+	if ctx == nil || strings.TrimSpace(path) == "" {
+		return nil, errors.New("open SQLite database: path is required")
+	}
+	dsn, err := sqliteDSN(path)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open SQLite database: %w", err)
+	}
+	db.SetMaxOpenConns(sqliteOpenConnections)
+	db.SetMaxIdleConns(sqliteOpenConnections)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping SQLite database: %w", err)
+	}
+	return db, nil
+}
+
+func sqliteDSN(path string) (string, error) {
+	var base string
+	if path == ":memory:" {
+		base = "file:power-manage?mode=memory&cache=shared"
+	} else if strings.HasPrefix(path, "file:") {
+		base = path
+	} else {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return "", fmt.Errorf("resolve SQLite path: %w", err)
+		}
+		base = (&url.URL{Scheme: "file", Path: absolute}).String()
+	}
+	separator := "?"
+	if strings.Contains(base, "?") {
+		separator = "&"
+	}
+	return base + separator +
+		"_pragma=busy_timeout%285000%29" +
+		"&_pragma=foreign_keys%281%29" +
+		"&_pragma=journal_mode%28WAL%29" +
+		"&_pragma=synchronous%28FULL%29" +
+		"&_time_format=sqlite", nil
+}
+
+func initializeSQLite(ctx context.Context, db *sql.DB) error {
+	version, err := sqliteSchemaVersion(ctx, db)
+	if err != nil {
+		return err
+	}
+	switch version {
+	case 0:
+		schema, err := sqliteschema.FS.ReadFile("schema.sql")
+		if err != nil {
+			return fmt.Errorf("read SQLite baseline: %w", err)
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin SQLite baseline: %w", err)
+		}
+		var current int
+		if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&current); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("recheck SQLite schema version: %w", err)
+		}
+		if current != 0 {
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("close SQLite baseline check: %w", err)
+			}
+			if current == 1 {
+				return nil
+			}
+			return fmt.Errorf("open SQLite database: unsupported schema version %d", current)
+		}
+		if _, err := tx.ExecContext(ctx, string(schema)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("apply SQLite baseline: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit SQLite baseline: %w", err)
+		}
+		return nil
+	case 1:
+		return nil
+	default:
+		return fmt.Errorf("open SQLite database: unsupported schema version %d", version)
+	}
+}
+
+func sqliteSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
+	var version int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return 0, fmt.Errorf("read SQLite schema version: %w", err)
+	}
+	return version, nil
+}
+
+func newStore(db *sql.DB) *Store {
 	return &Store{
 		now:     time.Now,
-		pool:    pool,
-		queries: generated.New(pool),
+		db:      db,
+		queries: generated.New(db),
 	}
 }
 
 // Close releases the pool.
 func (s *Store) Close() {
-	s.pool.Close()
+	_ = s.db.Close()
 }
 
 // Ping verifies that the authoritative database is reachable.
 func (s *Store) Ping(ctx context.Context) error {
-	return s.pool.Ping(ctx)
-}
-
-// WithAdvisoryLock runs fn while holding a session-level advisory lock
-// on key, serialising every caller that uses the same key on this
-// database. The lock spans the whole of fn, so a read-side guard that
-// checks state and then writes is atomic against a concurrent caller.
-//
-// The lock is taken on a dedicated pooled connection and explicitly
-// released: releasing a pooled connection does not close the session,
-// so an unreleased session lock would leak. The release is detached
-// from ctx so a cancelled request still frees the lock.
-func (s *Store) WithAdvisoryLock(ctx context.Context, key int64, fn func() error) (err error) {
-	// Serialise local goroutines BEFORE taking a connection; see
-	// advisoryMu.
-	s.advisoryMu.Lock()
-	defer s.advisoryMu.Unlock()
-
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire connection for advisory lock: %w", err)
-	}
-	defer conn.Release()
-
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", key); err != nil {
-		return fmt.Errorf("acquire advisory lock %d: %w", key, err)
-	}
-	defer func() {
-		if _, uerr := conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", key); uerr != nil && err == nil {
-			err = fmt.Errorf("release advisory lock %d: %w", key, uerr)
-		}
-	}()
-
-	return fn()
-}
-
-// TryWithAdvisoryLock is the non-blocking sibling of WithAdvisoryLock:
-// it runs fn only if the lock is free across the whole database, and
-// reports ran=false without running fn otherwise.
-func (s *Store) TryWithAdvisoryLock(ctx context.Context, key int64, fn func() error) (ran bool, err error) {
-	s.advisoryMu.Lock()
-	defer s.advisoryMu.Unlock()
-
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return false, fmt.Errorf("acquire connection for advisory lock: %w", err)
-	}
-	defer conn.Release()
-
-	var got bool
-	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&got); err != nil {
-		return false, fmt.Errorf("try advisory lock %d: %w", key, err)
-	}
-	if !got {
-		return false, nil
-	}
-	defer func() {
-		if _, uerr := conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", key); uerr != nil && err == nil {
-			err = fmt.Errorf("release advisory lock %d: %w", key, uerr)
-		}
-	}()
-
-	return true, fn()
+	return s.db.PingContext(ctx)
 }
 
 // withTx runs fn inside a transaction and hands it both the raw
@@ -238,18 +226,21 @@ func (s *Store) TryWithAdvisoryLock(ctx context.Context, key int64, fn func() er
 // a second, unaudited door into the mutation path, and the audit
 // contract is that there is only one. The audited primitives in
 // audit.go are its only callers.
-func (s *Store) withTx(ctx context.Context, fn func(pgx.Tx, *generated.Queries) error) error {
-	tx, err := s.pool.Begin(ctx)
+func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx, *generated.Queries) error) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback() }()
 
 	if err := fn(tx, s.queries.WithTx(tx)); err != nil {
 		return err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil

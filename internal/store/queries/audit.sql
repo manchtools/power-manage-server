@@ -12,20 +12,20 @@
 -- chain a total order under concurrency.
 SELECT stream, head_hash, height
 FROM audit_chain_head
-WHERE stream = $1
-FOR UPDATE;
+WHERE stream = ?
+;
 
 -- name: GetAuditChainHead :one
 SELECT stream, head_hash, height
 FROM audit_chain_head
-WHERE stream = $1;
+WHERE stream = ?;
 
 -- name: AdvanceAuditChainHead :exec
 -- Move the tip to the last row this appender wrote. Only ever called
 -- with a height strictly greater than the locked one.
 UPDATE audit_chain_head
-SET head_hash = $2, height = $3, updated_at = now()
-WHERE stream = $1;
+SET head_hash = ?, height = ?, updated_at = CURRENT_TIMESTAMP
+WHERE stream = ?;
 
 -- name: InsertAuditOperation :one
 INSERT INTO audit_operations (
@@ -37,13 +37,13 @@ INSERT INTO audit_operations (
     sealed_detail, sealed_detail_subject,
     prev_hash, row_hash
 ) VALUES (
-    $1, $2, $3,
-    $4, $5, $6, $7,
-    $8, $9, $10,
-    $11, $12,
-    $13, $14, $15,
-    $16, $17,
-    $18, $19
+    ?, ?, ?,
+    ?, ?, ?, ?,
+    ?, ?, ?,
+    ?, ?,
+    ?, ?, ?,
+    ?, ?,
+    ?, ?
 )
 RETURNING operation_id, chain_seq, row_hash;
 
@@ -57,44 +57,44 @@ INSERT INTO audit_effects (
     sealed_detail, sealed_detail_subject,
     occurred_at, prev_hash, row_hash
 ) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7, $8, $9,
-    $10,
-    $11, $12, $13, $14, $15, $16,
-    $17, $18,
-    $19, $20,
-    $21, $22, $23
+    ?, ?, ?, ?, ?,
+    ?, ?, ?, ?,
+    ?,
+    ?, ?, ?, ?, ?, ?,
+    ?, ?,
+    ?, ?,
+    ?, ?, ?
 )
 RETURNING effect_id, chain_seq, row_hash;
 
 -- name: GetAuditOperation :one
-SELECT * FROM audit_operations WHERE operation_id = $1;
+SELECT * FROM audit_operations WHERE operation_id = ?;
 
 -- name: CountAuditOperations :one
-SELECT COUNT(*) FROM audit_operations WHERE stream = $1;
+SELECT COUNT(*) FROM audit_operations WHERE stream = ?;
 
 -- name: NextAuditEffectSeq :one
 -- The next position within an operation. Late effects continue the
 -- numbering the initial ones started.
-SELECT COALESCE(MAX(effect_seq) + 1, 0)::int
+SELECT CAST(COALESCE(MAX(effect_seq) + 1, 0) AS INTEGER)
 FROM audit_effects
-WHERE operation_id = $1;
+WHERE operation_id = ?;
 
 -- name: ListAuditChainOperations :many
 -- Operation rows of one chain segment, ordered by chain position.
 -- Verification merges this with ListAuditChainEffects.
 SELECT * FROM audit_operations
-WHERE stream = $1 AND chain_seq >= $2 AND chain_seq <= $3
+WHERE stream = ? AND chain_seq >= ? AND chain_seq <= ?
 ORDER BY chain_seq;
 
 -- name: ListAuditChainEffects :many
 SELECT * FROM audit_effects
-WHERE stream = $1 AND chain_seq >= $2 AND chain_seq <= $3
+WHERE stream = ? AND chain_seq >= ? AND chain_seq <= ?
 ORDER BY chain_seq;
 
 -- name: ListAuditEffectsForOperation :many
 SELECT * FROM audit_effects
-WHERE operation_id = $1
+WHERE operation_id = ?
 ORDER BY effect_seq;
 
 -- name: ListAuditEventRows :many
@@ -103,121 +103,33 @@ ORDER BY effect_seq;
 -- authentication attempt), so it contributes one operation-only row instead
 -- of disappearing from the API. Operation rows that do have effects are not
 -- duplicated in the result.
-WITH audit_event_rows AS (
-    SELECT
-        e.effect_id AS id,
-        e.chain_seq,
-        e.resource_type AS stream_type,
-        e.resource_id AS stream_id,
-        e.action AS event_type,
-        o.operation_id,
-        o.operation_class,
-        o.actor_type,
-        o.actor_id,
-        o.actor_fingerprint,
-        o.origin,
-        o.origin_fingerprint,
-        o.request_descriptor,
-        o.authorization_outcome,
-        o.authorization_detail,
-        o.result,
-        o.result_code,
-        e.outcome AS effect_outcome,
-        e.changed_fields,
-        e.before_ref,
-        e.after_ref,
-        e.before_flag,
-        e.after_flag,
-        e.before_count,
-        e.after_count,
-        e.evidence_kind,
-        e.evidence_fingerprint,
-        e.occurred_at
-    FROM audit_effects e
-    JOIN audit_operations o ON o.operation_id = e.operation_id
-    WHERE e.stream = 'control'
-
-    UNION ALL
-
-    SELECT
-        o.operation_id AS id,
-        o.chain_seq,
-        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
-             THEN 'authentication' ELSE 'operation' END AS stream_type,
-        o.operation_id AS stream_id,
-        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
-             THEN 'AUTHENTICATION_REJECTED' ELSE o.operation_class END AS event_type,
-        o.operation_id,
-        o.operation_class,
-        o.actor_type,
-        o.actor_id,
-        o.actor_fingerprint,
-        o.origin,
-        o.origin_fingerprint,
-        o.request_descriptor,
-        o.authorization_outcome,
-        o.authorization_detail,
-        o.result,
-        o.result_code,
-        ''::text AS effect_outcome,
-        '{}'::text[] AS changed_fields,
-        NULL::text AS before_ref,
-        NULL::text AS after_ref,
-        NULL::boolean AS before_flag,
-        NULL::boolean AS after_flag,
-        NULL::bigint AS before_count,
-        NULL::bigint AS after_count,
-        ''::text AS evidence_kind,
-        ''::text AS evidence_fingerprint,
-        o.occurred_at
-    FROM audit_operations o
-    WHERE o.stream = 'control'
-      AND NOT EXISTS (
-          SELECT 1 FROM audit_effects e WHERE e.operation_id = o.operation_id
-      )
-)
 SELECT *
-FROM audit_event_rows ev
-WHERE (sqlc.arg(actor_id)::text = '' OR ev.actor_id = sqlc.arg(actor_id))
-  AND (cardinality(sqlc.arg(stream_types)::text[]) = 0 OR ev.stream_type = ANY(sqlc.arg(stream_types)::text[]))
-  AND (sqlc.arg(event_type)::text = '' OR strpos(lower(ev.event_type), lower(sqlc.arg(event_type))) > 0)
-  AND ev.occurred_at >= sqlc.arg(occurred_from)::timestamptz
-  AND ev.occurred_at <= sqlc.arg(occurred_to)::timestamptz
-  AND (sqlc.arg(before_seq)::bigint = 0 OR ev.chain_seq < sqlc.arg(before_seq))
-ORDER BY ev.chain_seq DESC
+FROM audit_event_rows
+WHERE (sqlc.arg(actor_id) = '' OR actor_id = sqlc.arg(actor_id))
+  AND (sqlc.arg(event_type) = '' OR instr(lower(event_type), lower(sqlc.arg(event_type))) > 0)
+  AND occurred_at >= sqlc.arg(filter_from_time)
+  AND occurred_at <= sqlc.arg(filter_to_time)
+  AND (sqlc.arg(before_seq) = 0 OR chain_seq < sqlc.arg(before_seq))
+  AND (
+      json_array_length(sqlc.arg(stream_types_json)) = 0
+      OR stream_type IN (
+          SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(stream_types_json))
+      )
+  )
+ORDER BY chain_seq DESC
 LIMIT sqlc.arg(row_limit);
 
 -- name: CountAuditEventRows :one
-WITH audit_event_rows AS (
-    SELECT
-        e.resource_type AS stream_type,
-        e.action AS event_type,
-        o.actor_id,
-        e.occurred_at
-    FROM audit_effects e
-    JOIN audit_operations o ON o.operation_id = e.operation_id
-    WHERE e.stream = 'control'
-
-    UNION ALL
-
-    SELECT
-        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
-             THEN 'authentication' ELSE 'operation' END AS stream_type,
-        CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
-             THEN 'AUTHENTICATION_REJECTED' ELSE o.operation_class END AS event_type,
-        o.actor_id,
-        o.occurred_at
-    FROM audit_operations o
-    WHERE o.stream = 'control'
-      AND NOT EXISTS (
-          SELECT 1 FROM audit_effects e WHERE e.operation_id = o.operation_id
-      )
-)
 SELECT COUNT(*)
-FROM audit_event_rows ev
-WHERE (sqlc.arg(actor_id)::text = '' OR ev.actor_id = sqlc.arg(actor_id))
-  AND (cardinality(sqlc.arg(stream_types)::text[]) = 0 OR ev.stream_type = ANY(sqlc.arg(stream_types)::text[]))
-  AND (sqlc.arg(event_type)::text = '' OR strpos(lower(ev.event_type), lower(sqlc.arg(event_type))) > 0);
+FROM audit_event_rows
+WHERE (sqlc.arg(actor_id) = '' OR actor_id = sqlc.arg(actor_id))
+  AND (sqlc.arg(event_type) = '' OR instr(lower(event_type), lower(sqlc.arg(event_type))) > 0)
+  AND (
+      json_array_length(sqlc.arg(stream_types_json)) = 0
+      OR stream_type IN (
+          SELECT CAST(value AS TEXT) FROM json_each(sqlc.arg(stream_types_json))
+      )
+  );
 
 -- ---------------------------------------------------------------------------
 -- Anchors
@@ -226,18 +138,18 @@ WHERE (sqlc.arg(actor_id)::text = '' OR ev.actor_id = sqlc.arg(actor_id))
 -- name: InsertAuditChainAnchor :one
 INSERT INTO audit_chain_anchors (
     anchor_id, stream, chain_seq, row_hash, captured_at, external_ref
-) VALUES ($1, $2, $3, $4, $5, $6)
+) VALUES (?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetLatestAuditChainAnchor :one
 SELECT * FROM audit_chain_anchors
-WHERE stream = $1
+WHERE stream = ?
 ORDER BY chain_seq DESC
 LIMIT 1;
 
 -- name: ListAuditChainAnchors :many
 SELECT * FROM audit_chain_anchors
-WHERE stream = $1
+WHERE stream = ?
 ORDER BY chain_seq;
 
 -- The chain interleaves two tables, so "the row at position N" is one
@@ -246,28 +158,28 @@ ORDER BY chain_seq;
 -- re-derive on every call.
 
 -- name: GetAuditOperationRowHashAt :one
-SELECT row_hash FROM audit_operations WHERE stream = $1 AND chain_seq = $2;
+SELECT row_hash FROM audit_operations WHERE stream = ? AND chain_seq = ?;
 
 -- name: GetAuditEffectRowHashAt :one
-SELECT row_hash FROM audit_effects WHERE stream = $1 AND chain_seq = $2;
+SELECT row_hash FROM audit_effects WHERE stream = ? AND chain_seq = ?;
 
 -- ---------------------------------------------------------------------------
 -- Retention
 -- ---------------------------------------------------------------------------
 
 -- name: CountAuditOperationsAtOrBelow :one
-SELECT COUNT(*) FROM audit_operations WHERE stream = $1 AND chain_seq <= $2;
+SELECT COUNT(*) FROM audit_operations WHERE stream = ? AND chain_seq <= ?;
 
 -- name: CountAuditEffectsAtOrBelow :one
-SELECT COUNT(*) FROM audit_effects WHERE stream = $1 AND chain_seq <= $2;
+SELECT COUNT(*) FROM audit_effects WHERE stream = ? AND chain_seq <= ?;
 
 -- name: FirstAuditOperationSeqAbove :one
-SELECT COALESCE(MIN(chain_seq), 0)::bigint
-FROM audit_operations WHERE stream = $1 AND chain_seq > $2;
+SELECT CAST(COALESCE(MIN(chain_seq), 0) AS INTEGER)
+FROM audit_operations WHERE stream = ? AND chain_seq > ?;
 
 -- name: FirstAuditEffectSeqAbove :one
-SELECT COALESCE(MIN(chain_seq), 0)::bigint
-FROM audit_effects WHERE stream = $1 AND chain_seq > $2;
+SELECT CAST(COALESCE(MIN(chain_seq), 0) AS INTEGER)
+FROM audit_effects WHERE stream = ? AND chain_seq > ?;
 
 -- name: CountAuditEffectsStrandedByBoundary :one
 -- Effects that would survive a deletion at this boundary while their
@@ -276,7 +188,7 @@ FROM audit_effects WHERE stream = $1 AND chain_seq > $2;
 SELECT COUNT(*)
 FROM audit_effects e
 JOIN audit_operations o ON o.operation_id = e.operation_id
-WHERE e.stream = $1 AND e.chain_seq > $2 AND o.chain_seq <= $2;
+WHERE e.stream = ? AND e.chain_seq > ? AND o.chain_seq <= ?;
 
 -- name: FindClosedAuditRetentionBoundary :one
 -- Pick the newest row older than the retention cutoff that would not strand a
@@ -289,7 +201,7 @@ WITH candidates AS (
     SELECT e.chain_seq FROM audit_effects e
     WHERE e.stream = sqlc.arg(stream) AND e.occurred_at < sqlc.arg(cutoff)
 )
-SELECT COALESCE(MAX(c.chain_seq), 0)::bigint
+SELECT CAST(COALESCE(MAX(c.chain_seq), 0) AS INTEGER)
 FROM candidates c
 WHERE NOT EXISTS (
     SELECT 1
@@ -303,19 +215,25 @@ WHERE NOT EXISTS (
 -- has set pm.audit_retention_active and pm.audit_retention_up_to_seq;
 -- the append-only trigger rejects it otherwise. Effects go first so
 -- the operations they reference still exist while they are removed.
-DELETE FROM audit_effects WHERE stream = $1 AND chain_seq <= $2;
+DELETE FROM audit_effects WHERE stream = ? AND chain_seq <= ?;
 
 -- name: DeleteAuditOperationsAtOrBelow :execrows
-DELETE FROM audit_operations WHERE stream = $1 AND chain_seq <= $2;
+DELETE FROM audit_operations WHERE stream = ? AND chain_seq <= ?;
+
+-- name: ArmAuditRetentionGuard :exec
+INSERT INTO audit_retention_guard (stream, boundary_seq) VALUES (?, ?);
+
+-- name: DisarmAuditRetentionGuard :exec
+DELETE FROM audit_retention_guard WHERE stream = ?;
 
 -- name: InsertAuditChainCheckpoint :one
 INSERT INTO audit_chain_checkpoints (
     checkpoint_id, stream, boundary_seq, boundary_hash, resume_seq,
     deleted_rows, archive_digest, archive_ref, archived_at, created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: ListAuditChainCheckpoints :many
 SELECT * FROM audit_chain_checkpoints
-WHERE stream = $1
+WHERE stream = ?
 ORDER BY boundary_seq;

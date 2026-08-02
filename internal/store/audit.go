@@ -3,12 +3,12 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 
 	"github.com/manchtools/power-manage/server/internal/store/generated"
@@ -203,14 +203,9 @@ var genesisHash = make([]byte, sha256.Size)
 // mutate may be nil for an operation that changes no state, which is
 // how a sensitive read or a rejected authentication is recorded.
 //
-// LOCK ORDER. The domain callback runs first and the chain head is
-// locked only afterwards, so the critical section holds nothing but
-// the hash computation, the chained inserts and the head advance.
-// Concurrent writers do their domain work in parallel and queue only
-// for the append. Every audited path takes locks in this one order —
-// domain rows, then the head — and the anchor and retention primitives
-// take no domain locks at all, so the opposite order does not exist
-// anywhere and there is no cycle to deadlock on.
+// SQLite has one writer. Store serializes the complete callback and audit
+// append in-process, avoiding lock-upgrade races while preserving the single
+// transaction boundary. The control server is deliberately single-process.
 func (s *Store) WithAudit(
 	ctx context.Context,
 	op AuditOperation,
@@ -230,16 +225,19 @@ func (s *Store) WithAudit(
 
 	var rec AuditRecorder
 	var out AuditRecord
-	err := s.withTx(ctx, func(raw pgx.Tx, q *generated.Queries) error {
+	err := s.withTx(ctx, func(raw *sql.Tx, q *generated.Queries) error {
 		if mutate != nil {
 			if err := mutate(ctx, &Tx{Queries: q, raw: raw}, &rec); err != nil {
 				return err
 			}
 		}
+		if err := refreshSearchDocumentsForEffects(ctx, raw, rec.effects); err != nil {
+			return err
+		}
 
 		head, err := q.LockAuditChainHead(ctx, op.Stream)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("audit: unknown stream %q", op.Stream)
 			}
 			return fmt.Errorf("audit: lock chain head: %w", err)
@@ -260,15 +258,18 @@ func (s *Store) WithAudit(
 		for i, e := range rec.effects {
 			seq++
 			effectID := ulid.Make().String()
-			ec := e.canonical(op.Stream, op.OperationID, effectID, seq, int32(i), at)
+			ec := e.canonical(op.Stream, op.OperationID, effectID, seq, int64(i), at)
 			hash = chainHash(prev, ec)
 			if _, err := q.InsertAuditEffect(ctx, e.insertParams(
-				op.Stream, op.OperationID, effectID, seq, int32(i), at, prev, hash,
+				op.Stream, op.OperationID, effectID, seq, int64(i), at, prev, hash,
 			)); err != nil {
 				return fmt.Errorf("audit: insert effect %d: %w", i, err)
 			}
 			out.EffectSeqs = append(out.EffectSeqs, seq)
 			prev = hash
+		}
+		if err := refreshSearchDocument(ctx, raw, "audit_events", op.OperationID); err != nil {
+			return err
 		}
 
 		if err := q.AdvanceAuditChainHead(ctx, generated.AdvanceAuditChainHeadParams{
@@ -324,10 +325,10 @@ func (s *Store) WithAuditEffects(
 
 	var rec AuditRecorder
 	var out AuditRecord
-	err := s.withTx(ctx, func(raw pgx.Tx, q *generated.Queries) error {
+	err := s.withTx(ctx, func(raw *sql.Tx, q *generated.Queries) error {
 		parent, err := q.GetAuditOperation(ctx, operationID)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("%w: no operation %s on the chain", ErrAuditOperationRequired, operationID)
 			}
 			return fmt.Errorf("audit: load operation: %w", err)
@@ -341,8 +342,11 @@ func (s *Store) WithAuditEffects(
 		if len(rec.effects) == 0 {
 			return fmt.Errorf("%w: a continuation of %s recorded nothing", ErrAuditEffectRequired, operationID)
 		}
+		if err := refreshSearchDocumentsForEffects(ctx, raw, rec.effects); err != nil {
+			return err
+		}
 
-		// Same lock order as WithAudit: domain work first, head last.
+		// The store-wide writer lock already serializes this append.
 		head, err := q.LockAuditChainHead(ctx, parent.Stream)
 		if err != nil {
 			return fmt.Errorf("audit: lock chain head: %w", err)
@@ -360,7 +364,7 @@ func (s *Store) WithAuditEffects(
 		for i, e := range rec.effects {
 			seq++
 			effectID := ulid.Make().String()
-			pos := nextEffectSeq + int32(i)
+			pos := nextEffectSeq + int64(i)
 			ec := e.canonical(parent.Stream, operationID, effectID, seq, pos, at)
 			hash := chainHash(prev, ec)
 			if _, err := q.InsertAuditEffect(ctx, e.insertParams(
@@ -370,6 +374,9 @@ func (s *Store) WithAuditEffects(
 			}
 			out.EffectSeqs = append(out.EffectSeqs, seq)
 			prev = hash
+		}
+		if err := refreshSearchDocument(ctx, raw, "audit_events", operationID); err != nil {
+			return err
 		}
 
 		if err := q.AdvanceAuditChainHead(ctx, generated.AdvanceAuditChainHeadParams{
@@ -416,7 +423,7 @@ func (op AuditOperation) validate() error {
 }
 
 // auditNow returns the timestamp the audit rows carry, truncated to
-// the microsecond resolution Postgres stores. Hashing a value the
+// the microsecond resolution SQLite stores. Hashing a value the
 // database cannot round-trip would make every chain fail verification
 // on the first read-back.
 func (s *Store) auditNow() time.Time {
@@ -456,7 +463,7 @@ func (op AuditOperation) insertParams(seq int64, at time.Time, prev, hash []byte
 
 func (e AuditEffect) insertParams(
 	stream, operationID, effectID string,
-	seq int64, effectSeq int32,
+	seq int64, effectSeq int64,
 	at time.Time, prev, hash []byte,
 ) generated.InsertAuditEffectParams {
 	// The column is NOT NULL with an empty-array default; a nil slice
@@ -608,7 +615,7 @@ func (op AuditOperation) canonical(seq int64, at time.Time) []byte {
 	return w.buf
 }
 
-func (e AuditEffect) canonical(stream, operationID, effectID string, seq int64, effectSeq int32, at time.Time) []byte {
+func (e AuditEffect) canonical(stream, operationID, effectID string, seq int64, effectSeq int64, at time.Time) []byte {
 	// Normalised exactly as insertParams normalises it, so a nil slice
 	// and an empty slice hash identically to the empty array the
 	// database stores for both.

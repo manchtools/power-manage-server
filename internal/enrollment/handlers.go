@@ -11,7 +11,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/go-playground/validator/v10"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -140,7 +139,7 @@ func (h *Handlers) Register(ctx context.Context, req *connect.Request[pmv1.Regis
 		token, err := tx.ConsumeRegistrationToken(ctx, db.ConsumeRegistrationTokenParams{
 			ValueHash: tokenFingerprint, ReservedName: store.BootstrapAdminTokenName, ConsumedAt: &now,
 		})
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			return errCredentialRejected
 		}
 		if err != nil {
@@ -242,7 +241,7 @@ func (h *Handlers) RenewCertificate(ctx context.Context, req *connect.Request[pm
 		if _, err := tx.ReplaceDeviceCertificate(ctx, db.ReplaceDeviceCertificateParams{
 			NewFingerprint: &newFingerprint, NewNotAfter: &newNotAfter,
 			ID: deviceID, OldFingerprint: &oldFingerprint,
-		}); errors.Is(err, pgx.ErrNoRows) {
+		}); store.IsNotFound(err) {
 			return errCredentialRejected
 		} else if err != nil {
 			return fmt.Errorf("replace device certificate: %w", err)

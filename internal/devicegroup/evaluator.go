@@ -10,6 +10,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/dynamicquery"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/store/sqlitetype"
 )
 
 // EvaluationResult is the committed membership delta and resulting group.
@@ -70,7 +71,7 @@ func (s *State) EvaluateDynamicGroup(ctx context.Context, op store.AuditOperatio
 		added, removed = membershipDelta(current, wanted)
 		if len(removed) > 0 {
 			removed, err = tx.RemoveDynamicDeviceGroupMembers(ctx, db.RemoveDynamicDeviceGroupMembersParams{
-				GroupID: id, DeviceIds: removed,
+				GroupID: id, DeviceIdsJson: sqlitetype.StringList(removed),
 			})
 			if err != nil {
 				return fmt.Errorf("device group: remove evaluated members: %w", err)
@@ -80,7 +81,7 @@ func (s *State) EvaluateDynamicGroup(ctx context.Context, op store.AuditOperatio
 		if len(added) > 0 {
 			now := s.now().UTC()
 			added, err = tx.AddDynamicDeviceGroupMembers(ctx, db.AddDynamicDeviceGroupMembersParams{
-				GroupID: id, DeviceIds: added, AddedAt: &now,
+				GroupID: id, DeviceIdsJson: sqlitetype.StringList(added), AddedAt: &now,
 			})
 			if err != nil {
 				return fmt.Errorf("device group: add evaluated members: %w", err)
@@ -145,8 +146,12 @@ func evaluationContext(row db.ListDevicesForDynamicEvaluationRow) (dynamicquery.
 	if err != nil {
 		return dynamicquery.DeviceContext{}, err
 	}
+	var groupNames []string
+	if err := json.Unmarshal(row.GroupNamesJson, &groupNames); err != nil {
+		return dynamicquery.DeviceContext{}, err
+	}
 	return dynamicquery.DeviceContext{
-		DeviceID: row.ID, Labels: labels, GroupNames: row.GroupNames,
+		DeviceID: row.ID, Labels: labels, GroupNames: groupNames,
 		Inventory: func(field string) (string, bool) {
 			value, ok := values[field]
 			return value, ok

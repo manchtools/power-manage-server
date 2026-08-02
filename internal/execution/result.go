@@ -5,11 +5,11 @@ package execution
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -219,12 +219,12 @@ func (s *Service) AppendOutputChunk(ctx context.Context, deviceID string, chunk 
 	now := s.now().UTC().Truncate(time.Microsecond)
 	_, err = s.store.WithAudit(ctx, agentOperation(deviceID, "execution.output"), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
 		params := db.InsertExecutionOutputChunkParams{
-			ExecutionID: row.ID, Stream: stream, Sequence: chunk.Sequence,
+			ExecutionID: row.ID, Stream: stream, Sequence: int32(chunk.Sequence),
 			Data: append([]byte(nil), chunk.Data...), ReceivedAt: now,
 		}
-		if _, err := tx.InsertExecutionOutputChunk(ctx, params); errors.Is(err, pgx.ErrNoRows) {
+		if _, err := tx.InsertExecutionOutputChunk(ctx, params); errors.Is(err, sql.ErrNoRows) {
 			stored, readErr := tx.GetExecutionOutputChunk(ctx, db.GetExecutionOutputChunkParams{
-				ExecutionID: row.ID, Stream: stream, Sequence: chunk.Sequence,
+				ExecutionID: row.ID, Stream: stream, Sequence: int32(chunk.Sequence),
 			})
 			if readErr != nil {
 				return fmt.Errorf("read replayed execution output chunk: %w", readErr)

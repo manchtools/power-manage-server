@@ -23,7 +23,7 @@ func deviceGroupOperation() store.AuditOperation {
 }
 
 func TestDeviceGroupState_CRUDAndManualMembershipAreAudited(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 1, 14, 0, 0, 0, time.UTC)
 	state := devicegroup.NewState(devicegroup.Config{Store: st, Now: func() time.Time { return now }})
@@ -124,7 +124,7 @@ func TestDeviceGroupState_CRUDAndManualMembershipAreAudited(t *testing.T) {
 }
 
 func TestDeviceGroupState_DynamicShapeAndBoundsFailClosed(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	ctx := context.Background()
 	state := devicegroup.NewState(devicegroup.Config{Store: st})
 

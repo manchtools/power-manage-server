@@ -211,6 +211,9 @@ func (l *Linker) createUser(
 	if err != nil {
 		return "", fmt.Errorf("assign linux uid: %w", err)
 	}
+	if linuxUID > 2147483647 {
+		return "", errors.New("assign linux uid: int32 range exhausted")
+	}
 	linuxUsername := DeriveLinuxUsername(claims.Email, claims.PreferredUsername)
 	if linuxUsername == "" {
 		linuxUsername = "user_" + strings.ToLower(userID[:8])
@@ -224,7 +227,7 @@ func (l *Linker) createUser(
 		FamilyName:         claims.FamilyName,
 		PreferredUsername:  claims.PreferredUsername,
 		LinuxUsername:      linuxUsername,
-		LinuxUid:           linuxUID,
+		LinuxUid:           int32(linuxUID),
 		ProvisioningSource: store.UserProvisioningSourceOIDCJIT,
 		CreatedAt:          &at,
 	}); err != nil {

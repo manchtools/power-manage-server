@@ -20,8 +20,8 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-func TestPostgresSearchHandlers_ValidateAuthorizeScopeAndAssign(t *testing.T) {
-	st, raw := setupPostgres(t)
+func TestSQLiteSearchHandlers_ValidateAuthorizeScopeAndAssign(t *testing.T) {
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	h := searchrpc.NewHandlers(st, slog.New(slog.NewTextHandler(io.Discard, nil)), func() time.Time { return now })
@@ -41,13 +41,13 @@ func TestPostgresSearchHandlers_ValidateAuthorizeScopeAndAssign(t *testing.T) {
 			VALUES ($1, 'searcher@example.test', 'Searcher', 'searcher', 210001, $2, $2)`, []any{actorID, now}},
 		{`INSERT INTO device_groups (id, name, created_at) VALUES ($1, 'Fleet A', $3), ($2, 'Fleet B', $3)`, []any{groupA, groupB, now}},
 		{`INSERT INTO actions (id, name, action_type, params, created_at, updated_at)
-			VALUES ($1, 'Scoped alpha', 100, '{}'::jsonb, $3, $3), ($2, 'Scoped beta', 100, '{}'::jsonb, $3, $3)`, []any{actionA, actionB, now}},
+			VALUES ($1, 'Scoped alpha', 100, '{}', $3, $3), ($2, 'Scoped beta', 100, '{}', $3, $3)`, []any{actionA, actionB, now}},
 		{`INSERT INTO assignments (id, source_type, source_id, target_type, target_id, mode, created_at, created_by)
 			VALUES ($1, 'action', $2, 'device_group', $3, 0, $5, $6),
 			       ($4, 'action', $7, 'device_group', $8, 0, $5, $6)`, []any{newID(), actionA, groupA, newID(), now, actorID, actionB, groupB}},
 		{`INSERT INTO devices (id, hostname, agent_version, agent_sealing_public_key, registered_at)
-			VALUES ($1, 'assigned-device', '1', decode(repeat('01', 32), 'hex'), $3),
-			       ($2, 'foreign-device', '1', decode(repeat('02', 32), 'hex'), $3)`, []any{deviceA, deviceB, now}},
+			VALUES ($1, 'assigned-device', '1', zeroblob(32), $3),
+			       ($2, 'foreign-device', '1', zeroblob(32), $3)`, []any{deviceA, deviceB, now}},
 		{`INSERT INTO device_assigned_users (device_id, user_id, assigned_at, assigned_by)
 			VALUES ($1, $2, $3, $2)`, []any{deviceA, actorID, now}},
 	}
@@ -55,6 +55,7 @@ func TestPostgresSearchHandlers_ValidateAuthorizeScopeAndAssign(t *testing.T) {
 		_, err := raw.Exec(ctx, statement.query, statement.args...)
 		require.NoError(t, err)
 	}
+	rebuildSearchFixture(t, st)
 
 	searchOnly := auth.WithUser(ctx, &auth.UserContext{
 		ID: actorID, Kind: auth.PrincipalUser, Permissions: []string{"Search"},
@@ -93,8 +94,8 @@ func TestPostgresSearchHandlers_ValidateAuthorizeScopeAndAssign(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-func TestPostgresSearchHandlers_AuditSearchAndRebuildRecordEvidence(t *testing.T) {
-	st, raw := setupPostgres(t)
+func TestSQLiteSearchHandlers_AuditSearchAndRebuildRecordEvidence(t *testing.T) {
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	h := searchrpc.NewHandlers(st, slog.New(slog.NewTextHandler(io.Discard, nil)), func() time.Time { return now })

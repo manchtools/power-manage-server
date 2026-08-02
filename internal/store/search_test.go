@@ -11,8 +11,8 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) {
-	st, raw := setupPostgres(t)
+func TestSQLiteSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) {
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	actionID, actionSS, setID, definitionID, policyID := newID(), newID(), newID(), newID(), newID()
@@ -26,8 +26,8 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 		args  []any
 	}{
 		{`INSERT INTO actions (id, name, description, action_type, params, created_at, updated_at) VALUES
-			($1, 'Straßenprüfung München', 'DACH baseline', 100, '{}'::jsonb, $3, $3),
-			($2, 'Strassenprüfung Berlin', 'ss remains distinct', 100, '{}'::jsonb, $3, $3)`, []any{actionID, actionSS, now}},
+			($1, 'Straßenprüfung München', 'DACH baseline', 100, '{}', $3, $3),
+			($2, 'Strassenprüfung Berlin', 'ss remains distinct', 100, '{}', $3, $3)`, []any{actionID, actionSS, now}},
 		{`INSERT INTO action_sets (id, name, description, created_at, updated_at)
 			VALUES ($1, 'Workstation baseline', 'member names are searchable', $2, $2)`, []any{setID, now}},
 		{`INSERT INTO action_set_members (set_id, action_id, sort_order, added_at) VALUES ($1, $2, 0, $3)`, []any{setID, actionID, now}},
@@ -39,15 +39,15 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 		{`INSERT INTO compliance_policy_rules (policy_id, action_id, action_name, added_at)
 			VALUES ($1, $2, 'Straßenprüfung München', $3)`, []any{policyID, actionID, now}},
 		{`INSERT INTO devices (id, hostname, agent_version, agent_sealing_public_key, registered_at, last_seen_at)
-			VALUES ($1, 'db-01.eu.example', '2.4.0', decode(repeat('01', 32), 'hex'), $2, $2)`, []any{deviceID, now}},
+			VALUES ($1, 'db-01.eu.example', '2.4.0', zeroblob(32), $2, $2)`, []any{deviceID, now}},
 		{`INSERT INTO deliveries
 			(delivery_id, device_id, manifest_id, manifest, state, created_at, available_at)
-			VALUES ($1, $2, $3, '{}'::jsonb, 'PENDING', $4, $4)`, []any{deliveryID, deviceID, newID(), now}},
+			VALUES ($1, $2, $3, '{}', 'PENDING', $4, $4)`, []any{deliveryID, deviceID, newID(), now}},
 		{`INSERT INTO device_labels (device_id, key, value) VALUES ($1, 'environment', 'production')`, []any{deviceID}},
 		{`INSERT INTO device_inventory (device_id, table_name, rows, collected_at)
-			VALUES ($1, 'os_version', '[{"name":"Ubuntu","version":"26.04","arch":"amd64"}]'::jsonb, $2)`, []any{deviceID, now}},
+			VALUES ($1, 'os_version', '[{"name":"Ubuntu","version":"26.04","arch":"amd64"}]', $2)`, []any{deviceID, now}},
 		{`INSERT INTO device_inventory (device_id, table_name, rows, collected_at)
-			VALUES ($1, 'bios_info', '[{"vendor":"PhoenixTechnologies"}]'::jsonb, $2)`, []any{deviceID, now}},
+			VALUES ($1, 'system_info', '[{"cpu_brand":"PhoenixTechnologies"}]', $2)`, []any{deviceID, now}},
 		{`INSERT INTO device_groups (id, name, description, created_at) VALUES ($1, 'München devices', 'DACH fleet', $2)`, []any{deviceGroupID, now}},
 		{`INSERT INTO device_group_members (group_id, device_id, added_at) VALUES ($1, $2, $3)`, []any{deviceGroupID, deviceID, now}},
 		{`INSERT INTO users (id, email, display_name, given_name, linux_username, linux_uid, created_at, updated_at)
@@ -57,7 +57,7 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 		{`INSERT INTO user_groups (id, name, description, created_at, updated_at) VALUES ($1, 'München operators', 'night shift', $2, $2)`, []any{userGroupID, now}},
 		{`INSERT INTO user_group_members (group_id, user_id, added_at) VALUES ($1, $2, $3)`, []any{userGroupID, userID, now}},
 		{`INSERT INTO executions (id, delivery_id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, created_at)
-			VALUES ($1, $2, $3, $4, 100, 1, '{}'::jsonb, 90, 'pending', $5)`, []any{executionID, deliveryID, deviceID, actionID, now}},
+			VALUES ($1, $2, $3, $4, 100, 1, '{}', 90, 'pending', $5)`, []any{executionID, deliveryID, deviceID, actionID, now}},
 	}
 	for _, statement := range statements {
 		_, err := raw.Exec(ctx, statement.query, statement.args...)
@@ -74,6 +74,7 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 		newID(), actionID, deviceGroupID, newID(), setID, newID(), definitionID,
 		newID(), policyID, now, userID)
 	require.NoError(t, err)
+	rebuildSearchFixture(t, st)
 
 	auditRecord, err := st.RecordOperation(ctx, store.AuditOperation{
 		Class: store.ClassMutation, ActorType: "user", ActorID: userID,
@@ -127,6 +128,7 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 	assert.Equal(t, deviceID, requireOneSearchRow(t, search("devices", deviceID[:8])).ID)
 	assert.Equal(t, deviceID, requireOneSearchRow(t, search("devices", "PhoenixTechnlogies")).ID,
 		"fuzzy matching includes inventory fields that are not copied into the public result map")
+	assert.Empty(t, search("devices", deviceID[:2]+"_"+deviceID[3:8]), "LIKE metacharacters in an ID prefix are literals")
 	assert.Equal(t, userID, requireOneSearchRow(t, search("users", "Annalna")).ID,
 		"fuzzy matching includes profile fields that are not copied into the public result map")
 	assert.Equal(t, setID, requireOneSearchRow(t, search("action_sets", "basline")).ID)
@@ -141,7 +143,8 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 		want         int64
 	}{
 		{"actions", "type", []string{"100"}, 2},
-		{"actions", "is_compliance", []string{"false"}, 2},
+		{"actions", "is_compliance", []string{"true"}, 1},
+		{"actions", "is_compliance", []string{"false"}, 1},
 		{"actions", "assigned", []string{"true"}, 1},
 		{"action_sets", "member_count", []string{"1"}, 1},
 		{"action_sets", "assigned", []string{"true"}, 1},
@@ -234,8 +237,8 @@ func TestPostgresSearch_CoversEveryFacetWithPrefixAndCurrentJoins(t *testing.T) 
 	}
 }
 
-func TestPostgresSearch_FiltersScopesSortsAndPagesDeterministically(t *testing.T) {
-	st, raw := setupPostgres(t)
+func TestSQLiteSearch_FiltersScopesSortsAndPagesDeterministically(t *testing.T) {
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	groupID := newID()
@@ -246,13 +249,14 @@ func TestPostgresSearch_FiltersScopesSortsAndPagesDeterministically(t *testing.T
 	for i, name := range []string{"Pager Charlie", "Pager Alpha", "Pager Bravo"} {
 		_, err := raw.Exec(ctx, `INSERT INTO actions
 			(id, name, action_type, params, created_at, updated_at)
-			VALUES ($1, $2, 100, '{}'::jsonb, $3, $3)`, ids[i], name, now.Add(time.Duration(i)*time.Minute))
+			VALUES ($1, $2, 100, '{}', $3, $3)`, ids[i], name, now.Add(time.Duration(i)*time.Minute))
 		require.NoError(t, err)
 	}
 	_, err = raw.Exec(ctx, `INSERT INTO assignments
 		(id, source_type, source_id, target_type, target_id, mode, created_at, created_by)
 		VALUES ($1, 'action', $2, 'device_group', $3, 0, $4, $5)`, newID(), ids[0], groupID, now, newID())
 	require.NoError(t, err)
+	rebuildSearchFixture(t, st)
 
 	page, total, err := st.Search(ctx, store.SearchParams{
 		Scope: "actions", Query: "Pager", Limit: 2, SortField: "name",
@@ -286,8 +290,8 @@ func TestPostgresSearch_FiltersScopesSortsAndPagesDeterministically(t *testing.T
 	assert.ErrorIs(t, err, store.ErrInvalidSearch)
 }
 
-func TestPostgresSearch_UserErasureRemovesSearchablePIIInSameStatement(t *testing.T) {
-	st, raw := setupPostgres(t)
+func TestSQLiteSearch_RebuildRemovesErasedPII(t *testing.T) {
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	id := newID()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
@@ -295,6 +299,7 @@ func TestPostgresSearch_UserErasureRemovesSearchablePIIInSameStatement(t *testin
 		(id, email, display_name, given_name, family_name, preferred_username, linux_username, linux_uid, created_at, updated_at)
 		VALUES ($1, 'erasable@example.test', 'Erasable Person', 'Erasable', 'Person', 'erasable', 'erasable', 210001, $2, $2)`, id, now)
 	require.NoError(t, err)
+	rebuildSearchFixture(t, st)
 
 	rows, total, err := st.Search(ctx, store.SearchParams{Scope: "users", Query: "erasable", Limit: 50})
 	require.NoError(t, err)
@@ -305,30 +310,35 @@ func TestPostgresSearch_UserErasureRemovesSearchablePIIInSameStatement(t *testin
 		email = $2, display_name = '', given_name = '', family_name = '', preferred_username = '',
 		linux_username = '', is_deleted = TRUE, updated_at = $3 WHERE id = $1`, id, "erased-"+id+"@invalid", now)
 	require.NoError(t, err)
+	rebuildSearchFixture(t, st)
 
 	rows, total, err = st.Search(ctx, store.SearchParams{Scope: "users", Query: "erasable", Limit: 50})
 	require.NoError(t, err)
 	assert.Empty(t, rows)
 	assert.Zero(t, total)
 	var retainsPII bool
-	err = raw.QueryRow(ctx, `SELECT search_tsv @@ to_tsquery('simple'::regconfig, 'erasable:*') FROM users WHERE id = $1`, id).Scan(&retainsPII)
+	err = raw.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM search_documents d JOIN search_fts f ON f.rowid = d.rowid
+		WHERE d.scope = 'users' AND d.entity_id = $1 AND search_fts MATCH 'erasable*'
+	)`, id).Scan(&retainsPII)
 	require.NoError(t, err)
-	assert.False(t, retainsPII, "the generated vector is recomputed by the erasure statement")
+	assert.False(t, retainsPII, "rebuilding derived documents cannot restore erased PII")
 }
 
-func TestPostgresSearch_CombinesPrefixAndFuzzyResultsDeterministically(t *testing.T) {
-	st, raw := setupPostgres(t)
+func TestSQLiteSearch_CombinesPrefixAndFuzzyResultsDeterministically(t *testing.T) {
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	exactID, primaryID, descriptionID := newID(), newID(), newID()
 
 	_, err := raw.Exec(ctx, `INSERT INTO actions
 		(id, name, description, action_type, params, created_at, updated_at) VALUES
-		($1, 'Workstation exact', '', 100, '{}'::jsonb, $4, $4),
-		($2, 'Workstaiton primary', '', 100, '{}'::jsonb, $4, $4),
-		($3, 'Secondary field', 'workstaiton recovery', 100, '{}'::jsonb, $4, $4)`,
+		($1, 'Workstation exact', '', 100, '{}', $4, $4),
+		($2, 'Workstaiton primary', '', 100, '{}', $4, $4),
+		($3, 'Secondary field', 'workstaiton recovery', 100, '{}', $4, $4)`,
 		exactID, primaryID, descriptionID, now)
 	require.NoError(t, err)
+	rebuildSearchFixture(t, st)
 
 	first, total, err := st.Search(ctx, store.SearchParams{
 		Scope: "actions", Query: "workstation", Limit: 2, SortField: "name",
@@ -348,15 +358,16 @@ func TestPostgresSearch_CombinesPrefixAndFuzzyResultsDeterministically(t *testin
 	assert.Equal(t, descriptionID, second[0].ID)
 }
 
-func TestPostgresSearch_FuzzyRequiresEveryTokenAndFourCharacterMinimum(t *testing.T) {
-	st, raw := setupPostgres(t)
+func TestSQLiteSearch_FuzzyRequiresEveryTokenAndFourCharacterMinimum(t *testing.T) {
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	id := newID()
 	_, err := raw.Exec(ctx, `INSERT INTO actions
 		(id, name, description, action_type, params, created_at, updated_at)
-		VALUES ($1, 'Münchn abc baseline', '', 100, '{}'::jsonb, $2, $2)`, id, now)
+		VALUES ($1, 'Münchn abc baseline', '', 100, '{}', $2, $2)`, id, now)
 	require.NoError(t, err)
+	rebuildSearchFixture(t, st)
 
 	rows, total, err := st.Search(ctx, store.SearchParams{Scope: "actions", Query: "münchen", Limit: 50})
 	require.NoError(t, err)
@@ -375,8 +386,8 @@ func TestPostgresSearch_FuzzyRequiresEveryTokenAndFourCharacterMinimum(t *testin
 	assert.Empty(t, rows)
 }
 
-func TestPostgresSearch_FuzzyCandidateCorpus(t *testing.T) {
-	st, raw := setupPostgres(t)
+func TestSQLiteSearch_FuzzyCandidateCorpus(t *testing.T) {
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -396,9 +407,10 @@ func TestPostgresSearch_FuzzyCandidateCorpus(t *testing.T) {
 		ids[i] = newID()
 		_, err := raw.Exec(ctx, `INSERT INTO actions
 			(id, name, description, action_type, params, created_at, updated_at)
-			VALUES ($1, $2, '', 100, '{}'::jsonb, $3, $3)`, ids[i], tc.document, now)
+			VALUES ($1, $2, '', 100, '{}', $3, $3)`, ids[i], tc.document, now)
 		require.NoError(t, err)
 	}
+	rebuildSearchFixture(t, st)
 
 	for i, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -411,6 +423,15 @@ func TestPostgresSearch_FuzzyCandidateCorpus(t *testing.T) {
 			assert.Equal(t, tc.want, found)
 		})
 	}
+}
+
+func rebuildSearchFixture(t *testing.T, st *store.Store) {
+	t.Helper()
+	require.NoError(t, st.RebuildSearchIndexes(context.Background(), store.AuditOperation{
+		Class: store.ClassBackgroundWriter, ActorType: "system", Origin: "test_fixture",
+		RequestDescriptor: "search.fixture/rebuild", AuthorizationOutcome: store.AuthorizationNotApplicable,
+		Result: store.ResultSuccess, ResultCode: "OK",
+	}))
 }
 
 func requireOneSearchRow(t *testing.T, rows []store.SearchRow) store.SearchRow {

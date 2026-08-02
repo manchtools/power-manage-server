@@ -8,6 +8,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/dynamicquery"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/store/sqlitetype"
 )
 
 var (
@@ -64,7 +65,7 @@ func (h *Handlers) evaluateDynamicUserGroup(ctx context.Context, op store.AuditO
 
 		if len(removed) > 0 {
 			removed, err = tx.RemoveDynamicUserGroupMembers(ctx, db.RemoveDynamicUserGroupMembersParams{
-				GroupID: groupID, UserIds: removed,
+				GroupID: groupID, UserIdsJson: sqlitetype.StringList(removed),
 			})
 			if err != nil {
 				return err
@@ -73,7 +74,7 @@ func (h *Handlers) evaluateDynamicUserGroup(ctx context.Context, op store.AuditO
 		if len(added) > 0 {
 			at := h.now().UTC()
 			added, err = tx.AddDynamicUserGroupMembers(ctx, db.AddDynamicUserGroupMembersParams{
-				GroupID: groupID, UserIds: added, AddedAt: at, AddedBy: actorID,
+				GroupID: groupID, UserIdsJson: sqlitetype.StringList(added), AddedAt: at, AddedBy: actorID,
 			})
 			if err != nil {
 				return err

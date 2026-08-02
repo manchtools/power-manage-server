@@ -92,11 +92,7 @@ func TestJobRunner_RecurringSuccessReschedulesTheSameDurableRow(t *testing.T) {
 	assert.Zero(t, row.AttemptCount, "a successful interval starts with a fresh retry budget")
 	assert.Equal(t, "OK", row.ResultCode)
 
-	var actions []string
-	require.NoError(t, f.raw.QueryRow(context.Background(), `
-		SELECT array_agg(action ORDER BY chain_seq)
-		FROM audit_effects WHERE resource_type = 'job' AND resource_id = $1
-	`, f.jobID).Scan(&actions))
+	actions := auditActions(t, f.raw, "job", f.jobID)
 	assert.Equal(t, []string{"CREATE", "CLAIM", "RESCHEDULE"}, actions)
 }
 
@@ -182,7 +178,7 @@ func TestJobRunner_HandlerPanicIsContainedAndNextJobRuns(t *testing.T) {
 	secondID := newID()
 	_, err = f.raw.Exec(ctx, `
 		INSERT INTO jobs (job_id, kind, payload, state, due_at, max_attempts)
-		VALUES ($1, 'retention.sweep', '{}'::jsonb, 'PENDING', $2, 1)
+		VALUES ($1, 'retention.sweep', '{}', 'PENDING', $2, 1)
 	`, secondID, f.now)
 	require.NoError(t, err)
 	secondRan := make(chan struct{}, 1)

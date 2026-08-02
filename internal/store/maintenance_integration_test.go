@@ -53,7 +53,7 @@ func newMaintenance(t *testing.T, st *store.Store, now time.Time, retention time
 }
 
 func TestMaintenance_SeedsExactlyOneDurableJobPerKind(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	service, _ := newMaintenance(t, st, now, 90*24*time.Hour)
 
@@ -88,7 +88,7 @@ func TestMaintenance_SeedsExactlyOneDurableJobPerKind(t *testing.T) {
 }
 
 func TestMaintenance_NotifiesOnlyWhenNoEnabledGlobalAdministratorExists(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	notifier := &recordingWebhook{}
@@ -148,7 +148,7 @@ func TestMaintenance_NotifiesOnlyWhenNoEnabledGlobalAdministratorExists(t *testi
 }
 
 func TestMaintenance_WebhookFailureUsesDurableJobRetry(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	notifier := &recordingWebhook{err: errors.New("webhook unavailable")}
 	archives, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
 	require.NoError(t, err)
@@ -166,7 +166,7 @@ func TestMaintenance_WebhookFailureUsesDurableJobRetry(t *testing.T) {
 }
 
 func TestMaintenance_AuditFailurePreventsWebhook(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	notifier := &recordingWebhook{}
 	archives, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
 	require.NoError(t, err)
@@ -174,17 +174,14 @@ func TestMaintenance_AuditFailurePreventsWebhook(t *testing.T) {
 		Store: st, Archive: archives, Retention: 90 * 24 * time.Hour, Notifier: notifier,
 		BackupPath: t.TempDir(), BackupMaxLag: 26 * time.Hour,
 	})
-	_, err = raw.Exec(context.Background(), `
-		ALTER TABLE audit_effects ADD CONSTRAINT reject_webhook_intent CHECK (action <> 'NOTIFY_INTENT')
-	`)
-	require.NoError(t, err)
+	rejectAuditEffect(t, raw, "NOTIFY_INTENT")
 
 	assert.Error(t, service.InspectSecurity(context.Background(), jobs.Job{}))
 	assert.Empty(t, notifier.events, "no network effect may precede committed audit evidence")
 }
 
 func TestMaintenance_BackupAlertTracksVerifiedBackupLag(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	backupPath := t.TempDir()
@@ -221,7 +218,7 @@ func TestMaintenance_BackupAlertTracksVerifiedBackupLag(t *testing.T) {
 }
 
 func TestMaintenance_BackupInspectionIsAuditedWithoutWebhook(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	service, _ := newMaintenance(t, st, time.Now().UTC(), 90*24*time.Hour)
 
 	require.NoError(t, service.InspectBackup(context.Background(), jobs.Job{}))
@@ -238,7 +235,7 @@ func TestMaintenance_BackupInspectionIsAuditedWithoutWebhook(t *testing.T) {
 
 func writeBackupStatusFixture(t *testing.T, directory string, completedAt time.Time) {
 	t.Helper()
-	const artifact = "postgres-test.dump"
+	const artifact = "sqlite-test.db"
 	contents := []byte("verified test dump")
 	require.NoError(t, os.WriteFile(filepath.Join(directory, artifact), contents, 0o600))
 	document := fmt.Sprintf(
@@ -249,7 +246,7 @@ func writeBackupStatusFixture(t *testing.T, directory string, completedAt time.T
 }
 
 func TestMaintenance_ExternalAnchorAndArchiveBeforeDeleteRunEndToEnd(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	seedOperation(t, st)
 	seedOperation(t, st)
@@ -286,7 +283,7 @@ func TestMaintenance_ExternalAnchorAndArchiveBeforeDeleteRunEndToEnd(t *testing.
 }
 
 func TestMaintenance_PrefixArchiveFailureLeavesAuditRowsUntouched(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	seedOperation(t, st)
 	now := time.Now().UTC().Add(120 * 24 * time.Hour)
 	base, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
@@ -305,7 +302,7 @@ func TestMaintenance_PrefixArchiveFailureLeavesAuditRowsUntouched(t *testing.T) 
 }
 
 func TestMaintenance_CleansExpiredOIDCStateWithAudit(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
 	providerID := newID()
@@ -322,8 +319,16 @@ func TestMaintenance_CleansExpiredOIDCStateWithAudit(t *testing.T) {
 	service, _ := newMaintenance(t, st, now, 90*24*time.Hour)
 
 	require.NoError(t, service.CleanupAuthStates(ctx, jobs.Job{}))
+	rows, err := raw.Query(ctx, `SELECT state FROM auth_states ORDER BY state`)
+	require.NoError(t, err)
+	defer rows.Close()
 	var states []string
-	require.NoError(t, raw.QueryRow(ctx, `SELECT array_agg(state ORDER BY state) FROM auth_states`).Scan(&states))
+	for rows.Next() {
+		var state string
+		require.NoError(t, rows.Scan(&state))
+		states = append(states, state)
+	}
+	require.NoError(t, rows.Err())
 	assert.Equal(t, []string{"live"}, states)
 	var effects int
 	require.NoError(t, raw.QueryRow(ctx, `
@@ -334,7 +339,7 @@ func TestMaintenance_CleansExpiredOIDCStateWithAudit(t *testing.T) {
 }
 
 func TestMaintenance_AuthStateAuditFailureRollsBackCleanup(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	providerID := newID()
 	_, err := raw.Exec(ctx, `
@@ -344,11 +349,10 @@ func TestMaintenance_AuthStateAuditFailureRollsBackCleanup(t *testing.T) {
 	require.NoError(t, err)
 	_, err = raw.Exec(ctx, `
 		INSERT INTO auth_states (state, provider_id, expires_at)
-		VALUES ('expired', $1, now() - interval '1 minute')
-	`, providerID)
+		VALUES ('expired', $1, $2)
+	`, providerID, time.Now().UTC().Add(-time.Minute))
 	require.NoError(t, err)
-	_, err = raw.Exec(ctx, `ALTER TABLE audit_effects ADD CONSTRAINT reject_auth_cleanup CHECK (action <> 'CLEANUP')`)
-	require.NoError(t, err)
+	rejectAuditEffect(t, raw, "CLEANUP")
 	deleted, cleanupErr := st.CleanupExpiredAuthStates(ctx)
 	require.Error(t, cleanupErr)
 	assert.Zero(t, deleted, "rolled-back rows must not be reported as deleted")

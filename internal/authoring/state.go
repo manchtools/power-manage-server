@@ -21,6 +21,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/store/sqlitetype"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -110,7 +111,7 @@ func (s *Service) CreateAction(ctx context.Context, op store.AuditOperation, p C
 			ID: id, Name: p.Name, Description: p.Description,
 			ActionType: int32(p.Type), DesiredState: int32(p.DesiredState),
 			Params: params, ParamsCanonical: params, TimeoutSeconds: timeout,
-			Schedule: schedule, IsSystem: p.System, CreatedAt: &now, CreatedBy: p.CreatedBy,
+			Schedule: sqlitetype.JSON(schedule), IsSystem: p.System, CreatedAt: &now, CreatedBy: p.CreatedBy,
 		})
 		if err != nil {
 			return fmt.Errorf("authoring: insert action: %w", err)
@@ -209,8 +210,8 @@ func (s *Service) UpdateActionParams(ctx context.Context, op store.AuditOperatio
 	_, err = s.store.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
 		row, err := tx.UpdateAuthoringActionParams(ctx, db.UpdateAuthoringActionParamsParams{
 			ID: p.ID, DesiredState: int32(p.DesiredState), Params: params, ParamsCanonical: params,
-			TimeoutSet: p.TimeoutSeconds > 0, TimeoutSeconds: p.TimeoutSeconds,
-			ScheduleSet: p.Schedule != nil, Schedule: schedule,
+			HasTimeout: boolInt32(p.TimeoutSeconds > 0), TimeoutSeconds: p.TimeoutSeconds,
+			HasSchedule: p.Schedule != nil, Schedule: sqlitetype.JSON(schedule),
 			UpdatedAt: &now, AllowSystem: p.AllowSystem,
 		})
 		if err != nil {
@@ -228,6 +229,13 @@ func (s *Service) UpdateActionParams(ctx context.Context, op store.AuditOperatio
 		return nil
 	})
 	return out, s.classifyWriteError(ctx, p.ID, p.AllowSystem, err)
+}
+
+func boolInt32(value bool) int32 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // DeleteAction soft-deletes the authored row and removes composition edges in

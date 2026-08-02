@@ -8,49 +8,49 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func exec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
+func exec(t *testing.T, pool *testdb.DB, sql string, args ...any) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), sql, args...)
 	require.NoError(t, err)
 }
 
-func execFails(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) error {
+func execFails(t *testing.T, pool *testdb.DB, sql string, args ...any) error {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), sql, args...)
 	require.Error(t, err)
 	return err
 }
 
-func seedUser(t *testing.T, pool *pgxpool.Pool) string {
+func seedUser(t *testing.T, pool *testdb.DB) string {
 	t.Helper()
 	id := newID()
-	exec(t, pool, `INSERT INTO public.users (id, email) VALUES ($1, $2)`, id, id+"@example.test")
+	exec(t, pool, `INSERT INTO users (id, email) VALUES ($1, $2)`, id, id+"@example.test")
 	return id
 }
 
-func seedRole(t *testing.T, pool *pgxpool.Pool) string {
+func seedRole(t *testing.T, pool *testdb.DB) string {
 	t.Helper()
 	id := newID()
-	exec(t, pool, `INSERT INTO public.roles (id, name) VALUES ($1, $2)`, id, "role-"+id)
+	exec(t, pool, `INSERT INTO roles (id, name) VALUES ($1, $2)`, id, "role-"+id)
 	return id
 }
 
-func seedUserGroup(t *testing.T, pool *pgxpool.Pool) string {
+func seedUserGroup(t *testing.T, pool *testdb.DB) string {
 	t.Helper()
 	id := newID()
-	exec(t, pool, `INSERT INTO public.user_groups (id, name) VALUES ($1, $2)`, id, "ug-"+id)
+	exec(t, pool, `INSERT INTO user_groups (id, name) VALUES ($1, $2)`, id, "ug-"+id)
 	return id
 }
 
-func seedDeviceGroup(t *testing.T, pool *pgxpool.Pool) string {
+func seedDeviceGroup(t *testing.T, pool *testdb.DB) string {
 	t.Helper()
 	id := newID()
-	exec(t, pool, `INSERT INTO public.device_groups (id, name) VALUES ($1, $2)`, id, "dg-"+id)
+	exec(t, pool, `INSERT INTO device_groups (id, name) VALUES ($1, $2)`, id, "dg-"+id)
 	return id
 }
 
@@ -58,11 +58,10 @@ func seedDeviceGroup(t *testing.T, pool *pgxpool.Pool) string {
 // comes from user_roles and user_group_roles. A scalar column beside
 // them would be a second, conflicting answer to the same question.
 func TestSchema_UsersCarryNoScalarRole(t *testing.T) {
-	_, pool := setupPostgres(t)
+	_, pool := setupSQLite(t)
 
 	cols := scanStrings(t, pool, `
-		SELECT column_name FROM information_schema.columns
-		WHERE table_schema = 'public' AND table_name = 'users'`)
+		SELECT name FROM pragma_table_xinfo('users')`)
 	require.NotEmpty(t, cols, "matches-zero guard: the users table has no columns")
 	assert.NotContains(t, cols, "role")
 }
@@ -72,14 +71,14 @@ func TestSchema_UsersCarryNoScalarRole(t *testing.T) {
 // Uniqueness is instead exactly one unscoped grant per subject and role,
 // and one per subject, role and distinct scope.
 func TestUserRoles_GrantsCoexistPerScopeAndRejectDuplicates(t *testing.T) {
-	_, pool := setupPostgres(t)
+	_, pool := setupSQLite(t)
 
 	user := seedUser(t, pool)
 	role := seedRole(t, pool)
 	scopeA := seedDeviceGroup(t, pool)
 	scopeB := seedDeviceGroup(t, pool)
 
-	grant := `INSERT INTO public.user_roles (grant_id, user_id, role_id, scope_kind, scope_id)
+	grant := `INSERT INTO user_roles (grant_id, user_id, role_id, scope_kind, scope_id)
 	          VALUES ($1, $2, $3, $4, $5)`
 
 	exec(t, pool, grant, newID(), user, role, nil, nil)
@@ -88,25 +87,25 @@ func TestUserRoles_GrantsCoexistPerScopeAndRejectDuplicates(t *testing.T) {
 
 	var n int
 	require.NoError(t, pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM public.user_roles WHERE user_id = $1 AND role_id = $2`, user, role).Scan(&n))
+		`SELECT count(*) FROM user_roles WHERE user_id = $1 AND role_id = $2`, user, role).Scan(&n))
 	assert.Equal(t, 3, n, "one global grant and two distinct scoped grants of the same role")
 
 	err := execFails(t, pool, grant, newID(), user, role, nil, nil)
-	assert.Contains(t, err.Error(), "user_roles_unscoped_unique")
+	assert.Contains(t, err.Error(), "UNIQUE constraint failed")
 
 	err = execFails(t, pool, grant, newID(), user, role, "device_group", scopeA)
-	assert.Contains(t, err.Error(), "user_roles_scoped_unique")
+	assert.Contains(t, err.Error(), "UNIQUE constraint failed")
 }
 
 func TestUserGroupRoles_GrantsCoexistPerScopeAndRejectDuplicates(t *testing.T) {
-	_, pool := setupPostgres(t)
+	_, pool := setupSQLite(t)
 
 	group := seedUserGroup(t, pool)
 	role := seedRole(t, pool)
 	scopeA := seedDeviceGroup(t, pool)
 	scopeB := seedUserGroup(t, pool)
 
-	grant := `INSERT INTO public.user_group_roles (grant_id, group_id, role_id, scope_kind, scope_id)
+	grant := `INSERT INTO user_group_roles (grant_id, group_id, role_id, scope_kind, scope_id)
 	          VALUES ($1, $2, $3, $4, $5)`
 
 	exec(t, pool, grant, newID(), group, role, nil, nil)
@@ -115,28 +114,24 @@ func TestUserGroupRoles_GrantsCoexistPerScopeAndRejectDuplicates(t *testing.T) {
 
 	var n int
 	require.NoError(t, pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM public.user_group_roles WHERE group_id = $1 AND role_id = $2`, group, role).Scan(&n))
+		`SELECT count(*) FROM user_group_roles WHERE group_id = $1 AND role_id = $2`, group, role).Scan(&n))
 	assert.Equal(t, 3, n)
 
 	err := execFails(t, pool, grant, newID(), group, role, nil, nil)
-	assert.Contains(t, err.Error(), "user_group_roles_unscoped_unique")
+	assert.Contains(t, err.Error(), "UNIQUE constraint failed")
 
 	err = execFails(t, pool, grant, newID(), group, role, "device_group", scopeA)
-	assert.Contains(t, err.Error(), "user_group_roles_scoped_unique")
+	assert.Contains(t, err.Error(), "UNIQUE constraint failed")
 }
 
 // declaredForeignKeys returns "table.column -> parent" for every
 // single-column foreign key in the schema.
-func declaredForeignKeys(t *testing.T, pool *pgxpool.Pool) []string {
+func declaredForeignKeys(t *testing.T, pool *testdb.DB) []string {
 	t.Helper()
 	fks := scanStrings(t, pool, `
-		SELECT tc.table_name || '.' || kcu.column_name || ' -> ' || ccu.table_name
-		FROM information_schema.table_constraints tc
-		JOIN information_schema.key_column_usage kcu
-		  ON kcu.constraint_schema = tc.constraint_schema AND kcu.constraint_name = tc.constraint_name
-		JOIN information_schema.constraint_column_usage ccu
-		  ON ccu.constraint_schema = tc.constraint_schema AND ccu.constraint_name = tc.constraint_name
-		WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'`)
+		SELECT m.name || '.' || fk."from" || ' -> ' || fk."table"
+		FROM sqlite_schema AS m, pragma_foreign_key_list(m.name) AS fk
+		WHERE m.type = 'table'`)
 	require.NotEmpty(t, fks, "matches-zero guard: the catalog reports no foreign keys at all")
 	return fks
 }
@@ -203,7 +198,7 @@ var requiredForeignKeys = []string{
 }
 
 func TestForeignKeys_EveryDomainLinkIsDeclared(t *testing.T) {
-	_, pool := setupPostgres(t)
+	_, pool := setupSQLite(t)
 
 	require.NotEmpty(t, requiredForeignKeys, "matches-zero guard: the required-link list is empty")
 	declared := declaredForeignKeys(t, pool)
@@ -234,7 +229,7 @@ var unconstrainedReferences = map[string]string{
 }
 
 func TestForeignKeys_ExcludedReferencesStayUnconstrained(t *testing.T) {
-	_, pool := setupPostgres(t)
+	_, pool := setupSQLite(t)
 
 	require.NotEmpty(t, unconstrainedReferences, "matches-zero guard: the excluded-reference list is empty")
 
@@ -257,48 +252,48 @@ func TestForeignKeys_ExcludedReferencesStayUnconstrained(t *testing.T) {
 // or role. Each insert supplies real values for every parent except the
 // one under test, so the constraint that fires is unambiguous.
 func TestForeignKeys_RejectOrphanRows(t *testing.T) {
-	_, pool := setupPostgres(t)
+	_, pool := setupSQLite(t)
 
 	deviceID := newID()
-	exec(t, pool, `INSERT INTO public.devices (id, hostname, agent_sealing_public_key)
+	exec(t, pool, `INSERT INTO devices (id, hostname, agent_sealing_public_key)
 		VALUES ($1, 'orphan.example.test', $2)`, deviceID, make([]byte, 32))
 	actionID := newID()
-	exec(t, pool, `INSERT INTO public.actions (id, name, action_type) VALUES ($1, 'rotate', 1)`, actionID)
+	exec(t, pool, `INSERT INTO actions (id, name, action_type) VALUES ($1, 'rotate', 1)`, actionID)
 	user := seedUser(t, pool)
 	role := seedRole(t, pool)
 
 	t.Run("delivery for an unknown device", func(t *testing.T) {
-		err := execFails(t, pool, `INSERT INTO public.deliveries
+		err := execFails(t, pool, `INSERT INTO deliveries
 			(delivery_id, device_id, manifest_id, manifest, state)
-			VALUES ($1, $2, $3, '{}'::jsonb, 'PENDING')`, newID(), newID(), newID())
-		assert.Contains(t, err.Error(), "deliveries_device_id_fkey")
+			VALUES ($1, $2, $3, '{}', 'PENDING')`, newID(), newID(), newID())
+		assert.Contains(t, err.Error(), "FOREIGN KEY constraint failed")
 	})
 
 	t.Run("membership in an unknown group", func(t *testing.T) {
 		err := execFails(t, pool,
-			`INSERT INTO public.device_group_members (group_id, device_id) VALUES ($1, $2)`,
+			`INSERT INTO device_group_members (group_id, device_id) VALUES ($1, $2)`,
 			newID(), deviceID)
-		assert.Contains(t, err.Error(), "device_group_members_group_id_fkey")
+		assert.Contains(t, err.Error(), "FOREIGN KEY constraint failed")
 	})
 
 	t.Run("key material for an unknown device", func(t *testing.T) {
-		err := execFails(t, pool, `INSERT INTO public.luks_keys
+		err := execFails(t, pool, `INSERT INTO luks_keys
 			(id, device_id, action_id, device_path, passphrase, rotated_at)
-			VALUES ($1, $2, $3, '/dev/sda1', 'enc:v1:ciphertext', now())`, newID(), newID(), actionID)
-		assert.Contains(t, err.Error(), "luks_keys_device_id_fkey")
+			VALUES ($1, $2, $3, '/dev/sda1', 'enc:v1:ciphertext', CURRENT_TIMESTAMP)`, newID(), newID(), actionID)
+		assert.Contains(t, err.Error(), "FOREIGN KEY constraint failed")
 	})
 
 	t.Run("grant to an unknown subject", func(t *testing.T) {
 		err := execFails(t, pool,
-			`INSERT INTO public.user_roles (grant_id, user_id, role_id) VALUES ($1, $2, $3)`,
+			`INSERT INTO user_roles (grant_id, user_id, role_id) VALUES ($1, $2, $3)`,
 			newID(), newID(), role)
-		assert.Contains(t, err.Error(), "user_roles_user_id_fkey")
+		assert.Contains(t, err.Error(), "FOREIGN KEY constraint failed")
 	})
 
 	t.Run("grant of an unknown role", func(t *testing.T) {
 		err := execFails(t, pool,
-			`INSERT INTO public.user_roles (grant_id, user_id, role_id) VALUES ($1, $2, $3)`,
+			`INSERT INTO user_roles (grant_id, user_id, role_id) VALUES ($1, $2, $3)`,
 			newID(), user, newID())
-		assert.Contains(t, err.Error(), "user_roles_role_id_fkey")
+		assert.Contains(t, err.Error(), "FOREIGN KEY constraint failed")
 	})
 }

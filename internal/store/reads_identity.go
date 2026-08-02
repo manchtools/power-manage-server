@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/store/sqlitetype"
 )
 
 // Identity reads. Same rule as reads.go: one exported method per
@@ -81,7 +82,7 @@ func (s *Store) GetUserSessionState(ctx context.Context, id string) (UserSession
 // ListUsers returns up to limit live users whose id sorts after after.
 // An empty after starts at the beginning.
 func (s *Store) ListUsers(ctx context.Context, after string, limit int32) ([]UserRow, error) {
-	rows, err := s.queries.ListUsers(ctx, generated.ListUsersParams{ID: after, Limit: limit})
+	rows, err := s.queries.ListUsers(ctx, generated.ListUsersParams{ID: after, Limit: int64(limit)})
 	if err != nil {
 		return nil, fmt.Errorf("user: list: %w", err)
 	}
@@ -142,8 +143,8 @@ func (s *Store) ListUserGroups(ctx context.Context, filter UserGroupListFilter) 
 		return nil, fmt.Errorf("user_group: list limit must be between 1 and 101")
 	}
 	rows, err := s.queries.ListUserGroups(ctx, generated.ListUserGroupsParams{
-		AfterID: filter.AfterID, RowLimit: filter.Limit,
-		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		AfterID: filter.AfterID, RowLimit: int64(filter.Limit),
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("user_group: list: %w", err)
@@ -158,7 +159,7 @@ func (s *Store) ListUserGroups(ctx context.Context, filter UserGroupListFilter) 
 // CountUserGroups counts the same scope selected by ListUserGroups.
 func (s *Store) CountUserGroups(ctx context.Context, filter UserGroupListFilter) (int64, error) {
 	count, err := s.queries.CountUserGroups(ctx, generated.CountUserGroupsParams{
-		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("user_group: count: %w", err)
@@ -169,7 +170,7 @@ func (s *Store) CountUserGroups(ctx context.Context, filter UserGroupListFilter)
 // ListUserGroupsForUser returns visible live groups containing a subject.
 func (s *Store) ListUserGroupsForUser(ctx context.Context, userID string, filter UserGroupListFilter) ([]UserGroupView, error) {
 	rows, err := s.queries.ListUserGroupsForUser(ctx, generated.ListUserGroupsForUserParams{
-		UserID: userID, ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+		UserID: userID, ScopeRestricted: filter.ScopeRestricted, ScopeGroupIdsJson: sqlitetype.StringList(filter.ScopeGroupIDs),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("user_group: list for user: %w", err)
@@ -249,7 +250,7 @@ func (s *Store) GetRoleByName(ctx context.Context, name string) (RoleRow, error)
 
 // ListRoles returns up to limit live roles whose id sorts after after.
 func (s *Store) ListRoles(ctx context.Context, after string, limit int32) ([]RoleRow, error) {
-	rows, err := s.queries.ListRoles(ctx, generated.ListRolesParams{ID: after, Limit: limit})
+	rows, err := s.queries.ListRoles(ctx, generated.ListRolesParams{ID: after, Limit: int64(limit)})
 	if err != nil {
 		return nil, fmt.Errorf("role: list: %w", err)
 	}
@@ -296,7 +297,7 @@ func (s *Store) GetIdentityProviderBySlug(ctx context.Context, slug string) (Ide
 // ListIdentityProviders returns up to limit live providers whose id
 // sorts after after.
 func (s *Store) ListIdentityProviders(ctx context.Context, after string, limit int32) ([]IdentityProviderRow, error) {
-	rows, err := s.queries.ListIdentityProviders(ctx, generated.ListIdentityProvidersParams{ID: after, Limit: limit})
+	rows, err := s.queries.ListIdentityProviders(ctx, generated.ListIdentityProvidersParams{ID: after, Limit: int64(limit)})
 	if err != nil {
 		return nil, fmt.Errorf("identity_provider: list: %w", err)
 	}

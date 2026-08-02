@@ -84,7 +84,7 @@ func TestAgentSync_UsesDurableDeliveriesAndLiveEpoch(t *testing.T) {
 	require.NoError(t, err)
 	_, err = f.raw.Exec(ctx, `
 		INSERT INTO device_groups (id, name, maintenance_window)
-		VALUES ($1, 'maintenance', '{"schedule":[{"days":["mon"],"allow":"09:00-10:00"}]}'::jsonb)`, groupID)
+		VALUES ($1, 'maintenance', '{"schedule":[{"days":["mon"],"allow":"09:00-10:00"}]}')`, groupID)
 	require.NoError(t, err)
 	_, err = f.raw.Exec(ctx, `
 		INSERT INTO device_group_members (group_id, device_id, added_at)

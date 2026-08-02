@@ -35,7 +35,7 @@ func (s *Store) GetRegistrationToken(ctx context.Context, id string) (Registrati
 func (s *Store) ListRegistrationTokens(ctx context.Context, f RegistrationTokenListFilter) ([]RegistrationTokenRow, error) {
 	rows, err := s.queries.ListRegistrationTokens(ctx, db.ListRegistrationTokensParams{
 		ReservedName: BootstrapAdminTokenName, AfterID: f.AfterID,
-		IncludeDisabled: f.IncludeDisabled, RowLimit: f.Limit,
+		IncludeDisabled: f.IncludeDisabled, RowLimit: int64(f.Limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("registration token: list: %w", err)

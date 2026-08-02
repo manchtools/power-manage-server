@@ -17,6 +17,7 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/store/sqlitetype"
 )
 
 const (
@@ -67,7 +68,7 @@ func InsertInTx(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder, p I
 
 	jobID := ulid.Make().String()
 	if _, err := tx.InsertJob(ctx, db.InsertJobParams{
-		JobID: jobID, Kind: p.Kind, Payload: p.Payload, DueAt: p.DueAt,
+		JobID: jobID, Kind: p.Kind, Payload: sqlitetype.JSON(p.Payload), DueAt: p.DueAt,
 		MaxAttempts: p.MaxAttempts, DedupeKey: dedupeKey,
 	}); err != nil {
 		return "", fmt.Errorf("insert job: %w", err)
@@ -144,7 +145,7 @@ func (s *Service) Claim(ctx context.Context, jobID, workerID string) (store.JobR
 	_, err = s.store.WithAudit(ctx, workerOperation(workerID, "job.claim"), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
 		until := now.Add(s.leaseDuration)
 		n, err := tx.ClaimJob(ctx, db.ClaimJobParams{
-			JobID: jobID, ClaimedAt: &now, ClaimedUntil: &until, ClaimedBy: workerID,
+			JobID: jobID, Now: &now, ClaimedUntil: &until, ClaimedBy: workerID,
 		})
 		if err != nil {
 			return fmt.Errorf("claim job: %w", err)
@@ -271,7 +272,7 @@ func (s *Service) Finish(ctx context.Context, jobID, workerID, state, resultCode
 	now := s.now().UTC()
 	_, err = s.store.WithAudit(ctx, workerOperation(workerID, "job.finish"), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
 		n, err := tx.FinishJob(ctx, db.FinishJobParams{
-			JobID: jobID, ClaimedBy: workerID, State: state, TerminalAt: &now, ResultCode: resultCode,
+			JobID: jobID, ClaimedBy: workerID, NewState: state, TerminalAt: &now, ResultCode: resultCode,
 		})
 		if err != nil {
 			return fmt.Errorf("finish job: %w", err)

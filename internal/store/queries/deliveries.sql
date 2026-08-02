@@ -9,11 +9,11 @@
 INSERT INTO deliveries (
     delivery_id, device_id, manifest_id, manifest,
     state, operation_id, available_at, expires_at
-) VALUES ($1, $2, $3, $4, 'PENDING', $5, $6, $7)
+) VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?)
 RETURNING *;
 
 -- name: GetDelivery :one
-SELECT * FROM deliveries WHERE delivery_id = $1;
+SELECT * FROM deliveries WHERE delivery_id = ?;
 
 -- name: MarkDeliveryPushed :execrows
 -- PENDING or a re-push of an already PUSHED row (a reconnect), never a
@@ -21,13 +21,13 @@ SELECT * FROM deliveries WHERE delivery_id = $1;
 -- so a stale connection cannot claim the push.
 UPDATE deliveries
 SET state = 'PUSHED',
-    pushed_at = $2,
-    push_epoch = $3,
+    pushed_at = sqlc.arg(pushed_at),
+    push_epoch = sqlc.arg(push_epoch),
     attempt_count = attempt_count + 1,
-    available_at = $4
-WHERE delivery_id = $1
+    available_at = sqlc.arg(available_at)
+WHERE delivery_id = sqlc.arg(delivery_id)
   AND state IN ('PENDING', 'PUSHED')
-  AND push_epoch <= $3;
+  AND push_epoch <= sqlc.arg(push_epoch);
 
 -- name: MarkDeliveryAckedReceipt :execrows
 -- The agent confirmed DURABLE receipt. Idempotent on replay: a second
@@ -35,36 +35,35 @@ WHERE delivery_id = $1
 -- the caller, which is what makes reconnect retries safe.
 UPDATE deliveries
 SET state = 'ACKED_RECEIPT',
-    acked_receipt_at = $2
-WHERE delivery_id = $1
+    acked_receipt_at = ?
+WHERE delivery_id = ?
   AND state = 'PUSHED';
 
 -- name: MarkDeliveryResult :execrows
 -- A per-action and manifest result. Only reachable from a confirmed
 -- receipt, which the schema also enforces.
 UPDATE deliveries
-SET state = $2,
-    terminal_at = $3,
-    result_code = $4
-WHERE delivery_id = $1
+SET state = ?,
+    terminal_at = ?,
+    result_code = ?
+WHERE delivery_id = ?
   AND state = 'ACKED_RECEIPT';
 
 -- name: MarkDeliveryTerminalWithoutReceipt :execrows
 -- Expiry or cancellation of a delivery the device never received.
 UPDATE deliveries
-SET state = $2,
-    terminal_at = $3,
-    result_code = $4
-WHERE delivery_id = $1
-  AND state IN ('PENDING', 'PUSHED')
-  AND $2 IN ('EXPIRED', 'CANCELLED');
+SET state = sqlc.arg(new_state),
+    terminal_at = sqlc.arg(terminal_at),
+    result_code = sqlc.arg(result_code)
+WHERE delivery_id = sqlc.arg(delivery_id)
+  AND state IN ('PENDING', 'PUSHED');
 
 -- name: ListDueDeliveriesForDevices :many
 -- The sweep only considers live connections. Offline rows stay durable and a
 -- reconnect queues them directly; excluding them here prevents a large offline
 -- backlog from monopolising every bounded sweep page.
 SELECT * FROM deliveries
-WHERE device_id = ANY(sqlc.arg(device_ids)::text[])
+WHERE device_id IN (sqlc.slice(device_ids))
   AND state IN ('PENDING', 'PUSHED')
   AND available_at <= sqlc.arg(available_at)
 ORDER BY available_at
@@ -74,15 +73,15 @@ LIMIT sqlc.arg(page_size);
 -- Manifest frames one connected agent can still receive, oldest first. A row
 -- already acknowledged is awaiting results, not another manifest send.
 SELECT * FROM deliveries
-WHERE device_id = $1
+WHERE device_id = ?
   AND state IN ('PENDING', 'PUSHED')
 ORDER BY created_at
-LIMIT $2;
+LIMIT ?;
 
 -- name: ListExpiredDeliveries :many
 SELECT * FROM deliveries
 WHERE expires_at IS NOT NULL
-  AND expires_at <= $1
+  AND expires_at <= ?
   AND terminal_at IS NULL
 ORDER BY expires_at
-LIMIT $2;
+LIMIT ?;

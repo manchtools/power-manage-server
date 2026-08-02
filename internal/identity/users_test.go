@@ -86,8 +86,8 @@ func TestEraseJITUser_ErasesSubjectAndCryptoShredsAuditDetail(t *testing.T) {
 		SELECT count(*) FROM audit_effects
 		 WHERE resource_id LIKE '%' || $1 || '%'
 		    OR evidence_fingerprint LIKE '%' || $1 || '%'
-		    OR array_to_string(changed_fields, ',') LIKE '%' || $1 || '%'
-		    OR encode(sealed_detail, 'escape') LIKE '%' || $1 || '%'`, erasedAddress).Scan(&hits))
+		    OR changed_fields LIKE '%' || $1 || '%'
+		    OR CAST(sealed_detail AS TEXT) LIKE '%' || $1 || '%'`, erasedAddress).Scan(&hits))
 	assert.Zero(t, hits, "the effect row must not contain the address in the clear, sealed or not")
 }
 
@@ -154,8 +154,10 @@ func TestEraseJITUser_AuditFailureRollsBackErasure(t *testing.T) {
 	f.insertIdentityLink(subject.ID, f.insertProvider("jit-failure", nil), "jit-subject")
 
 	_, err := f.raw.Exec(f.ctx(), `
-		ALTER TABLE audit_operations ADD CONSTRAINT reject_jit_erasure_audit
-		CHECK (request_descriptor <> '/powermanage.v1.ControlService/EraseJITUser') NOT VALID`)
+		CREATE TRIGGER reject_jit_erasure_audit
+		BEFORE INSERT ON audit_operations
+		WHEN NEW.request_descriptor = '/powermanage.v1.ControlService/EraseJITUser'
+		BEGIN SELECT RAISE(ABORT, 'rejected JIT erasure audit'); END`)
 	require.NoError(t, err)
 
 	resp, err := f.client.EraseJITUser(f.ctx(), authed(&pmv1.EraseJITUserRequest{Id: subject.ID}, admin.Token))
@@ -411,7 +413,7 @@ func TestSetUserDisabled_ConcurrentAdminsMayReachZero(t *testing.T) {
 	}
 	var enabled int
 	require.NoError(t, f.raw.QueryRow(f.ctx(),
-		`SELECT count(*) FROM users WHERE id = ANY($1::text[]) AND disabled = FALSE`, []string{first.ID, second.ID}).Scan(&enabled))
+		`SELECT count(*) FROM users WHERE id IN ($1, $2) AND disabled = FALSE`, first.ID, second.ID).Scan(&enabled))
 	assert.Zero(t, enabled, "bootstrap-admin, not a partial local invariant, is the recovery path")
 }
 

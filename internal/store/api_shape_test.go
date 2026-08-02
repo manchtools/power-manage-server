@@ -31,7 +31,7 @@ import (
 //     position the caller has published off-host
 //   - PruneAuditPrefix  the retention path; deletes an archived prefix
 //     and writes its checkpoint in one transaction
-//   - RebuildSearchIndexes reindexes fixed PostgreSQL facets and records
+//   - RebuildSearchIndexes reindexes fixed SQLite FTS5 facets and records
 //     its maintenance effect in the same transaction
 //   - RecordHeartbeatTelemetry is the one deliberate unaudited telemetry
 //     writer; it coalesces live connection timestamps in bounded batches
@@ -45,7 +45,7 @@ var mutationCapableExports = map[string]string{
 	"WithAuditEffects":           "audited continuation of an existing operation",
 	"RecordPublishedAuditAnchor": "appends an anchor for a published chain position",
 	"PruneAuditPrefix":           "archived-prefix deletion with its checkpoint",
-	"RebuildSearchIndexes":       "audited PostgreSQL index maintenance",
+	"RebuildSearchIndexes":       "audited SQLite FTS5 index maintenance",
 	"RecordHeartbeatTelemetry":   "bounded high-rate telemetry exception",
 	"CleanupExpiredAuthStates":   "audited one-time OIDC state cleanup",
 }
@@ -58,8 +58,6 @@ var nonMutatingExports = map[string]string{
 	"Close":                            "releases the pool",
 	"Ping":                             "read-only connectivity check",
 	"SetLogger":                        "in-process wiring",
-	"WithAdvisoryLock":                 "runs a callback holding a lock; hands it no database handle",
-	"TryWithAdvisoryLock":              "same, non-blocking",
 	"VerifyAuditChain":                 "recomputes and compares; writes nothing",
 	"LatestAuditAnchor":                "read",
 	"ListAuditAnchors":                 "read",

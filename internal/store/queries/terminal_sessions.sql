@@ -13,7 +13,7 @@ SELECT ts.session_id, ts.device_id, d.hostname AS device_hostname,
 FROM terminal_sessions ts
 JOIN devices d ON d.id = ts.device_id
 JOIN users u ON u.id = ts.user_id
-WHERE ts.session_id = $1 AND ts.stopped_at IS NULL;
+WHERE ts.session_id = ? AND ts.stopped_at IS NULL;
 
 -- name: StopTerminalSession :execrows
 UPDATE terminal_sessions

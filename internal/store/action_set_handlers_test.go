@@ -220,9 +220,9 @@ func TestActionSetHandlers_AddRequiresVisibleOrdinaryAction(t *testing.T) {
 	require.NoError(t, err)
 	_, err = f.raw.Exec(context.Background(), `
 		INSERT INTO assignments (id, source_type, source_id, target_type, target_id, created_at, created_by)
-		VALUES ($1, 'action_set', $2, 'device_group', $3, now(), $4),
-		       ($5, 'action', $6, 'device_group', $3, now(), $4),
-		       ($7, 'action', $8, 'device_group', $9, now(), $4)`,
+		VALUES ($1, 'action_set', $2, 'device_group', $3, CURRENT_TIMESTAMP, $4),
+		       ($5, 'action', $6, 'device_group', $3, CURRENT_TIMESTAMP, $4),
+		       ($7, 'action', $8, 'device_group', $9, CURRENT_TIMESTAMP, $4)`,
 		newID(), set.ID, groupA, f.actorID,
 		newID(), inScope.ID, newID(), outOfScope.ID, groupB)
 	require.NoError(t, err)
@@ -250,9 +250,16 @@ func TestActionSetHandlers_CorruptStoredPolicyFailsClosed(t *testing.T) {
 		Name: "safe", CreatedBy: op.ActorID, Schedule: &pmv1.ActionSchedule{RunOnAssign: true},
 	})
 	require.NoError(t, err)
-	_, err = f.raw.Exec(context.Background(), `ALTER TABLE action_sets DROP CONSTRAINT action_sets_on_failure_check`)
+	conn, err := f.raw.Conn(context.Background())
 	require.NoError(t, err)
-	_, err = f.raw.Exec(context.Background(), `UPDATE action_sets SET on_failure = 99 WHERE id = $1`, set.ID)
+	defer conn.Close()
+	_, err = conn.Exec(context.Background(), `PRAGMA ignore_check_constraints = ON`)
+	require.NoError(t, err)
+	defer func() {
+		_, offErr := conn.Exec(context.Background(), `PRAGMA ignore_check_constraints = OFF`)
+		require.NoError(t, offErr)
+	}()
+	_, err = conn.Exec(context.Background(), `UPDATE action_sets SET on_failure = 99 WHERE id = $1`, set.ID)
 	require.NoError(t, err)
 
 	_, err = f.handlers.GetActionSet(f.actor("GetActionSet"), connect.NewRequest(&pmv1.GetActionSetRequest{Id: set.ID}))

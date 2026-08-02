@@ -25,7 +25,7 @@ func createNoParamsAction(t *testing.T, svc *authoring.Service, actionType pmv1.
 }
 
 func TestActionSetState_CRUDCompilesAuthoredOrderAndPolicy(t *testing.T) {
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 1, 14, 0, 0, 0, time.UTC)
 	svc := authoring.New(authoring.Config{Store: st, Now: func() time.Time { return now }})
@@ -42,10 +42,7 @@ func TestActionSetState_CRUDCompilesAuthoredOrderAndPolicy(t *testing.T) {
 	assert.Equal(t, int32(pmv1.OnFailure_ON_FAILURE_STOP), set.OnFailure)
 	var staleCounter bool
 	require.NoError(t, raw.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_schema = 'public' AND table_name = 'action_sets' AND column_name = 'member_count'
-		)
+		SELECT EXISTS (SELECT 1 FROM pragma_table_xinfo('action_sets') WHERE name = 'member_count')
 	`).Scan(&staleCounter))
 	assert.False(t, staleCounter, "member count is derived from ordinary membership rows, not projector state")
 	effects, err := st.ListAuditEffects(ctx, createOp.OperationID)
@@ -76,11 +73,7 @@ func TestActionSetState_CRUDCompilesAuthoredOrderAndPolicy(t *testing.T) {
 	renamed, err := svc.RenameActionSet(ctx, renameOp, set.ID, "renamed baseline")
 	require.NoError(t, err)
 	assert.Equal(t, "renamed baseline", renamed.Name)
-	var searchable bool
-	require.NoError(t, raw.QueryRow(ctx, `
-		SELECT search_tsv @@ plainto_tsquery('simple', 'renamed') FROM action_sets WHERE id = $1
-	`, set.ID).Scan(&searchable))
-	assert.True(t, searchable)
+	assert.True(t, searchDocumentMatches(t, raw, "action_sets", set.ID, "renamed*"))
 
 	require.NoError(t, svc.RemoveActionFromSet(ctx, actionOperation(), set.ID, action1.ID))
 	members, err = st.ListActionSetMembers(ctx, set.ID)
@@ -88,7 +81,7 @@ func TestActionSetState_CRUDCompilesAuthoredOrderAndPolicy(t *testing.T) {
 	require.Len(t, members, 1)
 
 	definitionID := newID()
-	_, err = raw.Exec(ctx, `INSERT INTO definitions (id, name, created_at) VALUES ($1, 'parent', now())`, definitionID)
+	_, err = raw.Exec(ctx, `INSERT INTO definitions (id, name, created_at) VALUES ($1, 'parent', CURRENT_TIMESTAMP)`, definitionID)
 	require.NoError(t, err)
 	_, err = raw.Exec(ctx, `INSERT INTO definition_members (definition_id, action_set_id) VALUES ($1, $2)`, definitionID, set.ID)
 	require.NoError(t, err)
@@ -104,7 +97,7 @@ func TestActionSetState_CRUDCompilesAuthoredOrderAndPolicy(t *testing.T) {
 }
 
 func TestActionSetState_AuditFailureRollsBackCreate(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	svc := authoring.New(authoring.Config{Store: st})
 	_, err := svc.CreateActionSet(context.Background(), store.AuditOperation{}, authoring.CreateActionSetParams{
 		Name: "must not exist", CreatedBy: newID(), Schedule: &pmv1.ActionSchedule{RunOnAssign: true},
@@ -116,7 +109,7 @@ func TestActionSetState_AuditFailureRollsBackCreate(t *testing.T) {
 }
 
 func TestActionSetState_RejectsSystemActionMembership(t *testing.T) {
-	st, _ := setupPostgres(t)
+	st, _ := setupSQLite(t)
 	svc := authoring.New(authoring.Config{Store: st})
 	setOp := actionOperation()
 	set, err := svc.CreateActionSet(context.Background(), setOp, authoring.CreateActionSetParams{

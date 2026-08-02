@@ -797,6 +797,82 @@ WHEN EXISTS (
     SELECT RAISE(ABORT, 'audit changed_fields contains an invalid field name');
 END;
 
+-- The API-facing projection intentionally excludes sealed_detail. Effects are
+-- the ordinary rows; an operation without effects still contributes evidence,
+-- most importantly for rejected authentication attempts.
+CREATE VIEW audit_event_rows AS
+SELECT
+    e.effect_id AS id,
+    e.chain_seq,
+    e.resource_type AS stream_type,
+    e.resource_id AS stream_id,
+    e.action AS event_type,
+    o.operation_id,
+    o.operation_class,
+    o.actor_type,
+    o.actor_id,
+    o.actor_fingerprint,
+    o.origin,
+    o.origin_fingerprint,
+    o.request_descriptor,
+    o.authorization_outcome,
+    o.authorization_detail,
+    o.result,
+    o.result_code,
+    e.outcome AS effect_outcome,
+    e.changed_fields,
+    e.before_ref,
+    e.after_ref,
+    e.before_flag,
+    e.after_flag,
+    e.before_count,
+    e.after_count,
+    e.evidence_kind,
+    e.evidence_fingerprint,
+    e.occurred_at
+FROM audit_effects e
+JOIN audit_operations o ON o.operation_id = e.operation_id
+WHERE e.stream = 'control'
+
+UNION ALL
+
+SELECT
+    o.operation_id AS id,
+    o.chain_seq,
+    CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
+         THEN 'authentication' ELSE 'operation' END AS stream_type,
+    o.operation_id AS stream_id,
+    CASE WHEN o.operation_class = 'REJECTED_AUTHENTICATION'
+         THEN 'AUTHENTICATION_REJECTED' ELSE o.operation_class END AS event_type,
+    o.operation_id,
+    o.operation_class,
+    o.actor_type,
+    o.actor_id,
+    o.actor_fingerprint,
+    o.origin,
+    o.origin_fingerprint,
+    o.request_descriptor,
+    o.authorization_outcome,
+    o.authorization_detail,
+    o.result,
+    o.result_code,
+    '' AS effect_outcome,
+    '[]' AS changed_fields,
+    CAST(NULL AS TEXT) AS before_ref,
+    CAST(NULL AS TEXT) AS after_ref,
+    CAST(NULL AS INTEGER) AS before_flag,
+    CAST(NULL AS INTEGER) AS after_flag,
+    CAST(NULL AS INTEGER) AS before_count,
+    CAST(NULL AS INTEGER) AS after_count,
+    '' AS evidence_kind,
+    '' AS evidence_fingerprint,
+    o.occurred_at
+FROM audit_operations o
+WHERE o.stream = 'control'
+  AND NOT EXISTS (
+      SELECT 1 FROM audit_effects e WHERE e.operation_id = o.operation_id
+  );
+
 CREATE TABLE audit_chain_anchors (
     anchor_id    text PRIMARY KEY CHECK (
                      length(anchor_id) = 26
@@ -941,6 +1017,9 @@ CREATE TABLE search_documents (
     description  text NOT NULL DEFAULT '',
     related_text text NOT NULL DEFAULT '',
     sort_text    text NOT NULL DEFAULT '',
+    member_count integer NOT NULL DEFAULT 0,
+    fields       text NOT NULL DEFAULT '{}' CHECK (
+                     json_valid(fields) AND json_type(fields) = 'object'),
     UNIQUE (scope, entity_id)
 );
 CREATE INDEX search_documents_entity_idx ON search_documents(scope, entity_id);
@@ -948,7 +1027,7 @@ CREATE INDEX search_documents_entity_idx ON search_documents(scope, entity_id);
 CREATE VIRTUAL TABLE search_fts USING fts5(
     primary_text, description, related_text,
     content = 'search_documents', content_rowid = 'rowid',
-    tokenize = "unicode61 remove_diacritics 2 tokenchars '-_.'"
+    tokenize = "unicode61 remove_diacritics 2"
 );
 CREATE VIRTUAL TABLE search_trigram USING fts5(
     primary_text, description, related_text,
@@ -987,3 +1066,5 @@ VALUES ('00000000000000000000000001', 'Admin', 'Full system access', '[]', true,
 INSERT INTO roles (id, name, description, permissions, is_system, created_at, updated_at)
 VALUES ('00000000000000000000000002', 'User', 'Basic user access', '[]', true,
         '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00');
+
+PRAGMA user_version = 1;

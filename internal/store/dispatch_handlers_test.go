@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -25,7 +25,7 @@ import (
 type dispatchHandlerFixture struct {
 	t           *testing.T
 	store       *store.Store
-	raw         *pgxpool.Pool
+	raw         *testdb.DB
 	handlers    *dispatch.Handlers
 	waker       *committedWaker
 	now         time.Time
@@ -41,7 +41,7 @@ type dispatchHandlerFixture struct {
 
 func newDispatchHandlerFixture(t *testing.T) *dispatchHandlerFixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	f := &dispatchHandlerFixture{
 		t: t, store: st, raw: raw, now: now, actorID: newID(),
@@ -59,7 +59,7 @@ func newDispatchHandlerFixture(t *testing.T) *dispatchHandlerFixture {
 	_, err = raw.Exec(context.Background(), `
 		INSERT INTO actions
 			(id, name, action_type, desired_state, params, timeout_seconds, schedule, created_at)
-		VALUES ($1, 'catalog shell', $2, $3, $4::jsonb, 90, $5::jsonb, $6)`,
+		VALUES ($1, 'catalog shell', $2, $3, $4, 90, $5, $6)`,
 		f.actionID, int32(pmv1.ActionType_ACTION_TYPE_SHELL),
 		int32(pmv1.DesiredState_DESIRED_STATE_ABSENT),
 		`{"script":"printf catalog","interpreter":"/bin/sh"}`,
@@ -68,8 +68,8 @@ func newDispatchHandlerFixture(t *testing.T) *dispatchHandlerFixture {
 	f.set1, f.set2, f.definition = newID(), newID(), newID()
 	_, err = raw.Exec(context.Background(), `
 		INSERT INTO action_sets (id, name, schedule, on_failure, created_at) VALUES
-			($1, 'first set', '{"cron":"0 2 * * *"}'::jsonb, $3, $5),
-			($2, 'second set', '{"runOnAssign":true}'::jsonb, $4, $5)`,
+			($1, 'first set', '{"cron":"0 2 * * *"}', $3, $5),
+			($2, 'second set', '{"runOnAssign":true}', $4, $5)`,
 		f.set1, f.set2,
 		int32(pmv1.OnFailure_ON_FAILURE_STOP), int32(pmv1.OnFailure_ON_FAILURE_CONTINUE),
 		now)
@@ -80,7 +80,7 @@ func newDispatchHandlerFixture(t *testing.T) *dispatchHandlerFixture {
 	require.NoError(t, err)
 	_, err = raw.Exec(context.Background(), `
 		INSERT INTO definitions (id, name, schedule, created_at)
-			VALUES ($1, 'two sets', '{"cron":"0 1 * * *"}'::jsonb, $2)`, f.definition, now)
+			VALUES ($1, 'two sets', '{"cron":"0 1 * * *"}', $2)`, f.definition, now)
 	require.NoError(t, err)
 	_, err = raw.Exec(context.Background(), `
 		INSERT INTO definition_members (definition_id, action_set_id, sort_order, added_at) VALUES
@@ -254,8 +254,8 @@ func TestDispatchHandlers_ActionSetAndDefinitionPreserveComposition(t *testing.T
 
 	var set1Schedule, set2Schedule string
 	require.NoError(t, f.raw.QueryRow(context.Background(), `
-		SELECT (SELECT schedule::text FROM action_sets WHERE id = $1),
-		       (SELECT schedule::text FROM action_sets WHERE id = $2)`, f.set1, f.set2).
+		SELECT (SELECT schedule FROM action_sets WHERE id = $1),
+		       (SELECT schedule FROM action_sets WHERE id = $2)`, f.set1, f.set2).
 		Scan(&set1Schedule, &set2Schedule))
 	assert.JSONEq(t, `{"cron":"0 2 * * *"}`, set1Schedule)
 	assert.JSONEq(t, `{"runOnAssign":true}`, set2Schedule)
@@ -285,8 +285,8 @@ func TestDispatchHandlers_AssignedDefinitionAbsorbsChildrenAndOverridesManifestS
 
 	var set1Schedule, set2Schedule string
 	require.NoError(t, f.raw.QueryRow(context.Background(), `
-		SELECT (SELECT schedule::text FROM action_sets WHERE id = $1),
-		       (SELECT schedule::text FROM action_sets WHERE id = $2)`, f.set1, f.set2).
+		SELECT (SELECT schedule FROM action_sets WHERE id = $1),
+		       (SELECT schedule FROM action_sets WHERE id = $2)`, f.set1, f.set2).
 		Scan(&set1Schedule, &set2Schedule))
 	assert.JSONEq(t, `{"cron":"0 2 * * *"}`, set1Schedule)
 	assert.JSONEq(t, `{"runOnAssign":true}`, set2Schedule)

@@ -25,8 +25,8 @@ func TestReconcileSystemRoles_RefreshesTheSeededRolesFromTheRegistry(t *testing.
 	// Simulate a deployment whose seeded permission arrays predate a
 	// permission added in code.
 	_, err := f.raw.Exec(f.ctx(),
-		`UPDATE roles SET permissions = '{ListUsers}' WHERE id = ANY($1)`,
-		[]string{auth.AdminRoleID, auth.UserRoleID})
+		`UPDATE roles SET permissions = '["ListUsers"]' WHERE id IN ($1, $2)`,
+		auth.AdminRoleID, auth.UserRoleID)
 	require.NoError(t, err)
 
 	require.NoError(t, auth.ReconcileSystemRoles(f.ctx(), f.store, *f.clock, logger))
@@ -71,5 +71,5 @@ func TestReconcileSystemRoles_LeavesOrdinaryRolesAlone(t *testing.T) {
 
 	role, err := f.store.GetRole(f.ctx(), ordinary)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"ListUsers"}, role.Permissions)
+	assert.Equal(t, []string{"ListUsers"}, []string(role.Permissions))
 }

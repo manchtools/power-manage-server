@@ -1,8 +1,8 @@
 version: "2"
 sql:
-  - engine: "postgresql"
+  - engine: "sqlite"
     queries: "queries/"
-    schema: ["migrations/"]
+    schema: ["sqliteschema/schema.sql"]
     gen:
       go:
         package: "generated"
@@ -10,22 +10,115 @@ sql:
         emit_json_tags: true
         emit_empty_slices: true
         emit_pointers_for_null_types: true
-        sql_package: "pgx/v5"
+        sql_package: "database/sql"
         overrides:
-          # The qualified catalog name is the one sqlc matches; a bare
-          # `timestamptz` is silently ignored and the column comes back
-          # as pgtype.Timestamptz.
-          #
-          # timestamptz PARAMETERS must not carry a redundant
-          # ::TIMESTAMPTZ cast in queries/: an override applies to a
-          # catalog-resolved column but not to a cast-typed parameter,
-          # so the cast forces pgtype.Timestamptz. Without the cast
-          # sqlc infers the parameter type from the bound column.
-          - db_type: "pg_catalog.timestamptz"
-            go_type: "time.Time"
-          - db_type: "pg_catalog.timestamptz"
-            nullable: true
-            go_type:
-              import: "time"
-              type: "Time"
-              pointer: true
+          - column: "roles.permissions"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "StringList"}
+          - column: "identity_providers.scopes"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "StringList"}
+          - column: "audit_effects.changed_fields"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "StringList"}
+          - column: "audit_event_rows.changed_fields"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "StringList"}
+          - column: "identity_providers.attribute_mapping"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "identity_providers.group_mapping"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "device_groups.maintenance_window"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "user_groups.maintenance_window"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "device_inventory.rows"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "osquery_results.rows"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "jobs.payload"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "actions.params"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "actions.schedule"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "action_sets.schedule"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "definitions.schedule"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "deliveries.manifest"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "executions.params"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "executions.output"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "executions.detection_output"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "compliance_results.detection_output"
+            go_type: {import: "github.com/manchtools/power-manage/server/internal/store/sqlitetype", package: "sqlitetype", type: "JSON"}
+          - column: "users.session_version"
+            go_type: "int32"
+          - column: "users.linux_uid"
+            go_type: "int32"
+          - column: "tokens.max_uses"
+            go_type: "int32"
+          - column: "tokens.current_uses"
+            go_type: "int32"
+          - column: "devices.sync_interval_minutes"
+            go_type: "int32"
+          - column: "devices.inventory_interval_minutes"
+            go_type: "int32"
+          - column: "devices.compliance_status"
+            go_type: "int32"
+          - column: "devices.compliance_total"
+            go_type: "int32"
+          - column: "devices.compliance_passing"
+            go_type: "int32"
+          - column: "device_groups.sync_interval_minutes"
+            go_type: "int32"
+          - column: "device_groups.inventory_interval_minutes"
+            go_type: "int32"
+          - column: "terminal_sessions.exit_code"
+            go_type: "int32"
+          - column: "terminal_sessions.last_sequence"
+            go_type: "int32"
+          - column: "terminal_sessions.chunk_count"
+            go_type: "int32"
+          - column: "terminal_sessions.cols"
+            go_type: "int32"
+          - column: "terminal_sessions.rows"
+            go_type: "int32"
+          - column: "actions.action_type"
+            go_type: "int32"
+          - column: "actions.desired_state"
+            go_type: "int32"
+          - column: "actions.timeout_seconds"
+            go_type: "int32"
+          - column: "luks_tokens.min_length"
+            go_type: "int32"
+          - column: "luks_tokens.complexity"
+            go_type: "int32"
+          - column: "action_sets.on_failure"
+            go_type: "int32"
+          - column: "action_set_members.sort_order"
+            go_type: "int32"
+          - column: "definition_members.sort_order"
+            go_type: "int32"
+          - column: "assignments.sort_order"
+            go_type: "int32"
+          - column: "assignments.mode"
+            go_type: "int32"
+          - column: "deliveries.attempt_count"
+            go_type: "int32"
+          - column: "executions.action_type"
+            go_type: "int32"
+          - column: "executions.desired_state"
+            go_type: "int32"
+          - column: "executions.timeout_seconds"
+            go_type: "int32"
+          - column: "execution_output_chunks.sequence"
+            go_type: "int32"
+          - column: "compliance_policy_rules.grace_period_hours"
+            go_type: "int32"
+          - column: "compliance_policy_evaluation.status"
+            go_type: "int32"
+          - column: "jobs.attempt_count"
+            go_type: "int32"
+          - column: "jobs.max_attempts"
+            go_type: "int32"

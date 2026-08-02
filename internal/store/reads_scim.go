@@ -38,8 +38,8 @@ type SCIMUserRow struct {
 func (s *Store) ListSCIMUsers(ctx context.Context, providerID string, limit, offset int32) ([]SCIMUserRow, error) {
 	rows, err := s.queries.ListSCIMUsers(ctx, generated.ListSCIMUsersParams{
 		ProviderID: providerID,
-		Limit:      limit,
-		Offset:     offset,
+		Limit:      int64(limit),
+		Offset:     int64(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("scim: list users: %w", err)

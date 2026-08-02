@@ -8,7 +8,7 @@
 -- reason and timestamp are the truthful ones, so a later attempt must
 -- not overwrite them.
 INSERT INTO revoked_certificates (fingerprint, not_after, reason)
-VALUES ($1, $2, $3)
+VALUES (?, ?, ?)
 ON CONFLICT (fingerprint) DO NOTHING;
 
 -- name: IsCertificateRevoked :one
@@ -19,7 +19,7 @@ ON CONFLICT (fingerprint) DO NOTHING;
 -- decision. TLS validity is judged by the control host; this predicate
 -- would be judged by the database. A database clock running ahead
 -- declares the row expired while control still accepts the
--- certificate, and the handshake is admitted — the exact outcome
+-- certificate, and the handshake is admitted: the exact outcome
 -- revocation exists to prevent, produced by nothing worse than clock
 -- drift between two machines.
 --
@@ -27,7 +27,7 @@ ON CONFLICT (fingerprint) DO NOTHING;
 -- "revoked" rather than "expired", which is a labelling question.
 SELECT EXISTS (
   SELECT 1 FROM revoked_certificates
-  WHERE fingerprint = $1
+  WHERE fingerprint = ?
 );
 
 -- name: DeleteExpiredRevocations :execrows
@@ -42,4 +42,4 @@ SELECT EXISTS (
 -- control still treats as valid, and the row does not come back. A
 -- week is far beyond any plausible drift and costs a handful of inert
 -- rows.
-DELETE FROM revoked_certificates WHERE not_after <= now() - INTERVAL '7 days';
+DELETE FROM revoked_certificates WHERE not_after <= sqlc.arg(expired_before);

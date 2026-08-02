@@ -6,12 +6,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
-
-const heartbeatTelemetryBatchSize = 1000
 
 // RecordHeartbeatTelemetry is the sole unaudited state writer. Heartbeats are
 // high-rate liveness telemetry, not security evidence; callers coalesce live
@@ -28,14 +24,10 @@ func (s *Store) RecordHeartbeatTelemetry(ctx context.Context, snapshot map[strin
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	for start := 0; start < len(ids); start += heartbeatTelemetryBatchSize {
-		end := min(start+heartbeatTelemetryBatchSize, len(ids))
-		times := make([]pgtype.Timestamptz, end-start)
-		for i, id := range ids[start:end] {
-			times[i] = pgtype.Timestamptz{Time: snapshot[id].UTC().Truncate(time.Microsecond), Valid: true}
-		}
-		if _, err := s.queries.RecordDeviceHeartbeats(ctx, db.RecordDeviceHeartbeatsParams{
-			DeviceIds: ids[start:end], LastSeenAts: times,
+	for _, id := range ids {
+		seenAt := snapshot[id].UTC().Truncate(time.Microsecond)
+		if _, err := s.queries.RecordDeviceHeartbeat(ctx, db.RecordDeviceHeartbeatParams{
+			DeviceID: id, LastSeenAt: &seenAt,
 		}); err != nil {
 			return err
 		}

@@ -1,7 +1,7 @@
 package scim_test
 
 // The request-boundary fixture: real SCIM routes, real HTTP transport,
-// real PostgreSQL, and the real ControlService identity handlers that
+// real SQLite, and the real ControlService identity handlers that
 // own the SCIM token lifecycle.
 //
 // Nothing here stubs the store or the credential gate. A test that
@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/require"
 
@@ -45,7 +45,7 @@ const testBaseURL = "https://control.test.example"
 type fixture struct {
 	t       *testing.T
 	store   *store.Store
-	raw     *pgxpool.Pool
+	raw     *testdb.DB
 	kek     *crypto.Encryptor
 	handler *scim.Handler
 	server  *httptest.Server
@@ -64,7 +64,7 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	st, raw := setupPostgres(t)
+	st, raw := setupSQLite(t)
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	tick := func() time.Time { return now }
