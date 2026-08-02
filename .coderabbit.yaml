@@ -4,21 +4,23 @@ reviews:
     enabled: true
   profile: chill
   path_instructions:
-    - path: "internal/store/migrations/*.sql"
+    - path: "internal/store/sqliteschema/*.sql"
       instructions: >
-        The approved consolidation design uses direct CRUD tables on
-        PostgreSQL; event stores, projections, replay machinery, and
-        compatibility migrations are abolished. Audit operations/effects are
-        append-only evidence, never application state. Reject any migration
-        that revives the removed architecture or weakens audit-chain guards.
+        The approved final datastore is embedded SQLite in WAL mode with
+        synchronous=FULL and FTS5. There is one clean-break pre-alpha baseline,
+        no PostgreSQL data migration or compatibility schema. Audit
+        operations/effects are append-only evidence, never application state.
+        Reject anything that revives removed architecture or weakens the
+        audit-chain and retention guards.
     - path: "internal/store/**"
       instructions: >
         Ordinary state is direct transactional CRUD. Every state mutation,
         sensitive read, and background writer must use the structural audit
         transaction path; the only unaudited write exception is explicitly
-        classified, coalesced heartbeat telemetry. Search is PostgreSQL FTS,
-        jobs and dispatch are PostgreSQL-backed, and Valkey/Asynq/projectors
-        must not return.
+        classified, coalesced heartbeat telemetry. The final port replaces
+        PostgreSQL with embedded SQLite/FTS5; jobs and dispatch remain durable
+        database rows. Valkey, Asynq, projectors, and compatibility shims must
+        not return.
     - path: "internal/auth/**"
       instructions: >
         Security-critical code. Check for permission bypass, scope escalation,

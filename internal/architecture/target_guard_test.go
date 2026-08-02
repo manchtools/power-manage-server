@@ -53,7 +53,6 @@ func TestAbolishedArchitectureCannotReturn(t *testing.T) {
 		"github.com/hibiken/asynq",
 		"github.com/pquerna/otp",
 		"github.com/redis/go-redis",
-		"modernc.org/sqlite",
 	} {
 		if strings.Contains(string(mod), dependency) {
 			t.Errorf("abolished dependency returned: %s", dependency)
