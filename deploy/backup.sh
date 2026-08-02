@@ -63,7 +63,6 @@ size_bytes="$(compose exec -T control stat -c '%s' "$container_temp")"
 sha256="$(compose exec -T control sha256sum "$container_temp")"
 sha256="${sha256%% *}"
 [[ ! -e "$final_path" ]] || { printf 'backup name collision\n' >&2; exit 1; }
-chmod 600 "$temp_path"
 mv -- "$temp_path" "$final_path"
 temp_path=""
 

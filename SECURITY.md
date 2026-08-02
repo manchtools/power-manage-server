@@ -84,7 +84,7 @@ silent replay of non-idempotent effects.
 - Restrict the PROXY-protocol listener to the isolated Traefik network.
 - Protect CA, JWT, sealing, database, and at-rest encryption keys with strict
   filesystem or deployment-secret permissions.
-<!-- docref: begin src=deploy/backup.sh#@sqlite-backup:76ef1013,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
+<!-- docref: begin src=deploy/backup.sh#@sqlite-backup:99bc90ed,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
 - Run `deploy/backup.sh` from a host timer and replicate `backup_path` off-host:
   it contains verified bounded SQLite backups, audit anchors, and archived
   prefixes. Back up artifacts too, and monitor `control backup-status`.
