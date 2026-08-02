@@ -117,7 +117,7 @@ func TestUserGroups_DynamicMembershipRejectsManualChanges(t *testing.T) {
 	assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
 }
 
-func TestDeleteUserGroup_RefusesLastEnabledAdminPath(t *testing.T) {
+func TestDeleteUserGroup_AllowsRemovingFinalAdminGrant(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	soleAdmin := f.seedSubject()
@@ -131,11 +131,11 @@ func TestDeleteUserGroup_RefusesLastEnabledAdminPath(t *testing.T) {
 	token := f.mintToken(soleAdmin.ID, soleAdmin.Email)
 
 	_, err = f.client.DeleteUserGroup(f.ctx(), authed(&pmv1.DeleteUserGroupRequest{Id: groupID}, token))
-	assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
-	_, err = f.store.GetUserGroupView(f.ctx(), groupID)
-	assert.NoError(t, err, "the refused delete must roll back direct state")
-	assert.Empty(t, f.operationsFor(powermanagev1connect.ControlServiceDeleteUserGroupProcedure),
-		"the refused mutation must not commit a success audit row")
+	require.NoError(t, err)
+	var deleted bool
+	require.NoError(t, f.raw.QueryRow(f.ctx(), `SELECT is_deleted FROM user_groups WHERE id = $1`, groupID).Scan(&deleted))
+	assert.True(t, deleted)
+	assert.Len(t, f.operationsFor(powermanagev1connect.ControlServiceDeleteUserGroupProcedure), 1)
 }
 
 func TestDynamicUserGroups_ValidateUpdateAndEvaluateDirectState(t *testing.T) {
@@ -209,7 +209,7 @@ func TestDynamicUserGroups_ValidateUpdateAndEvaluateDirectState(t *testing.T) {
 	assert.Equal(t, int64(1), *evaluate.AfterCount)
 }
 
-func TestEvaluateDynamicUserGroup_RefusesLastAdminRemoval(t *testing.T) {
+func TestEvaluateDynamicUserGroup_AllowsRemovingFinalAdminMembership(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	soleAdmin := f.seedSubject()
@@ -226,10 +226,9 @@ func TestEvaluateDynamicUserGroup_RefusesLastAdminRemoval(t *testing.T) {
 	token := f.mintToken(soleAdmin.ID, soleAdmin.Email)
 
 	_, err = f.client.EvaluateDynamicUserGroup(f.ctx(), authed(&pmv1.EvaluateDynamicUserGroupRequest{Id: groupID}, token))
-	assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
+	require.NoError(t, err)
 	members, err := f.store.ListUserGroupMembers(f.ctx(), groupID)
 	require.NoError(t, err)
-	require.Len(t, members, 1, "the refused evaluation must roll back its membership delta")
-	assert.Equal(t, soleAdmin.ID, members[0].UserID)
-	assert.Empty(t, f.operationsFor(powermanagev1connect.ControlServiceEvaluateDynamicUserGroupProcedure))
+	assert.Empty(t, members)
+	assert.Len(t, f.operationsFor(powermanagev1connect.ControlServiceEvaluateDynamicUserGroupProcedure), 1)
 }

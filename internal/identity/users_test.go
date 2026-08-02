@@ -348,7 +348,7 @@ func TestSetUserDisabled_HasNoSelfOrScopedTier(t *testing.T) {
 		"a subject cannot change their own disabled state")
 }
 
-func TestSetUserDisabled_RefusesLastEnabledAdmin(t *testing.T) {
+func TestSetUserDisabled_AllowsDisablingFinalAdmin(t *testing.T) {
 	for _, viaGroup := range []bool{false, true} {
 		name := "direct"
 		if viaGroup {
@@ -372,16 +372,16 @@ func TestSetUserDisabled_RefusesLastEnabledAdmin(t *testing.T) {
 			_, err := f.client.SetUserDisabled(f.ctx(), authed(&pmv1.SetUserDisabledRequest{
 				Id: soleAdmin.ID, Disabled: true,
 			}, token))
-			assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
+			require.NoError(t, err)
 			state, err := f.store.GetUserSessionState(f.ctx(), soleAdmin.ID)
 			require.NoError(t, err)
-			assert.False(t, state.Disabled)
-			assert.Empty(t, f.operationsFor(powermanagev1connect.ControlServiceSetUserDisabledProcedure))
+			assert.True(t, state.Disabled)
+			assert.Len(t, f.operationsFor(powermanagev1connect.ControlServiceSetUserDisabledProcedure), 1)
 		})
 	}
 }
 
-func TestSetUserDisabled_ConcurrentAdminsCannotRaceToZero(t *testing.T) {
+func TestSetUserDisabled_ConcurrentAdminsMayReachZero(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	first, second := f.seedSubject(), f.seedSubject()
@@ -406,20 +406,13 @@ func TestSetUserDisabled_ConcurrentAdminsCannotRaceToZero(t *testing.T) {
 	}
 	close(start)
 	errs := []error{<-results, <-results}
-	successes, refused := 0, 0
 	for _, err := range errs {
-		if err == nil {
-			successes++
-		} else if connectCodeOf(t, err) == connect.CodeFailedPrecondition {
-			refused++
-		}
+		require.NoError(t, err)
 	}
-	assert.Equal(t, 1, successes)
-	assert.Equal(t, 1, refused)
 	var enabled int
 	require.NoError(t, f.raw.QueryRow(f.ctx(),
 		`SELECT count(*) FROM users WHERE id = ANY($1::text[]) AND disabled = FALSE`, []string{first.ID, second.ID}).Scan(&enabled))
-	assert.Equal(t, 1, enabled, "the shared transaction lock must leave one enabled administrator")
+	assert.Zero(t, enabled, "bootstrap-admin, not a partial local invariant, is the recovery path")
 }
 
 func TestAddUserSshKey_RecordsTheKeyFingerprintNotTheKey(t *testing.T) {

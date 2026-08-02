@@ -139,145 +139,6 @@ func (q *Queries) DeleteUserGroupUserRoleScopes(ctx context.Context, scopeID *st
 	return result.RowsAffected(), nil
 }
 
-const enabledAdminExistsAfterDynamicUserGroupEvaluation = `-- name: EnabledAdminExistsAfterDynamicUserGroupEvaluation :one
-SELECT EXISTS (
-    SELECT 1
-    FROM users u
-    WHERE u.is_deleted = FALSE
-      AND u.disabled = FALSE
-      AND (
-          EXISTS (
-              SELECT 1
-              FROM user_roles ur
-              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
-              WHERE ur.user_id = u.id
-                AND ur.scope_kind IS NULL
-                AND ur.scope_id IS NULL
-                AND r.name = 'Admin'
-          )
-          OR EXISTS (
-              SELECT 1
-              FROM user_group_members m
-              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
-              JOIN user_group_roles gr ON gr.group_id = m.group_id
-              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
-              WHERE m.user_id = u.id
-                AND m.group_id <> $1
-                AND gr.scope_kind IS NULL
-                AND gr.scope_id IS NULL
-                AND r.name = 'Admin'
-          )
-          OR (
-              u.id = ANY($2::text[])
-              AND EXISTS (
-                  SELECT 1
-                  FROM user_group_roles gr
-                  JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
-                  WHERE gr.group_id = $1
-                    AND gr.scope_kind IS NULL
-                    AND gr.scope_id IS NULL
-                    AND r.name = 'Admin'
-              )
-          )
-      )
-)
-`
-
-type EnabledAdminExistsAfterDynamicUserGroupEvaluationParams struct {
-	GroupID       string   `json:"group_id"`
-	WantedUserIds []string `json:"wanted_user_ids"`
-}
-
-func (q *Queries) EnabledAdminExistsAfterDynamicUserGroupEvaluation(ctx context.Context, arg EnabledAdminExistsAfterDynamicUserGroupEvaluationParams) (bool, error) {
-	row := q.db.QueryRow(ctx, enabledAdminExistsAfterDynamicUserGroupEvaluation, arg.GroupID, arg.WantedUserIds)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
-const enabledAdminExistsAfterUserGroupDelete = `-- name: EnabledAdminExistsAfterUserGroupDelete :one
-SELECT EXISTS (
-    SELECT 1
-    FROM users u
-    WHERE u.is_deleted = FALSE
-      AND u.disabled = FALSE
-      AND (
-          EXISTS (
-              SELECT 1
-              FROM user_roles ur
-              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
-              WHERE ur.user_id = u.id
-                AND ur.scope_kind IS NULL
-                AND ur.scope_id IS NULL
-                AND r.name = 'Admin'
-          )
-          OR EXISTS (
-              SELECT 1
-              FROM user_group_members m
-              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
-              JOIN user_group_roles gr ON gr.group_id = m.group_id
-              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
-              WHERE m.user_id = u.id
-                AND m.group_id <> $1
-                AND gr.scope_kind IS NULL
-                AND gr.scope_id IS NULL
-                AND r.name = 'Admin'
-          )
-      )
-)
-`
-
-func (q *Queries) EnabledAdminExistsAfterUserGroupDelete(ctx context.Context, groupID string) (bool, error) {
-	row := q.db.QueryRow(ctx, enabledAdminExistsAfterUserGroupDelete, groupID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
-const enabledAdminExistsAfterUserGroupMemberRemoval = `-- name: EnabledAdminExistsAfterUserGroupMemberRemoval :one
-SELECT EXISTS (
-    SELECT 1
-    FROM users u
-    WHERE u.is_deleted = FALSE
-      AND u.disabled = FALSE
-      AND (
-          EXISTS (
-              SELECT 1
-              FROM user_roles ur
-              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
-              WHERE ur.user_id = u.id
-                AND ur.scope_kind IS NULL
-                AND ur.scope_id IS NULL
-                AND r.name = 'Admin'
-          )
-          OR EXISTS (
-              SELECT 1
-              FROM user_group_members m
-              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
-              JOIN user_group_roles gr ON gr.group_id = m.group_id
-              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
-              WHERE m.user_id = u.id
-                AND NOT (m.group_id = $1 AND m.user_id = $2)
-                AND gr.scope_kind IS NULL
-                AND gr.scope_id IS NULL
-                AND r.name = 'Admin'
-          )
-      )
-)
-`
-
-type EnabledAdminExistsAfterUserGroupMemberRemovalParams struct {
-	GroupID string `json:"group_id"`
-	UserID  string `json:"user_id"`
-}
-
-func (q *Queries) EnabledAdminExistsAfterUserGroupMemberRemoval(ctx context.Context, arg EnabledAdminExistsAfterUserGroupMemberRemovalParams) (bool, error) {
-	row := q.db.QueryRow(ctx, enabledAdminExistsAfterUserGroupMemberRemoval, arg.GroupID, arg.UserID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const getDynamicUserGroupQueryForUpdate = `-- name: GetDynamicUserGroupQueryForUpdate :one
 SELECT is_dynamic, dynamic_query
 FROM user_groups
@@ -609,17 +470,6 @@ func (q *Queries) ListUsersForDynamicUserGroupEvaluation(ctx context.Context) ([
 	return items, nil
 }
 
-const lockLastAdminGuard = `-- name: LockLastAdminGuard :exec
-SELECT pg_advisory_xact_lock(418296719726)
-`
-
-// Transaction-scoped so the guard and the audited mutation commit or
-// roll back together. Every authority-removing path uses this one key.
-func (q *Queries) LockLastAdminGuard(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, lockLastAdminGuard)
-	return err
-}
-
 const setUserGroupMaintenanceWindow = `-- name: SetUserGroupMaintenanceWindow :one
 UPDATE user_groups SET maintenance_window = $1, updated_at = $2
 WHERE id = $3 AND is_deleted = FALSE
@@ -791,23 +641,4 @@ func (q *Queries) UpdateUserGroupQuery(ctx context.Context, arg UpdateUserGroupQ
 		&i.SearchTsv,
 	)
 	return i, err
-}
-
-const userGroupConfersUnscopedAdmin = `-- name: UserGroupConfersUnscopedAdmin :one
-SELECT EXISTS (
-    SELECT 1
-    FROM user_group_roles gr
-    JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
-    WHERE gr.group_id = $1
-      AND gr.scope_kind IS NULL
-      AND gr.scope_id IS NULL
-      AND r.name = 'Admin'
-)
-`
-
-func (q *Queries) UserGroupConfersUnscopedAdmin(ctx context.Context, groupID string) (bool, error) {
-	row := q.db.QueryRow(ctx, userGroupConfersUnscopedAdmin, groupID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
 }

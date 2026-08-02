@@ -24,7 +24,6 @@ var (
 	errUserGroupDynamic      = errors.New("dynamic user group membership is evaluator-owned")
 	errUserGroupSCIMManaged  = errors.New("SCIM-managed user group")
 	errUserGroupMemberAbsent = errors.New("user group member not found")
-	errLastAdmin             = errors.New("cannot remove last enabled administrator")
 )
 
 // CreateUserGroup creates one static or dynamic group in direct state.
@@ -263,22 +262,6 @@ func (h *Handlers) DeleteUserGroup(ctx context.Context, req *connect.Request[pmv
 			if managed {
 				return errUserGroupSCIMManaged
 			}
-			confersAdmin, err := tx.UserGroupConfersUnscopedAdmin(ctx, req.Msg.Id)
-			if err != nil {
-				return err
-			}
-			if confersAdmin {
-				if err := tx.LockLastAdminGuard(ctx); err != nil {
-					return err
-				}
-				remains, err := tx.EnabledAdminExistsAfterUserGroupDelete(ctx, req.Msg.Id)
-				if err != nil {
-					return err
-				}
-				if !remains {
-					return errLastAdmin
-				}
-			}
 			affected, err := tx.BumpSessionsAffectedByUserGroupDelete(ctx, db.BumpSessionsAffectedByUserGroupDeleteParams{
 				UpdatedAt: &at, GroupID: req.Msg.Id,
 			})
@@ -315,8 +298,6 @@ func (h *Handlers) DeleteUserGroup(ctx context.Context, req *connect.Request[pmv
 		switch {
 		case errors.Is(err, errUserGroupSCIMManaged):
 			return nil, rpcError(ctx, ErrSCIMManagedResource, connect.CodeFailedPrecondition, "SCIM-managed groups are deleted through their identity provider")
-		case errors.Is(err, errLastAdmin):
-			return nil, rpcError(ctx, ErrCannotRemoveLastAdmin, connect.CodeFailedPrecondition, "cannot remove the last enabled administrator")
 		case store.IsNotFound(err):
 			return nil, notFound(ctx, ErrUserGroupNotFound, "user group not found")
 		default:
@@ -465,24 +446,6 @@ func (h *Handlers) RemoveUserFromGroup(ctx context.Context, req *connect.Request
 			if stored.IsDynamic {
 				return errUserGroupDynamic
 			}
-			confersAdmin, err := tx.UserGroupConfersUnscopedAdmin(ctx, req.Msg.GroupId)
-			if err != nil {
-				return err
-			}
-			if confersAdmin {
-				if err := tx.LockLastAdminGuard(ctx); err != nil {
-					return err
-				}
-				remains, err := tx.EnabledAdminExistsAfterUserGroupMemberRemoval(ctx, db.EnabledAdminExistsAfterUserGroupMemberRemovalParams{
-					GroupID: req.Msg.GroupId, UserID: req.Msg.UserId,
-				})
-				if err != nil {
-					return err
-				}
-				if !remains {
-					return errLastAdmin
-				}
-			}
 			rows, err := tx.RemoveStaticUserGroupMember(ctx, db.RemoveStaticUserGroupMemberParams{
 				GroupID: req.Msg.GroupId, UserID: req.Msg.UserId,
 			})
@@ -514,8 +477,6 @@ func (h *Handlers) RemoveUserFromGroup(ctx context.Context, req *connect.Request
 			return nil, rpcError(ctx, ErrDynamicGroupMembership, connect.CodeFailedPrecondition, "dynamic group membership is evaluator-managed")
 		case errors.Is(err, errUserGroupMemberAbsent):
 			return nil, notFound(ctx, ErrUserGroupMemberNotFound, "user group member not found")
-		case errors.Is(err, errLastAdmin):
-			return nil, rpcError(ctx, ErrCannotRemoveLastAdmin, connect.CodeFailedPrecondition, "cannot remove the last enabled administrator")
 		case store.IsNotFound(err):
 			return nil, notFound(ctx, ErrUserGroupNotFound, "user group not found")
 		default:
@@ -651,8 +612,6 @@ func (h *Handlers) EvaluateDynamicUserGroup(ctx context.Context, req *connect.Re
 			return nil, rpcError(ctx, ErrGroupNotDynamic, connect.CodeFailedPrecondition, "group is not dynamic")
 		case errors.Is(err, errUserGroupInvalidQuery):
 			return nil, rpcError(ctx, ErrInvalidDynamicQuery, connect.CodeFailedPrecondition, "dynamic group query is invalid")
-		case errors.Is(err, errLastAdmin):
-			return nil, rpcError(ctx, ErrCannotRemoveLastAdmin, connect.CodeFailedPrecondition, "cannot remove the last enabled administrator")
 		case store.IsNotFound(err):
 			return nil, notFound(ctx, ErrUserGroupNotFound, "user group not found")
 		default:

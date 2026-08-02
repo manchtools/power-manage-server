@@ -175,84 +175,6 @@ func (q *Queries) DeleteUserRoleGrantsForUser(ctx context.Context, userID string
 	return result.RowsAffected(), nil
 }
 
-const enabledAdminExistsAfterDirectRoleRevoke = `-- name: EnabledAdminExistsAfterDirectRoleRevoke :one
-SELECT EXISTS (
-    SELECT 1
-    FROM users u
-    WHERE u.is_deleted = FALSE
-      AND u.disabled = FALSE
-      AND (
-          EXISTS (
-              SELECT 1
-              FROM user_roles ur
-              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
-              WHERE ur.user_id = u.id
-                AND u.id <> $1
-                AND ur.scope_kind IS NULL
-                AND ur.scope_id IS NULL
-                AND r.name = 'Admin'
-          )
-          OR EXISTS (
-              SELECT 1
-              FROM user_group_members m
-              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
-              JOIN user_group_roles gr ON gr.group_id = m.group_id
-              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
-              WHERE m.user_id = u.id
-                AND gr.scope_kind IS NULL
-                AND gr.scope_id IS NULL
-                AND r.name = 'Admin'
-          )
-      )
-)
-`
-
-func (q *Queries) EnabledAdminExistsAfterDirectRoleRevoke(ctx context.Context, affectedUserID string) (bool, error) {
-	row := q.db.QueryRow(ctx, enabledAdminExistsAfterDirectRoleRevoke, affectedUserID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
-const enabledAdminExistsExcludingUser = `-- name: EnabledAdminExistsExcludingUser :one
-SELECT EXISTS (
-    SELECT 1
-    FROM users u
-    WHERE u.id <> $1
-      AND u.is_deleted = FALSE
-      AND u.disabled = FALSE
-      AND (
-          EXISTS (
-              SELECT 1
-              FROM user_roles ur
-              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
-              WHERE ur.user_id = u.id
-                AND ur.scope_kind IS NULL
-                AND ur.scope_id IS NULL
-                AND r.name = 'Admin'
-          )
-          OR EXISTS (
-              SELECT 1
-              FROM user_group_members m
-              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
-              JOIN user_group_roles gr ON gr.group_id = m.group_id
-              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
-              WHERE m.user_id = u.id
-                AND gr.scope_kind IS NULL
-                AND gr.scope_id IS NULL
-                AND r.name = 'Admin'
-          )
-      )
-)
-`
-
-func (q *Queries) EnabledAdminExistsExcludingUser(ctx context.Context, excludedUserID string) (bool, error) {
-	row := q.db.QueryRow(ctx, enabledAdminExistsExcludingUser, excludedUserID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const insertUserGroupRoleGrant = `-- name: InsertUserGroupRoleGrant :one
 INSERT INTO user_group_roles (grant_id, group_id, role_id, assigned_at, assigned_by, scope_kind, scope_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -602,33 +524,4 @@ func (q *Queries) ListUserScopedGrants(ctx context.Context, userID string) ([]Li
 		return nil, err
 	}
 	return items, nil
-}
-
-const userHoldsUnscopedAdmin = `-- name: UserHoldsUnscopedAdmin :one
-SELECT EXISTS (
-    SELECT 1
-    FROM user_roles ur
-    JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
-    WHERE ur.user_id = $1
-      AND ur.scope_kind IS NULL
-      AND ur.scope_id IS NULL
-      AND r.name = 'Admin'
-    UNION ALL
-    SELECT 1
-    FROM user_group_members m
-    JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
-    JOIN user_group_roles gr ON gr.group_id = m.group_id
-    JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
-    WHERE m.user_id = $1
-      AND gr.scope_kind IS NULL
-      AND gr.scope_id IS NULL
-      AND r.name = 'Admin'
-)
-`
-
-func (q *Queries) UserHoldsUnscopedAdmin(ctx context.Context, userID string) (bool, error) {
-	row := q.db.QueryRow(ctx, userHoldsUnscopedAdmin, userID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
 }

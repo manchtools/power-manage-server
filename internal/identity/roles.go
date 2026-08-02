@@ -2,7 +2,6 @@ package identity
 
 import (
 	"context"
-	"errors"
 	"slices"
 
 	"connectrpc.com/connect"
@@ -387,24 +386,6 @@ func (h *Handlers) RevokeRoleFromUser(ctx context.Context, req *connect.Request[
 
 	_, err = h.store.WithAudit(ctx, h.mutationOp(req, actor, PermRevokeRoleFromUser),
 		func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
-			if scopeID == nil {
-				role, err := tx.GetRole(ctx, req.Msg.RoleId)
-				if err != nil {
-					return err
-				}
-				if role.Name == "Admin" {
-					if err := tx.LockLastAdminGuard(ctx); err != nil {
-						return err
-					}
-					remains, err := tx.EnabledAdminExistsAfterDirectRoleRevoke(ctx, target.ID)
-					if err != nil {
-						return err
-					}
-					if !remains {
-						return errLastAdmin
-					}
-				}
-			}
 			var (
 				grant db.UserRole
 				err   error
@@ -435,9 +416,6 @@ func (h *Handlers) RevokeRoleFromUser(ctx context.Context, req *connect.Request[
 			return nil
 		})
 	if err != nil {
-		if errors.Is(err, errLastAdmin) {
-			return nil, rpcError(ctx, ErrCannotRemoveLastAdmin, connect.CodeFailedPrecondition, "cannot remove the last enabled administrator")
-		}
 		if store.IsNotFound(err) {
 			return nil, notFound(ctx, ErrGrantNotFound, "no such grant")
 		}
@@ -528,24 +506,6 @@ func (h *Handlers) RevokeRoleFromUserGroup(ctx context.Context, req *connect.Req
 
 	_, err = h.store.WithAudit(ctx, h.mutationOp(req, actor, PermRevokeRoleFromUserGroup),
 		func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
-			if scopeID == nil {
-				role, err := tx.GetRole(ctx, req.Msg.RoleId)
-				if err != nil {
-					return err
-				}
-				if role.Name == "Admin" {
-					if err := tx.LockLastAdminGuard(ctx); err != nil {
-						return err
-					}
-					remains, err := tx.EnabledAdminExistsAfterUserGroupDelete(ctx, req.Msg.GroupId)
-					if err != nil {
-						return err
-					}
-					if !remains {
-						return errLastAdmin
-					}
-				}
-			}
 			var (
 				grant db.UserGroupRole
 				err   error
@@ -576,9 +536,6 @@ func (h *Handlers) RevokeRoleFromUserGroup(ctx context.Context, req *connect.Req
 			return nil
 		})
 	if err != nil {
-		if errors.Is(err, errLastAdmin) {
-			return nil, rpcError(ctx, ErrCannotRemoveLastAdmin, connect.CodeFailedPrecondition, "cannot remove the last enabled administrator")
-		}
 		if store.IsNotFound(err) {
 			return nil, notFound(ctx, ErrGrantNotFound, "no such grant")
 		}
