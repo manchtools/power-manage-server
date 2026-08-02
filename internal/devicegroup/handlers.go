@@ -188,7 +188,7 @@ func (h *Handlers) GetDeviceGroup(ctx context.Context, req *connect.Request[pmv1
 	}), nil
 }
 
-// ListDeviceGroups returns a scoped PostgreSQL keyset page.
+// ListDeviceGroups returns a scoped SQLite keyset page.
 func (h *Handlers) ListDeviceGroups(ctx context.Context, req *connect.Request[pmv1.ListDeviceGroupsRequest]) (*connect.Response[pmv1.ListDeviceGroupsResponse], error) {
 	if err := validateRequest(h, ctx, req); err != nil {
 		return nil, err

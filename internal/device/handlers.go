@@ -32,7 +32,7 @@ const (
 	resultTimeout            = 5 * time.Minute
 )
 
-// Config supplies the direct PostgreSQL store and process-local seams used by
+// Config supplies the direct SQLite store and process-local seams used by
 // the device handlers.
 type Config struct {
 	Store            *store.Store

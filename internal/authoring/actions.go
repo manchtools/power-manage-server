@@ -69,7 +69,7 @@ func (h *Handlers) GetAction(ctx context.Context, req *connect.Request[pmv1.GetA
 	return connect.NewResponse(&pmv1.GetActionResponse{Action: action}), nil
 }
 
-// ListActions returns a deterministic PostgreSQL keyset page. Scope,
+// ListActions returns a deterministic SQLite keyset page. Scope,
 // assignment and type filters are all applied before pagination.
 func (h *Handlers) ListActions(ctx context.Context, req *connect.Request[pmv1.ListActionsRequest]) (*connect.Response[pmv1.ListActionsResponse], error) {
 	if err := validateAuthoringRequest(h, ctx, req); err != nil {

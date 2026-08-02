@@ -8,7 +8,7 @@ import (
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 )
 
-// Mount registers exactly the PostgreSQL search procedures.
+// Mount registers exactly the SQLite FTS5 search procedures.
 func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []string {
 	if mux == nil {
 		panic("search: mux is required")

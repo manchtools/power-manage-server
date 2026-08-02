@@ -52,7 +52,7 @@ type RunnerConfig struct {
 	BatchSize    int32
 }
 
-// Runner is a bounded in-process executor. PostgreSQL leases are the durable
+// Runner is a bounded in-process executor. SQLite leases are the durable
 // queue and crash-recovery mechanism.
 type Runner struct {
 	store        *store.Store
@@ -130,7 +130,7 @@ func (r *Runner) Wake(jobID string) bool {
 	}
 }
 
-// Run starts the bounded workers and PostgreSQL poller.
+// Run starts the bounded workers and SQLite poller.
 func (r *Runner) Run(ctx context.Context) error {
 	if ctx == nil {
 		return ErrInvalidInput

@@ -40,7 +40,7 @@ type Config struct {
 	Now   func() time.Time
 }
 
-// Service commits device-reported execution state directly to PostgreSQL.
+// Service commits device-reported execution state directly to SQLite.
 type Service struct {
 	store     *store.Store
 	now       func() time.Time

@@ -70,7 +70,7 @@ func (h *Handlers) GetDefinition(ctx context.Context, req *connect.Request[pmv1.
 	}), nil
 }
 
-// ListDefinitions returns a deterministic PostgreSQL keyset page.
+// ListDefinitions returns a deterministic SQLite keyset page.
 func (h *Handlers) ListDefinitions(ctx context.Context, req *connect.Request[pmv1.ListDefinitionsRequest]) (*connect.Response[pmv1.ListDefinitionsResponse], error) {
 	if err := validateAuthoringRequest(h, ctx, req); err != nil {
 		return nil, err

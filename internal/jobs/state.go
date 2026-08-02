@@ -1,4 +1,4 @@
-// Package jobs owns durable PostgreSQL job scheduling state. Claim leases and
+// Package jobs owns durable SQLite job scheduling state. Claim leases and
 // worker ownership are database conditions; process-local workers are only a
 // bounded execution mechanism and may disappear at any point.
 package jobs

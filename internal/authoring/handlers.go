@@ -21,7 +21,7 @@ import (
 
 const defaultAuthoringPageSize = int32(50)
 
-// HandlersConfig supplies the direct PostgreSQL store and process-local seams
+// HandlersConfig supplies the direct SQLite store and process-local seams
 // used by the authoring RPC handlers.
 type HandlersConfig struct {
 	Store  *store.Store

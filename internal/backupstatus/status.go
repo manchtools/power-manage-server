@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	// StatusFilename is atomically replaced only after pg_restore accepts a dump.
-	StatusFilename = "postgres-backup-status.json"
+	// StatusFilename is atomically replaced only after SQLite validates a snapshot.
+	StatusFilename = "backup-status.json"
 	maxStatusBytes = 4 << 10
 	maxClockSkew   = 5 * time.Minute
 )

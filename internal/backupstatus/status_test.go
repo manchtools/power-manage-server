@@ -22,14 +22,14 @@ func TestReadReportsMissingFreshAndStaleBackups(t *testing.T) {
 	assert.True(t, missing.Stale)
 	assert.Nil(t, missing.LastSuccessfulBackup)
 
-	writeFixture(t, directory, now.Add(-time.Hour), "postgres-fresh.dump")
+	writeFixture(t, directory, now.Add(-time.Hour), "sqlite-fresh.db")
 	fresh, err := Read(directory, now, 26*time.Hour)
 	require.NoError(t, err)
 	assert.False(t, fresh.Stale)
 	require.NotNil(t, fresh.LagSeconds)
 	assert.Equal(t, int64(time.Hour/time.Second), *fresh.LagSeconds)
 
-	writeFixture(t, directory, now.Add(-27*time.Hour), "postgres-stale.dump")
+	writeFixture(t, directory, now.Add(-27*time.Hour), "sqlite-stale.db")
 	stale, err := Read(directory, now, 26*time.Hour)
 	require.NoError(t, err)
 	assert.True(t, stale.Stale)
@@ -56,7 +56,7 @@ func TestReadRejectsUntrustedStatusFiles(t *testing.T) {
 
 func writeFixture(t *testing.T, directory string, completedAt time.Time, artifact string) {
 	t.Helper()
-	contents := []byte("verified postgres dump")
+	contents := []byte("verified SQLite snapshot")
 	require.NoError(t, os.WriteFile(filepath.Join(directory, artifact), contents, 0o600))
 	document := fmt.Sprintf(
 		`{"version":1,"completed_at":%q,"artifact":%q,"size_bytes":%d,"sha256":%q}`,

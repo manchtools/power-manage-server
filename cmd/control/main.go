@@ -18,7 +18,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/controlruntime"
 	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
-	"github.com/manchtools/power-manage/server/internal/datastore"
 	"github.com/manchtools/power-manage/server/internal/jobs"
 	"github.com/manchtools/power-manage/server/internal/maintenance"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -59,10 +58,7 @@ func main() {
 func run(cfg *Config, logger *slog.Logger) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	if err := datastore.RequirePostgresTLS(cfg.DatabaseURL); err != nil {
-		return fmt.Errorf("database TLS: %w", err)
-	}
-	st, err := store.New(ctx, cfg.DatabaseURL)
+	st, err := store.New(ctx, cfg.DatabasePath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}

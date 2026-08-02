@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -54,7 +55,7 @@ type configDocument struct {
 	AgentTLSKeyFile       string   `json:"agent_tls_key_file"`
 	PublicTLSCertFile     string   `json:"public_tls_cert_file"`
 	PublicTLSKeyFile      string   `json:"public_tls_key_file"`
-	DatabaseURLFile       string   `json:"database_url_file"`
+	DatabasePath          string   `json:"database_path"`
 	EncryptionKeyFile     string   `json:"encryption_key_file"`
 	SessionSigningKeyFile string   `json:"session_signing_key_file"`
 	SealingKeyFile        string   `json:"sealing_key_file"`
@@ -86,7 +87,7 @@ type Config struct {
 	AgentTLSKeyFile     string
 	PublicTLSCertFile   string
 	PublicTLSKeyFile    string
-	DatabaseURL         string
+	DatabasePath        string
 	EncryptionKey       string
 	SessionSigningKey   ed25519.PrivateKey
 	SealingKey          *ecdh.PrivateKey
@@ -113,10 +114,6 @@ func loadConfig(args []string) (*Config, error) {
 	}
 	applyDefaults(&document)
 
-	databaseURL, err := loadSecret("POWER_MANAGE_DATABASE_URL", "POWER_MANAGE_DATABASE_URL_FILE", document.DatabaseURLFile)
-	if err != nil {
-		return nil, fmt.Errorf("database URL: %w", err)
-	}
 	encryptionKey, err := loadSecret("POWER_MANAGE_ENCRYPTION_KEY", "POWER_MANAGE_ENCRYPTION_KEY_FILE", document.EncryptionKeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("encryption key: %w", err)
@@ -168,7 +165,7 @@ func loadConfig(args []string) (*Config, error) {
 		AgentTLSKeyFile:   pathOverride("POWER_MANAGE_AGENT_TLS_KEY_FILE", document.AgentTLSKeyFile),
 		PublicTLSCertFile: document.PublicTLSCertFile,
 		PublicTLSKeyFile:  pathOverride("POWER_MANAGE_PUBLIC_TLS_KEY_FILE", document.PublicTLSKeyFile),
-		DatabaseURL:       databaseURL, EncryptionKey: encryptionKey,
+		DatabasePath:      document.DatabasePath, EncryptionKey: encryptionKey,
 		SessionSigningKey: sessionKey, SealingKey: sealingKey,
 	}
 	if len(cfg.TerminalOrigins) == 0 {
@@ -230,6 +227,9 @@ func applyDefaults(document *configDocument) {
 	if document.BackupMaxLag == "" {
 		document.BackupMaxLag = "26h"
 	}
+	if document.DatabasePath == "" {
+		document.DatabasePath = "/var/lib/power-manage/control.db"
+	}
 }
 
 func validateConfig(cfg *Config) error {
@@ -265,8 +265,11 @@ func validateConfig(cfg *Config) error {
 			return fmt.Errorf("invalid CORS origin %q", origin)
 		}
 	}
-	if cfg.DatabaseURL == "" || cfg.EncryptionKey == "" {
-		return errors.New("database and encryption secrets are required")
+	if cfg.EncryptionKey == "" {
+		return errors.New("encryption key is required")
+	}
+	if err := validateDatabasePath(cfg.DatabasePath); err != nil {
+		return err
 	}
 	if err := validateWritableDirectory("artifact_path", cfg.ArtifactPath); err != nil {
 		return err
@@ -292,6 +295,23 @@ func validateConfig(cfg *Config) error {
 		return errors.New("session and sealing private keys are required")
 	}
 	return nil
+}
+
+func validateDatabasePath(path string) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return errors.New("database_path must be an absolute file path")
+	}
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("database_path %q must be a regular file", path)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("database_path %q: %w", path, err)
+	}
+	return validateWritableDirectory("database_path parent", filepath.Dir(path))
 }
 
 func validateWritableDirectory(name, path string) error {

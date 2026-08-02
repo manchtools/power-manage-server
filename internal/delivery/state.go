@@ -1,6 +1,6 @@
 // Package delivery owns the durable control-side manifest delivery state
 // machine. Transport retries may repeat a frame; only these conditional,
-// audited PostgreSQL transitions decide whether durable state advances.
+// audited SQLite transitions decide whether durable state advances.
 package delivery
 
 import (

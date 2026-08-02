@@ -25,7 +25,7 @@ import (
 
 const defaultPageSize = int32(50)
 
-// Config supplies the direct PostgreSQL store and process-local seams.
+// Config supplies the direct SQLite store and process-local seams.
 type Config struct {
 	Store         *store.Store
 	Logger        *slog.Logger

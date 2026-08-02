@@ -11,7 +11,7 @@ import (
 )
 
 func runBootstrapAdmin(ctx context.Context, cfg *Config) int {
-	st, err := store.NewWithoutMigrations(ctx, cfg.DatabaseURL)
+	st, err := store.NewWithoutMigrations(ctx, cfg.DatabasePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "bootstrap-admin: database unavailable")
 		return 1

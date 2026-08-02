@@ -161,7 +161,7 @@ func (h *Handlers) GetCompliancePolicy(ctx context.Context, req *connect.Request
 	}), nil
 }
 
-// ListCompliancePolicies returns a deterministic PostgreSQL keyset page.
+// ListCompliancePolicies returns a deterministic SQLite keyset page.
 func (h *Handlers) ListCompliancePolicies(ctx context.Context, req *connect.Request[pmv1.ListCompliancePoliciesRequest]) (*connect.Response[pmv1.ListCompliancePoliciesResponse], error) {
 	if err := validateRequest(h, ctx, req); err != nil {
 		return nil, err

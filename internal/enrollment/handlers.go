@@ -26,7 +26,7 @@ import (
 
 var errCredentialRejected = errors.New("enrollment credential rejected")
 
-// Config supplies enrollment's direct PostgreSQL and PKI dependencies.
+// Config supplies enrollment's direct SQLite and PKI dependencies.
 type Config struct {
 	Store                   *store.Store
 	CA                      *ca.CA

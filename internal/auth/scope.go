@@ -365,7 +365,7 @@ func enforceGroupScope(ctx context.Context, f ScopeFilter, permission, groupID s
 //     to NOTHING (fail closed).
 //
 // The query keys its membership/id check off `restricted` (a boolean), not off
-// groupIDs being nil-vs-empty, so the SQL is unambiguous and pgx array encoding
+// groupIDs being nil-vs-empty, so the SQL is unambiguous and JSON list encoding
 // never decides access.
 func DeviceScopeListFilter(ctx context.Context, permission string) (groupIDs []string, restricted bool) {
 	return scopeListFilter(ctx, permission, DeviceScopeFilterFor)

@@ -3,6 +3,8 @@ package store_test
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -35,6 +37,22 @@ func TestNew_RunsMigrations(t *testing.T) {
 	var version int
 	require.NoError(t, pool.QueryRow(ctx, `PRAGMA user_version`).Scan(&version))
 	assert.Equal(t, 1, version)
+}
+
+func TestSQLiteFile_IsPrivateAndReadOnlyOpenDoesNotCreate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "control.db")
+	st, err := store.New(context.Background(), path)
+	require.NoError(t, err)
+	st.Close()
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	missing := filepath.Join(t.TempDir(), "missing.db")
+	_, err = store.NewWithoutMigrations(context.Background(), missing)
+	require.Error(t, err)
+	_, statErr := os.Stat(missing)
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 // The boot-time role snapshot must not carry permissions for authentication

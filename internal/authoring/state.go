@@ -42,7 +42,7 @@ type Config struct {
 	Now   func() time.Time
 }
 
-// Service changes authored state in audited PostgreSQL transactions.
+// Service changes authored state in audited SQLite transactions.
 type Service struct {
 	store *store.Store
 	now   func() time.Time

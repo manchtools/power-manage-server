@@ -68,7 +68,7 @@ var sortFields = map[pmv1.SortField]string{
 	pmv1.SortField_SORT_FIELD_OCCURRED_AT:       "occurred_at",
 }
 
-// Handlers implements PostgreSQL-backed search and its maintenance RPC.
+// Handlers implements SQLite FTS5-backed search and its maintenance RPC.
 type Handlers struct {
 	store     *store.Store
 	logger    *slog.Logger
@@ -76,7 +76,7 @@ type Handlers struct {
 	validator *validator.Validate
 }
 
-// NewHandlers constructs search handlers over authoritative PostgreSQL state.
+// NewHandlers constructs search handlers over authoritative SQLite state.
 func NewHandlers(st *store.Store, logger *slog.Logger, now func() time.Time) *Handlers {
 	if st == nil {
 		panic("search: store is required")
@@ -139,7 +139,7 @@ func (h *Handlers) operation(req connect.AnyRequest, actor *auth.UserContext, cl
 	return op
 }
 
-// Search returns one deterministic PostgreSQL FTS page per requested facet.
+// Search returns one deterministic SQLite FTS5 page per requested facet.
 func (h *Handlers) Search(ctx context.Context, req *connect.Request[pmv1.SearchRequest]) (*connect.Response[pmv1.SearchResponse], error) {
 	if err := validateRequest(h, ctx, req); err != nil {
 		return nil, err
@@ -212,7 +212,7 @@ func (h *Handlers) Search(ctx context.Context, req *connect.Request[pmv1.SearchR
 			if errors.Is(searchErr, store.ErrInvalidSearch) {
 				return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid search filter or sort")
 			}
-			return nil, h.internal(ctx, "query postgres", searchErr)
+			return nil, h.internal(ctx, "query SQLite", searchErr)
 		}
 		for _, row := range rows {
 			response.Results = append(response.Results, &pmv1.SearchResult{
@@ -248,7 +248,7 @@ func (h *Handlers) Search(ctx context.Context, req *connect.Request[pmv1.SearchR
 }
 
 // RebuildSearchIndex performs explicit physical maintenance on the generated
-// PostgreSQL search indexes and records the operation atomically.
+// SQLite search indexes and records the operation atomically.
 func (h *Handlers) RebuildSearchIndex(ctx context.Context, req *connect.Request[pmv1.RebuildSearchIndexRequest]) (*connect.Response[pmv1.RebuildSearchIndexResponse], error) {
 	if err := validateRequest(h, ctx, req); err != nil {
 		return nil, err
@@ -263,7 +263,7 @@ func (h *Handlers) RebuildSearchIndex(ctx context.Context, req *connect.Request[
 	op := h.operation(req, actor, store.ClassMutation,
 		powermanagev1connect.ControlServiceRebuildSearchIndexProcedure, "RebuildSearchIndex")
 	if err := h.store.RebuildSearchIndexes(ctx, op); err != nil {
-		return nil, h.internal(ctx, "rebuild postgres indexes", err)
+		return nil, h.internal(ctx, "rebuild SQLite indexes", err)
 	}
 	return connect.NewResponse(&pmv1.RebuildSearchIndexResponse{}), nil
 }

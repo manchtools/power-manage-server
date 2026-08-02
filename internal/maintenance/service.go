@@ -1,5 +1,5 @@
 // Package maintenance wires the fixed control-plane housekeeping jobs to the
-// durable PostgreSQL scheduler.
+// durable SQLite scheduler.
 package maintenance
 
 import (
@@ -311,7 +311,7 @@ func (s *Service) InspectSecurity(ctx context.Context, _ jobs.Job) error {
 	})
 }
 
-// InspectBackup reports a missing, invalid, or overdue verified PostgreSQL
+// InspectBackup reports a missing, invalid, or overdue verified SQLite
 // backup without changing application readiness.
 func (s *Service) InspectBackup(ctx context.Context, _ jobs.Job) error {
 	if ctx == nil {

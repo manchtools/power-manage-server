@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -72,7 +73,7 @@ const sqliteOpenConnections = 10
 // the file is empty. The project is pre-alpha, so there is no PostgreSQL data
 // migration or compatibility path.
 func New(ctx context.Context, path string) (*Store, error) {
-	db, err := openSQLite(ctx, path)
+	db, err := openSQLite(ctx, path, true)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +87,7 @@ func New(ctx context.Context, path string) (*Store, error) {
 // NewWithoutMigrations opens an already-initialized SQLite file. It is used by
 // one-shot commands that must not create a database accidentally.
 func NewWithoutMigrations(ctx context.Context, path string) (*Store, error) {
-	db, err := openSQLite(ctx, path)
+	db, err := openSQLite(ctx, path, false)
 	if err != nil {
 		return nil, err
 	}
@@ -102,9 +103,12 @@ func NewWithoutMigrations(ctx context.Context, path string) (*Store, error) {
 	return newStore(db), nil
 }
 
-func openSQLite(ctx context.Context, path string) (*sql.DB, error) {
+func openSQLite(ctx context.Context, path string, create bool) (*sql.DB, error) {
 	if ctx == nil || strings.TrimSpace(path) == "" {
 		return nil, errors.New("open SQLite database: path is required")
+	}
+	if err := prepareSQLiteFile(path, create); err != nil {
+		return nil, err
 	}
 	dsn, err := sqliteDSN(path)
 	if err != nil {
@@ -121,6 +125,28 @@ func openSQLite(ctx context.Context, path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("ping SQLite database: %w", err)
 	}
 	return db, nil
+}
+
+func prepareSQLiteFile(path string, create bool) error {
+	if path == ":memory:" || strings.HasPrefix(path, "file:") {
+		return nil
+	}
+	flags := os.O_RDWR
+	if create {
+		flags |= os.O_CREATE
+	}
+	file, err := os.OpenFile(path, flags, 0o600)
+	if err != nil {
+		return fmt.Errorf("open SQLite database file: %w", err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("secure SQLite database file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close SQLite database file: %w", err)
+	}
+	return nil
 }
 
 func sqliteDSN(path string) (string, error) {

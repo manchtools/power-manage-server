@@ -70,7 +70,7 @@ func (h *Handlers) GetActionSet(ctx context.Context, req *connect.Request[pmv1.G
 	}), nil
 }
 
-// ListActionSets returns a deterministic PostgreSQL keyset page.
+// ListActionSets returns a deterministic SQLite keyset page.
 func (h *Handlers) ListActionSets(ctx context.Context, req *connect.Request[pmv1.ListActionSetsRequest]) (*connect.Response[pmv1.ListActionSetsResponse], error) {
 	if err := validateAuthoringRequest(h, ctx, req); err != nil {
 		return nil, err

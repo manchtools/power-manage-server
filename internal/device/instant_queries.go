@@ -22,7 +22,7 @@ const (
 	maxAgentLogResultLen = 16 << 20
 )
 
-// DispatchOSQuery creates the pollable PostgreSQL result before sending one
+// DispatchOSQuery creates the pollable SQLite result before sending one
 // unsigned query frame over the authenticated agent stream.
 func (h *Handlers) DispatchOSQuery(ctx context.Context, req *connect.Request[pmv1.DispatchOSQueryRequest]) (*connect.Response[pmv1.DispatchOSQueryResponse], error) {
 	if err := validateRequest(h, ctx, req); err != nil {
@@ -79,7 +79,7 @@ func (h *Handlers) DispatchOSQuery(ctx context.Context, req *connect.Request[pmv
 	return connect.NewResponse(&pmv1.DispatchOSQueryResponse{QueryId: queryID}), nil
 }
 
-// QueryDeviceLogs creates the pollable PostgreSQL result before sending one
+// QueryDeviceLogs creates the pollable SQLite result before sending one
 // journal query over the authenticated agent stream.
 func (h *Handlers) QueryDeviceLogs(ctx context.Context, req *connect.Request[pmv1.QueryDeviceLogsRequest]) (*connect.Response[pmv1.QueryDeviceLogsResponse], error) {
 	if err := validateRequest(h, ctx, req); err != nil {

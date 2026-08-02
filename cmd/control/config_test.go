@@ -19,7 +19,6 @@ import (
 
 func TestLoadConfigUsesOneFileAndSecretFiles(t *testing.T) {
 	for _, environment := range []string{
-		"POWER_MANAGE_DATABASE_URL", "POWER_MANAGE_DATABASE_URL_FILE",
 		"POWER_MANAGE_ENCRYPTION_KEY", "POWER_MANAGE_ENCRYPTION_KEY_FILE",
 		"POWER_MANAGE_SESSION_SIGNING_KEY_FILE", "POWER_MANAGE_SEALING_KEY_FILE",
 		"POWER_MANAGE_CA_KEY_FILE", "POWER_MANAGE_AGENT_TLS_KEY_FILE", "POWER_MANAGE_PUBLIC_TLS_KEY_FILE",
@@ -38,7 +37,7 @@ func TestLoadConfigUsesOneFileAndSecretFiles(t *testing.T) {
 	require.NoError(t, err)
 	sessionPath := secret("session.pem", string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encodedSession})))
 	sealingPath := secret("sealing.key", strings.Repeat("01", 32))
-	databasePath := secret("database.url", "postgres://control:secret@db/control?sslmode=verify-full")
+	databasePath := filepath.Join(directory, "control.db")
 	encryptionPath := secret("encryption.key", strings.Repeat("02", 32))
 	artifactPath := filepath.Join(directory, "artifacts")
 	backupPath := filepath.Join(directory, "backups")
@@ -58,7 +57,7 @@ func TestLoadConfigUsesOneFileAndSecretFiles(t *testing.T) {
   "ca_key_file": "/certs/ca.key",
   "agent_tls_cert_file": "/certs/control.crt",
   "agent_tls_key_file": "/certs/control.key",
-  "database_url_file": ` + quote(databasePath) + `,
+	"database_path": ` + quote(databasePath) + `,
   "encryption_key_file": ` + quote(encryptionPath) + `,
   "session_signing_key_file": ` + quote(sessionPath) + `,
   "sealing_key_file": ` + quote(sealingPath) + `
@@ -73,6 +72,7 @@ func TestLoadConfigUsesOneFileAndSecretFiles(t *testing.T) {
 	assert.Equal(t, "manage.example", cfg.TerminalOrigins[0])
 	assert.Equal(t, artifactPath, cfg.ArtifactPath)
 	assert.Equal(t, backupPath, cfg.BackupPath)
+	assert.Equal(t, databasePath, cfg.DatabasePath)
 	assert.Equal(t, 26*time.Hour, cfg.BackupMaxLag)
 	assert.Equal(t, "https://hooks.example.test/power-manage?token=secret", cfg.WebhookURL)
 	assert.Equal(t, 90*24*time.Hour, cfg.AuditRetention)
@@ -87,6 +87,13 @@ func TestValidateConfigRequiresWritableDataDirectories(t *testing.T) {
 	err := validateWritableDirectory("artifact_path", file)
 	assert.ErrorContains(t, err, "must be a directory")
 	assert.ErrorContains(t, validateWritableDirectory("backup_path", ""), "is required")
+}
+
+func TestValidateDatabasePathRequiresAnAbsoluteFileInAWritableDirectory(t *testing.T) {
+	directory := t.TempDir()
+	assert.NoError(t, validateDatabasePath(filepath.Join(directory, "control.db")))
+	assert.ErrorContains(t, validateDatabasePath("control.db"), "absolute")
+	assert.ErrorContains(t, validateDatabasePath(directory), "regular file")
 }
 
 func TestConfigAndSecretReadersFailClosed(t *testing.T) {

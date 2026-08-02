@@ -1,5 +1,5 @@
 // Package agentstream terminates the authenticated device connection directly
-// in control. Frames are applied to PostgreSQL-backed services without a relay,
+// in control. Frames are applied to SQLite-backed services without a relay,
 // broker, or application-signature layer.
 package agentstream
 

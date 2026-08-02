@@ -11,7 +11,7 @@ import (
 )
 
 // ScheduleToRaw serialises an ActionSchedule proto into the json.RawMessage
-// form stored in PostgreSQL JSONB, via the shared protojson marshalOptions
+// form stored as validated SQLite JSON, via the shared protojson marshalOptions
 // (EmitUnpopulated). It returns nil — so the emitter omits the `schedule` key —
 // in two cases:
 //
