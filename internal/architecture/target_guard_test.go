@@ -114,8 +114,15 @@ func TestAbolishedRuntimeAPIsCannotReturn(t *testing.T) {
 			return walkErr
 		}
 		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", "vendor", "testdata":
+			name := entry.Name()
+			switch {
+			case name == "vendor", name == "testdata":
+				return filepath.SkipDir
+			// The Go toolchain ignores directories whose names begin with "_" or
+			// ".", so they are not part of this module. CI checks the SDK out into
+			// `_sdk` and replaces the module with it; guarding another repository's
+			// source there reports a violation this module cannot fix.
+			case path != root && (strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".")):
 				return filepath.SkipDir
 			}
 			return nil
