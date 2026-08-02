@@ -37,11 +37,6 @@ type Tx struct {
 	raw *sql.Tx
 }
 
-func (tx *Tx) exec(ctx context.Context, statement string) error {
-	_, err := tx.raw.ExecContext(ctx, statement)
-	return err
-}
-
 // Store owns the connection pool and the primitives every domain
 // shares: the audited transaction spine, advisory locks, chain
 // verification and the migration runner.
