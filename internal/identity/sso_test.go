@@ -29,6 +29,7 @@ import (
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	"github.com/manchtools/power-manage/server/internal/idp"
+	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 func TestListAuthMethods_ReturnsEnabledProvidersAndNothingAboutTheEmail(t *testing.T) {
@@ -146,6 +147,9 @@ func TestSSOCallback_AutoCreatesASubjectAndIssuesASession(t *testing.T) {
 	assert.Equal(t, role, resp.Msg.User.RoleGrants[0].Role.Id,
 		"the provider's default role is granted on auto-create")
 	require.Len(t, resp.Msg.User.IdentityLinks, 1)
+	row, err := f.store.GetUser(f.ctx(), resp.Msg.User.Id)
+	require.NoError(t, err)
+	assert.Equal(t, store.UserProvisioningSourceOIDCJIT, row.ProvisioningSource)
 
 	op := f.operationOfClass(powermanagev1connect.ControlServiceSSOCallbackProcedure, "MUTATION")
 	effects := f.effectsOf(op.OperationID)

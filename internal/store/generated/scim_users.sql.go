@@ -24,7 +24,7 @@ func (q *Queries) CountSCIMUsers(ctx context.Context, providerID string) (int64,
 }
 
 const findSCIMUserByEmail = `-- name: FindSCIMUserByEmail :one
-SELECT u.id, u.email, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.session_version, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.system_tty_action_id, u.user_provisioning_enabled, u.search_tsv, l.external_id
+SELECT u.id, u.email, u.provisioning_source, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.session_version, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.system_tty_action_id, u.user_provisioning_enabled, u.search_tsv, l.external_id
 FROM users u
 JOIN identity_links l ON l.user_id = u.id
 WHERE l.provider_id = $1 AND u.email = $2 AND u.is_deleted = FALSE
@@ -46,6 +46,7 @@ func (q *Queries) FindSCIMUserByEmail(ctx context.Context, arg FindSCIMUserByEma
 	err := row.Scan(
 		&i.User.ID,
 		&i.User.Email,
+		&i.User.ProvisioningSource,
 		&i.User.CreatedAt,
 		&i.User.UpdatedAt,
 		&i.User.LastLoginAt,
@@ -74,7 +75,7 @@ func (q *Queries) FindSCIMUserByEmail(ctx context.Context, arg FindSCIMUserByEma
 }
 
 const findSCIMUserByExternalID = `-- name: FindSCIMUserByExternalID :one
-SELECT u.id, u.email, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.session_version, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.system_tty_action_id, u.user_provisioning_enabled, u.search_tsv, l.external_id
+SELECT u.id, u.email, u.provisioning_source, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.session_version, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.system_tty_action_id, u.user_provisioning_enabled, u.search_tsv, l.external_id
 FROM users u
 JOIN identity_links l ON l.user_id = u.id
 WHERE l.provider_id = $1 AND l.external_id = $2 AND u.is_deleted = FALSE
@@ -96,6 +97,7 @@ func (q *Queries) FindSCIMUserByExternalID(ctx context.Context, arg FindSCIMUser
 	err := row.Scan(
 		&i.User.ID,
 		&i.User.Email,
+		&i.User.ProvisioningSource,
 		&i.User.CreatedAt,
 		&i.User.UpdatedAt,
 		&i.User.LastLoginAt,
@@ -125,7 +127,7 @@ func (q *Queries) FindSCIMUserByExternalID(ctx context.Context, arg FindSCIMUser
 
 const listSCIMUsers = `-- name: ListSCIMUsers :many
 
-SELECT u.id, u.email, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.session_version, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.system_tty_action_id, u.user_provisioning_enabled, u.search_tsv, l.external_id
+SELECT u.id, u.email, u.provisioning_source, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.session_version, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.system_tty_action_id, u.user_provisioning_enabled, u.search_tsv, l.external_id
 FROM users u
 JOIN identity_links l ON l.user_id = u.id
 WHERE l.provider_id = $1 AND u.is_deleted = FALSE
@@ -162,6 +164,7 @@ func (q *Queries) ListSCIMUsers(ctx context.Context, arg ListSCIMUsersParams) ([
 		if err := rows.Scan(
 			&i.User.ID,
 			&i.User.Email,
+			&i.User.ProvisioningSource,
 			&i.User.CreatedAt,
 			&i.User.UpdatedAt,
 			&i.User.LastLoginAt,

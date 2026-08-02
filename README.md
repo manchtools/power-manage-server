@@ -23,8 +23,12 @@ phase ports the stable CRUD/search implementation to SQLite and FTS5.
 - The named protobuf RPCs remain the product contract except for the 14
   Gateway-only removals listed in the target.
 - Agents initiate one direct outbound mTLS stream to control.
-- Human identity is OIDC plus SCIM; bootstrap-admin is a one-time host
+<!-- docref: begin src=internal/scim/users_write.go#Handler.provisionSubject:4942a7b0,internal/idp/linker.go#Linker.createUser:95a3c852,internal/identity/users.go#Handlers.EraseJITUser:6cc8f91a -->
+- Human identity uses SCIM lifecycle management or optional per-provider OIDC
+  JIT for homelabs. There is no manual user creation; JIT-created subjects have
+  an explicit, provenance-gated erasure RPC. Bootstrap-admin is a one-time host
   authorization path.
+<!-- docref: end -->
 - Mutations and their audit operation/effect rows commit together.
 - Device work is a durable database delivery plus an in-process wakeup and
   periodic database sweep.

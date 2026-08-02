@@ -14,7 +14,6 @@ import (
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
-	"github.com/manchtools/power-manage/server/internal/idp"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -187,123 +186,37 @@ func (h *Handlers) userInGroups(ctx context.Context, userID string, groups []str
 	return false, nil
 }
 
-// CreateUser provisions a subject.
-//
-// The subject's data-encryption key is minted inside the same
-// transaction, before anything about them is recorded: the audit row
-// carries the address as class-three sealed detail, and sealing needs
-// the key to already exist and to be the one that erasure will destroy.
-func (h *Handlers) CreateUser(ctx context.Context, req *connect.Request[pmv1.CreateUserRequest]) (*connect.Response[pmv1.CreateUserResponse], error) {
+// EraseJITUser removes a subject created by optional OIDC JIT. SCIM-created
+// subjects fail closed because their lifecycle remains owned by SCIM.
+func (h *Handlers) EraseJITUser(ctx context.Context, req *connect.Request[pmv1.EraseJITUserRequest]) (*connect.Response[pmv1.EraseJITUserResponse], error) {
 	if err := h.validate(ctx, req.Msg); err != nil {
 		return nil, err
+	}
+	before, err := h.resolveUserTarget(ctx, PermEraseJITUser, req.Msg.Id)
+	if err != nil {
+		return nil, err
+	}
+	if before.ProvisioningSource != store.UserProvisioningSourceOIDCJIT {
+		return nil, rpcError(ctx, ErrSCIMManagedResource, connect.CodeFailedPrecondition,
+			"SCIM-created users are erased through SCIM")
 	}
 	actor, err := h.requireActor(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := h.authorize(ctx, PermCreateUser, ""); err != nil {
-		return nil, err
-	}
 
-	email := normalizeEmail(req.Msg.Email)
-	roleIDs := req.Msg.RoleIds
-	if len(roleIDs) == 0 {
-		roleIDs = []string{auth.UserRoleID}
-	}
-	for _, id := range roleIDs {
-		if _, err := h.store.GetRole(ctx, id); err != nil {
-			if store.IsNotFound(err) {
-				return nil, notFound(ctx, ErrRoleNotFound, "role not found")
-			}
-			return nil, internalError(ctx, "failed to resolve role")
-		}
-	}
-
-	userID := ulid.Make().String()
-	at := h.now().UTC()
-	var created store.UserRow
-
-	_, err = h.store.WithAudit(ctx, h.mutationOp(req, actor, PermCreateUser),
+	_, err = h.store.WithAudit(ctx, h.mutationOp(req, actor, PermEraseJITUser),
 		func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
-			wrapped, err := h.mintSubjectDEK(ctx, tx, userID)
-			if err != nil {
-				return err
-			}
-			sealed, err := h.sealForSubject(userID, wrapped, "email", email)
-			if err != nil {
-				return err
-			}
-
-			linuxUID, err := tx.GetNextLinuxUID(ctx)
-			if err != nil {
-				return err
-			}
-			linuxUsername := idp.DeriveLinuxUsername(email, req.Msg.PreferredUsername)
-			if linuxUsername == "" {
-				linuxUsername = "user_" + strings.ToLower(userID[:8])
-			}
-
-			created, err = tx.InsertUser(ctx, db.InsertUserParams{
-				ID:                userID,
-				Email:             email,
-				DisplayName:       req.Msg.DisplayName,
-				GivenName:         req.Msg.GivenName,
-				FamilyName:        req.Msg.FamilyName,
-				PreferredUsername: req.Msg.PreferredUsername,
-				LinuxUsername:     linuxUsername,
-				LinuxUid:          linuxUID,
-				CreatedAt:         &at,
-			})
-			if err != nil {
-				return err
-			}
-			rec.Effect(store.AuditEffect{
-				ResourceType:        "user",
-				ResourceID:          userID,
-				Action:              "CREATE",
-				Outcome:             store.EffectApplied,
-				ChangedFields:       []string{"email", "display_name", "linux_username", "linux_uid"},
-				EvidenceKind:        "email_sha256",
-				EvidenceFingerprint: fingerprint(email),
-				SealedDetail:        sealed,
-				SealedDetailSubject: userID,
-			})
-
-			for _, roleID := range roleIDs {
-				grantID := ulid.Make().String()
-				if _, err := tx.InsertUserRoleGrant(ctx, db.InsertUserRoleGrantParams{
-					GrantID:    grantID,
-					UserID:     userID,
-					RoleID:     roleID,
-					AssignedAt: at,
-					AssignedBy: actor.ID,
-				}); err != nil {
-					return err
-				}
-				rec.Effect(store.AuditEffect{
-					ResourceType: "user_role",
-					ResourceID:   grantID,
-					Action:       "GRANT",
-					Outcome:      store.EffectApplied,
-					BeforeRef:    &userID,
-					AfterRef:     &roleID,
-				})
-			}
-			return nil
+			return store.EraseUser(ctx, tx, rec, before)
 		})
 	if err != nil {
-		if store.IsConflict(err) {
-			return nil, rpcError(ctx, ErrEmailAlreadyExists, connect.CodeAlreadyExists, "a user with that email already exists")
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, ErrUserNotFound, "user not found")
 		}
-		h.logger.Error("failed to create user", "error", err)
-		return nil, internalError(ctx, "failed to create user")
+		h.logger.Error("failed to erase JIT user", "error", err, "user_id", before.ID)
+		return nil, internalError(ctx, "failed to erase user")
 	}
-
-	view, err := h.loadUserView(ctx, created.ID)
-	if err != nil {
-		return nil, internalError(ctx, "failed to load created user")
-	}
-	return connect.NewResponse(&pmv1.CreateUserResponse{User: userToProto(view)}), nil
+	return connect.NewResponse(&pmv1.EraseJITUserResponse{}), nil
 }
 
 // UpdateUserEmail changes a subject's address.

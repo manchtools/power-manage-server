@@ -224,8 +224,8 @@ func (b *Bootstrapper) AuthenticateBootstrapToken(ctx context.Context, token str
 		ID:   auth.BootstrapPrincipalID,
 		Kind: auth.PrincipalBootstrapAdmin,
 		// The bootstrap principal holds exactly the authority a fresh
-		// deployment needs to become usable: define roles, register an
-		// identity provider, and create the first subject. It is NOT
+		// deployment needs to become usable: define roles and register an
+		// identity provider that provisions the first subject. It is NOT
 		// given the full administrative set, and it holds no `:self`
 		// variant of anything — it is not a subject and owns nothing.
 		Permissions: BootstrapPermissions(),
@@ -249,7 +249,6 @@ func BootstrapPermissions() []string {
 		PermGetRole,
 		PermListRoles,
 		PermListPermissions,
-		PermCreateUser,
 		PermGetUser,
 		PermListUsers,
 		PermAssignRoleToUser,

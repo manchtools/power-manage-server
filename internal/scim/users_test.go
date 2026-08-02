@@ -56,6 +56,7 @@ func TestUsers_CreateProvisionsSubject(t *testing.T) {
 	// silently do nothing.
 	row, err := f.store.GetUser(f.ctx(), got["id"].(string))
 	require.NoError(t, err)
+	assert.Equal(t, store.UserProvisioningSourceSCIM, row.ProvisioningSource)
 	assert.NotEmpty(t, row.LinuxUsername)
 	assert.Greater(t, row.LinuxUid, int32(0))
 }
@@ -718,6 +719,37 @@ func TestUsers_DeleteWithAnotherBindingOnlyUnbinds(t *testing.T) {
 	assert.True(t, store.IsNotFound(err), "the asking directory's binding must be gone")
 	_, err = f.store.GetIdentityLinkByProviderAndUser(f.ctx(), a.ID, id)
 	assert.NoError(t, err, "the other directory's binding must survive")
+}
+
+// A SCIM binding may be added to an account that originally entered through
+// OIDC JIT. Removing that binding must not let SCIM erase a JIT-owned subject;
+// the operator uses EraseJITUser for that explicit local lifecycle decision.
+func TestUsers_DeleteOfJITUsersLastSCIMBindingOnlyUnbinds(t *testing.T) {
+	f := newFixture(t)
+	p := f.seedProvider(nil)
+	id := newULID()
+	f.insertUserWithSource(id, "jit-scim-link@example.com", "oidc_jit")
+	_, err := f.raw.Exec(f.ctx(), `
+		INSERT INTO identity_links
+		    (id, user_id, provider_id, external_id, external_email, external_name, linked_at)
+		VALUES ($1, $2, $3, 'jit-external', '', '', $4)`, newULID(), id, p.ID, f.now)
+	require.NoError(t, err)
+
+	require.Equal(t, http.StatusNoContent, f.do(http.MethodDelete, p.Slug, p.Token, "/Users/"+id, nil).Code)
+
+	row, err := f.store.GetUser(f.ctx(), id)
+	require.NoError(t, err, "SCIM must not erase a JIT-created subject")
+	assert.Equal(t, "oidc_jit", row.ProvisioningSource)
+	_, err = f.store.GetUserEncryptionKey(f.ctx(), id)
+	assert.NoError(t, err, "SCIM unbinding must not destroy a JIT subject's DEK")
+	_, err = f.store.GetIdentityLinkByProviderAndUser(f.ctx(), p.ID, id)
+	assert.True(t, store.IsNotFound(err), "the SCIM binding itself must be removed")
+
+	op := f.onlyOperationFor(scim.DescUsersDelete)
+	effects := f.effectsOf(op.OperationID)
+	f.effectWithAction(effects, "UNLINK")
+	assert.False(t, f.hasEffectWithAction(effects, "ERASE"))
+	assert.False(t, f.hasEffectWithAction(effects, "DESTROY_KEY"))
 }
 
 // The erasure record itself carries no sealed detail: it would be

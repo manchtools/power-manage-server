@@ -32,6 +32,9 @@ CREATE SEQUENCE public.linux_uid_seq
 CREATE TABLE public.users (
     id                        text PRIMARY KEY,
     email                     text NOT NULL,
+    -- Immutable creation provenance. It constrains which lifecycle
+    -- surface may erase the subject.
+    provisioning_source       text DEFAULT 'scim'::text NOT NULL,
     created_at                timestamp with time zone,
     updated_at                timestamp with time zone,
     last_login_at             timestamp with time zone,
@@ -55,7 +58,9 @@ CREATE TABLE public.users (
     system_user_action_id     text DEFAULT ''::text NOT NULL,
     system_ssh_action_id      text DEFAULT ''::text NOT NULL,
     system_tty_action_id      text DEFAULT ''::text NOT NULL,
-    user_provisioning_enabled boolean DEFAULT false NOT NULL
+    user_provisioning_enabled boolean DEFAULT false NOT NULL,
+    CONSTRAINT users_provisioning_source_valid
+        CHECK (provisioning_source = ANY (ARRAY['scim'::text, 'oidc_jit'::text]))
 );
 
 CREATE UNIQUE INDEX idx_users_email_active

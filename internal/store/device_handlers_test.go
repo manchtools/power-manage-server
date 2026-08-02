@@ -87,7 +87,8 @@ func newDeviceHandlerFixture(t *testing.T) *deviceHandlerFixture {
 			f.userID:  "subject@example.test",
 		} {
 			if _, err := tx.InsertUser(ctx, db.InsertUserParams{
-				ID: id, Email: email, DisplayName: email, LinuxUsername: "test",
+				ProvisioningSource: store.UserProvisioningSourceSCIM,
+				ID:                 id, Email: email, DisplayName: email, LinuxUsername: "test",
 				LinuxUid: 200001, CreatedAt: &now,
 			}); err != nil {
 				return err

@@ -217,15 +217,16 @@ func (l *Linker) createUser(
 	}
 
 	if _, err := tx.InsertUser(ctx, db.InsertUserParams{
-		ID:                userID,
-		Email:             claims.Email,
-		DisplayName:       claims.Name,
-		GivenName:         claims.GivenName,
-		FamilyName:        claims.FamilyName,
-		PreferredUsername: claims.PreferredUsername,
-		LinuxUsername:     linuxUsername,
-		LinuxUid:          linuxUID,
-		CreatedAt:         &at,
+		ID:                 userID,
+		Email:              claims.Email,
+		DisplayName:        claims.Name,
+		GivenName:          claims.GivenName,
+		FamilyName:         claims.FamilyName,
+		PreferredUsername:  claims.PreferredUsername,
+		LinuxUsername:      linuxUsername,
+		LinuxUid:           linuxUID,
+		ProvisioningSource: store.UserProvisioningSourceOIDCJIT,
+		CreatedAt:          &at,
 	}); err != nil {
 		return "", fmt.Errorf("create subject: %w", err)
 	}

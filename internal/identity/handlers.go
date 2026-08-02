@@ -220,28 +220,6 @@ func (h *Handlers) sealForSubject(subjectID, wrappedDEK, field, value string) ([
 	return []byte(sealed), nil
 }
 
-// mintSubjectDEK creates a subject's data-encryption key inside the
-// caller's transaction and returns the wrapped form.
-//
-// The insert is first-write-wins: a key that already exists is kept,
-// because replacing one would irreversibly erase everything already
-// sealed under it. The wrapped value is then read back so the caller
-// seals against whichever key actually survived.
-func (h *Handlers) mintSubjectDEK(ctx context.Context, tx *store.Tx, subjectID string) (string, error) {
-	wrapped, err := crypto.GenerateWrappedDEK(h.kek, subjectID)
-	if err != nil {
-		return "", err
-	}
-	if _, err := tx.InsertUserEncryptionKey(ctx, insertDEKParams(subjectID, wrapped)); err != nil {
-		return "", err
-	}
-	row, err := tx.GetUserEncryptionKey(ctx, subjectID)
-	if err != nil {
-		return "", err
-	}
-	return row.WrappedDek, nil
-}
-
 // pageLimit clamps a requested page size to the contract's bounds.
 const (
 	defaultPageSize = 50

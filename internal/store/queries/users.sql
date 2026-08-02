@@ -3,9 +3,9 @@
 -- comes from user_roles and user_group_roles.
 INSERT INTO users (
     id, email, display_name, given_name, family_name, preferred_username,
-    linux_username, linux_uid, created_at, updated_at
+    linux_username, linux_uid, provisioning_source, created_at, updated_at
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
 RETURNING *;
 
 -- name: GetUser :one

@@ -101,7 +101,7 @@ func TestValidateToken_RefusesAnAlgorithmSubstitution(t *testing.T) {
 			IssuedAt:  jwt.NewNumericDate(now),
 		},
 		UserID:      "01J0000000000000000000000A",
-		Permissions: []string{"CreateUser"},
+		Permissions: []string{"EraseJITUser"},
 		TokenType:   auth.TokenTypeAccess,
 	}
 	forged, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(pub))

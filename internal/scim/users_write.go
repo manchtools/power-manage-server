@@ -242,14 +242,15 @@ func (h *Handler) provisionSubject(w http.ResponseWriter, r *http.Request, s *se
 		}
 
 		created, err = tx.InsertUser(ctx, db.InsertUserParams{
-			ID:            userID,
-			Email:         email,
-			DisplayName:   formatExternalName(resource.Name),
-			GivenName:     nameField(resource.Name, func(n *SCIMName) string { return n.GivenName }),
-			FamilyName:    nameField(resource.Name, func(n *SCIMName) string { return n.FamilyName }),
-			LinuxUsername: linuxUsername,
-			LinuxUid:      linuxUID,
-			CreatedAt:     &at,
+			ID:                 userID,
+			Email:              email,
+			DisplayName:        formatExternalName(resource.Name),
+			GivenName:          nameField(resource.Name, func(n *SCIMName) string { return n.GivenName }),
+			FamilyName:         nameField(resource.Name, func(n *SCIMName) string { return n.FamilyName }),
+			LinuxUsername:      linuxUsername,
+			LinuxUid:           linuxUID,
+			ProvisioningSource: store.UserProvisioningSourceSCIM,
+			CreatedAt:          &at,
 		})
 		if err != nil {
 			return err
@@ -695,10 +696,9 @@ func (h *Handler) refreshBinding(
 
 // deleteUser handles DELETE /Users/{id}.
 //
-// It removes THIS directory's binding. Only when that was the subject's
-// last binding is the subject erased: another directory may still
-// provision them, and destroying the account because one directory
-// stopped listing it would be a deletion nobody asked for.
+// It removes THIS directory's binding. A SCIM-created subject is erased only
+// after its last binding is gone; a JIT-created subject is only unbound and
+// remains owned by the explicit EraseJITUser path.
 func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, s *session) {
 	ctx := r.Context()
 	link, before, ok := h.resolveSubject(ctx, w, s, r.PathValue("id"))
@@ -726,10 +726,10 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, s *session)
 		if err != nil {
 			return err
 		}
-		if remaining > 0 {
+		if remaining > 0 || before.ProvisioningSource != store.UserProvisioningSourceSCIM {
 			return nil
 		}
-		return h.eraseSubject(ctx, tx, rec, before)
+		return store.EraseUser(ctx, tx, rec, before)
 	})
 	if err != nil {
 		h.logger.Error("scim: failed to remove the subject binding", "error", err)
@@ -737,66 +737,6 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, s *session)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// eraseSubject erases a subject the way the identity surface does: the
-// row, their group memberships, their role grants and finally their
-// data-encryption key, all in the caller's transaction. Destroying the
-// key is what makes every class-three detail ever sealed for them
-// permanently unreadable, in live rows, archives and backups at once.
-//
-// The record therefore carries NO class-three detail of its own: it
-// would be sealed under a key this very transaction destroys, and would
-// be born unreadable. References and a non-reversible digest are the
-// non-personal attribution that must survive.
-func (h *Handler) eraseSubject(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder, before store.UserRow) error {
-	memberships, err := tx.DeleteUserGroupMembershipsForUser(ctx, before.ID)
-	if err != nil {
-		return err
-	}
-	grants, err := tx.DeleteUserRoleGrantsForUser(ctx, before.ID)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.DeleteUser(ctx, before.ID); err != nil {
-		return err
-	}
-	keys, err := tx.DeleteUserEncryptionKey(ctx, before.ID)
-	if err != nil {
-		return err
-	}
-
-	rec.Effect(store.AuditEffect{
-		ResourceType:        "user",
-		ResourceID:          before.ID,
-		Action:              "ERASE",
-		Outcome:             store.EffectApplied,
-		ChangedFields:       []string{"email", "display_name", "linux_username"},
-		EvidenceKind:        "email_sha256",
-		EvidenceFingerprint: fingerprint(before.Email),
-	})
-	rec.Effect(store.AuditEffect{
-		ResourceType: "user_group_member",
-		ResourceID:   before.ID,
-		Action:       "ERASE_MEMBERSHIPS",
-		Outcome:      store.EffectApplied,
-		BeforeCount:  &memberships,
-	})
-	rec.Effect(store.AuditEffect{
-		ResourceType: "user_role",
-		ResourceID:   before.ID,
-		Action:       "ERASE_GRANTS",
-		Outcome:      store.EffectApplied,
-		BeforeCount:  &grants,
-	})
-	rec.Effect(store.AuditEffect{
-		ResourceType: "user_encryption_key",
-		ResourceID:   before.ID,
-		Action:       "DESTROY_KEY",
-		Outcome:      store.EffectApplied,
-		BeforeCount:  &keys,
-	})
-	return nil
 }
 
 // ---------------------------------------------------------------------------

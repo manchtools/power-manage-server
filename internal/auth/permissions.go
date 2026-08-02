@@ -79,8 +79,7 @@ var privilegeGrantingKeys = map[string]bool{
 	// in a group is a role grant by another name.
 	"AddUserToGroup":      true,
 	"RemoveUserFromGroup": true,
-	// Minting and re-enabling subjects.
-	"CreateUser":      true,
+	// Re-enabling subjects.
 	"SetUserDisabled": true,
 	// Identity sources that mint subjects and map external groups onto
 	// local ones.
@@ -132,7 +131,7 @@ func registryPermissions() []permEntry {
 		{"GetUser", "Users", "View any user", TargetUser},
 		{"GetUser:self", "Users", "View own profile only", TargetUnspecified},
 		{"ListUsers", "Users", "List all users", TargetUser},
-		{"CreateUser", "Users", "Create users", TargetUnspecified},
+		{"EraseJITUser", "Users", "Erase OIDC JIT users", TargetUser},
 		{"UpdateUserEmail", "Users", "Change any user's email", TargetUser},
 		{"UpdateUserEmail:self", "Users", "Change own email", TargetUnspecified},
 		// Re-enabling a subject restores every authority it held, so

@@ -65,8 +65,8 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceUnlinkIdentityProcedure, h.UnlinkIdentity, opts...))
 
 	// Users.
-	register(powermanagev1connect.ControlServiceCreateUserProcedure,
-		connect.NewUnaryHandler(powermanagev1connect.ControlServiceCreateUserProcedure, h.CreateUser, opts...))
+	register(powermanagev1connect.ControlServiceEraseJITUserProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceEraseJITUserProcedure, h.EraseJITUser, opts...))
 	register(powermanagev1connect.ControlServiceGetUserProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetUserProcedure, h.GetUser, opts...))
 	register(powermanagev1connect.ControlServiceListUsersProcedure,
@@ -168,7 +168,7 @@ func MutationProcedures() []string {
 		powermanagev1connect.ControlServiceDisableSCIMProcedure,
 		powermanagev1connect.ControlServiceRotateSCIMTokenProcedure,
 		powermanagev1connect.ControlServiceUnlinkIdentityProcedure,
-		powermanagev1connect.ControlServiceCreateUserProcedure,
+		powermanagev1connect.ControlServiceEraseJITUserProcedure,
 		powermanagev1connect.ControlServiceUpdateUserEmailProcedure,
 		powermanagev1connect.ControlServiceSetUserDisabledProcedure,
 		powermanagev1connect.ControlServiceUpdateUserProfileProcedure,

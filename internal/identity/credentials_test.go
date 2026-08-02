@@ -74,8 +74,8 @@ var authenticatedMutations = map[string]call{
 		_, err := f.client.UnlinkIdentity(f.ctx(), authed(&pmv1.UnlinkIdentityRequest{LinkId: newULID()}, token))
 		return err
 	},
-	powermanagev1connect.ControlServiceCreateUserProcedure: func(f *fixture, token string) error {
-		_, err := f.client.CreateUser(f.ctx(), authed(&pmv1.CreateUserRequest{Email: "new@test.example"}, token))
+	powermanagev1connect.ControlServiceEraseJITUserProcedure: func(f *fixture, token string) error {
+		_, err := f.client.EraseJITUser(f.ctx(), authed(&pmv1.EraseJITUserRequest{Id: newULID()}, token))
 		return err
 	},
 	powermanagev1connect.ControlServiceUpdateUserEmailProcedure: func(f *fixture, token string) error {

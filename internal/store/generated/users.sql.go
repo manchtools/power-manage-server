@@ -84,7 +84,7 @@ func (q *Queries) GetServerSettings(ctx context.Context) (ServerSetting, error) 
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv FROM users WHERE id = $1 AND is_deleted = FALSE
+SELECT id, email, provisioning_source, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv FROM users WHERE id = $1 AND is_deleted = FALSE
 `
 
 func (q *Queries) GetUser(ctx context.Context, id string) (User, error) {
@@ -93,6 +93,7 @@ func (q *Queries) GetUser(ctx context.Context, id string) (User, error) {
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
+		&i.ProvisioningSource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastLoginAt,
@@ -120,7 +121,7 @@ func (q *Queries) GetUser(ctx context.Context, id string) (User, error) {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv FROM users WHERE email = $1 AND is_deleted = FALSE
+SELECT id, email, provisioning_source, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv FROM users WHERE email = $1 AND is_deleted = FALSE
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -129,6 +130,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
+		&i.ProvisioningSource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastLoginAt,
@@ -183,22 +185,23 @@ func (q *Queries) GetUserSessionState(ctx context.Context, id string) (GetUserSe
 const insertUser = `-- name: InsertUser :one
 INSERT INTO users (
     id, email, display_name, given_name, family_name, preferred_username,
-    linux_username, linux_uid, created_at, updated_at
+    linux_username, linux_uid, provisioning_source, created_at, updated_at
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
-RETURNING id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+RETURNING id, email, provisioning_source, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
 `
 
 type InsertUserParams struct {
-	ID                string     `json:"id"`
-	Email             string     `json:"email"`
-	DisplayName       string     `json:"display_name"`
-	GivenName         string     `json:"given_name"`
-	FamilyName        string     `json:"family_name"`
-	PreferredUsername string     `json:"preferred_username"`
-	LinuxUsername     string     `json:"linux_username"`
-	LinuxUid          int32      `json:"linux_uid"`
-	CreatedAt         *time.Time `json:"created_at"`
+	ID                 string     `json:"id"`
+	Email              string     `json:"email"`
+	DisplayName        string     `json:"display_name"`
+	GivenName          string     `json:"given_name"`
+	FamilyName         string     `json:"family_name"`
+	PreferredUsername  string     `json:"preferred_username"`
+	LinuxUsername      string     `json:"linux_username"`
+	LinuxUid           int32      `json:"linux_uid"`
+	ProvisioningSource string     `json:"provisioning_source"`
+	CreatedAt          *time.Time `json:"created_at"`
 }
 
 // A user carries no authorization of its own: what the subject may do
@@ -213,12 +216,14 @@ func (q *Queries) InsertUser(ctx context.Context, arg InsertUserParams) (User, e
 		arg.PreferredUsername,
 		arg.LinuxUsername,
 		arg.LinuxUid,
+		arg.ProvisioningSource,
 		arg.CreatedAt,
 	)
 	var i User
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
+		&i.ProvisioningSource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastLoginAt,
@@ -246,7 +251,7 @@ func (q *Queries) InsertUser(ctx context.Context, arg InsertUserParams) (User, e
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv FROM users
+SELECT id, email, provisioning_source, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv FROM users
 WHERE is_deleted = FALSE AND id > $1
 ORDER BY id
 LIMIT $2
@@ -272,6 +277,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 		if err := rows.Scan(
 			&i.ID,
 			&i.Email,
+			&i.ProvisioningSource,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LastLoginAt,
@@ -330,7 +336,7 @@ func (q *Queries) SetUserDisabled(ctx context.Context, arg SetUserDisabledParams
 const setUserProvisioningEnabled = `-- name: SetUserProvisioningEnabled :one
 UPDATE users SET user_provisioning_enabled = $2, updated_at = $3
 WHERE id = $1 AND is_deleted = FALSE
-RETURNING id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
+RETURNING id, email, provisioning_source, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
 `
 
 type SetUserProvisioningEnabledParams struct {
@@ -345,6 +351,7 @@ func (q *Queries) SetUserProvisioningEnabled(ctx context.Context, arg SetUserPro
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
+		&i.ProvisioningSource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastLoginAt,
@@ -436,7 +443,7 @@ func (q *Queries) UpdateUserEmail(ctx context.Context, arg UpdateUserEmailParams
 const updateUserLinuxUsername = `-- name: UpdateUserLinuxUsername :one
 UPDATE users SET linux_username = $2, updated_at = $3
 WHERE id = $1 AND is_deleted = FALSE
-RETURNING id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
+RETURNING id, email, provisioning_source, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
 `
 
 type UpdateUserLinuxUsernameParams struct {
@@ -451,6 +458,7 @@ func (q *Queries) UpdateUserLinuxUsername(ctx context.Context, arg UpdateUserLin
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
+		&i.ProvisioningSource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastLoginAt,
@@ -487,7 +495,7 @@ SET display_name = $2,
     locale = $7,
     updated_at = $8
 WHERE id = $1 AND is_deleted = FALSE
-RETURNING id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
+RETURNING id, email, provisioning_source, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
 `
 
 type UpdateUserProfileParams struct {
@@ -516,6 +524,7 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
+		&i.ProvisioningSource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastLoginAt,
@@ -546,7 +555,7 @@ const updateUserSshSettings = `-- name: UpdateUserSshSettings :one
 UPDATE users
 SET ssh_access_enabled = $2, ssh_allow_pubkey = $3, ssh_allow_password = $4, updated_at = $5
 WHERE id = $1 AND is_deleted = FALSE
-RETURNING id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
+RETURNING id, email, provisioning_source, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
 `
 
 type UpdateUserSshSettingsParams struct {
@@ -569,6 +578,7 @@ func (q *Queries) UpdateUserSshSettings(ctx context.Context, arg UpdateUserSshSe
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
+		&i.ProvisioningSource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastLoginAt,

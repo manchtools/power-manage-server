@@ -12,7 +12,7 @@ const (
 
 	PermGetUser                    = "GetUser"
 	PermListUsers                  = "ListUsers"
-	PermCreateUser                 = "CreateUser"
+	PermEraseJITUser               = "EraseJITUser"
 	PermUpdateUserEmail            = "UpdateUserEmail"
 	PermSetUserDisabled            = "SetUserDisabled"
 	PermUpdateUserProfile          = "UpdateUserProfile"
@@ -69,7 +69,7 @@ const (
 // someone remembered to list.
 var gatedPermissions = []string{
 	PermGetCurrentUser,
-	PermGetUser, PermListUsers, PermCreateUser, PermUpdateUserEmail,
+	PermGetUser, PermListUsers, PermEraseJITUser, PermUpdateUserEmail,
 	PermSetUserDisabled, PermUpdateUserProfile, PermUpdateUserLinuxUsername,
 	PermUpdateUserSshSettings, PermAddUserSshKey, PermRemoveUserSshKey,
 	PermSetUserProvisioningEnabled,

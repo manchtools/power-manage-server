@@ -216,6 +216,14 @@ func (f *fixture) seedSubject() *actor {
 	return &actor{ID: userID, Email: email}
 }
 
+func (f *fixture) seedJITSubject() *actor {
+	f.t.Helper()
+	userID := newULID()
+	email := "jit-" + strings.ToLower(userID[20:]) + "@test.example"
+	f.insertUserWithSource(userID, email, "oidc_jit")
+	return &actor{ID: userID, Email: email}
+}
+
 func (f *fixture) mintToken(userID, email string) string {
 	f.t.Helper()
 	ctx := f.ctx()
@@ -242,10 +250,14 @@ func (f *fixture) mintToken(userID, email string) string {
 }
 
 func (f *fixture) insertUser(id, email string) {
+	f.insertUserWithSource(id, email, "scim")
+}
+
+func (f *fixture) insertUserWithSource(id, email, source string) {
 	f.t.Helper()
 	_, err := f.raw.Exec(f.ctx(),
-		`INSERT INTO users (id, email, created_at, updated_at) VALUES ($1, $2, $3, $3)`,
-		id, email, f.now)
+		`INSERT INTO users (id, email, provisioning_source, created_at, updated_at) VALUES ($1, $2, $3, $4, $4)`,
+		id, email, source, f.now)
 	require.NoError(f.t, err)
 	// Every subject owns a data-encryption key from the moment they
 	// exist; without one, class-three audit detail about them could not

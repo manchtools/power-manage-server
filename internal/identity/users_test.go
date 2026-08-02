@@ -10,69 +10,68 @@ import (
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-func TestCreateUser_ProvisionsSubjectAndRecordsSealedEvidence(t *testing.T) {
+func TestEraseJITUser_ErasesSubjectAndCryptoShredsAuditDetail(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	admin := f.seedActor(grant{Permissions: []string{"CreateUser", "GetUser", "ListUsers"}})
+	admin := f.seedActor(grant{Permissions: []string{"EraseJITUser", "UpdateUserEmail"}})
+	subject := f.seedJITSubject()
 	role := f.insertRole([]string{"ListUsers"})
+	f.insertUserRoleGrant(subject.ID, role, "", "")
+	group := f.insertUserGroup()
+	f.addUserToGroup(group, subject.ID)
+	f.insertIdentityLink(subject.ID, f.insertProvider("jit", nil), "jit-subject")
 
-	resp, err := f.client.CreateUser(f.ctx(), authed(&pmv1.CreateUserRequest{
-		Email:       "New.Person@Test.Example",
-		RoleIds:     []string{role},
-		DisplayName: "New Person",
+	const erasedAddress = "erased-jit-user@test.example"
+	_, err := f.client.UpdateUserEmail(f.ctx(), authed(&pmv1.UpdateUserEmailRequest{
+		Id: subject.ID, Email: erasedAddress,
 	}, admin.Token))
 	require.NoError(t, err)
+	updateOp := f.onlyOperationFor(powermanagev1connect.ControlServiceUpdateUserEmailProcedure)
+	sealed := f.effectWithAction(f.effectsOf(updateOp.OperationID), "UPDATE_EMAIL").SealedDetail
 
-	created := resp.Msg.User
-	require.NotNil(t, created)
-	assert.Equal(t, "new.person@test.example", created.Email, "the address is normalised before it is stored")
-	assert.NotEmpty(t, created.LinuxUsername, "a provisioned subject is given an account name")
-	require.Len(t, created.RoleGrants, 1)
-	assert.Equal(t, role, created.RoleGrants[0].Role.Id)
+	_, err = f.client.EraseJITUser(f.ctx(), authed(&pmv1.EraseJITUserRequest{Id: subject.ID}, admin.Token))
+	require.NoError(t, err)
 
-	op := f.onlyOperationFor(powermanagev1connect.ControlServiceCreateUserProcedure)
+	op := f.onlyOperationFor(powermanagev1connect.ControlServiceEraseJITUserProcedure)
 	assert.Equal(t, "MUTATION", op.Class)
 	assert.Equal(t, "user", op.ActorType)
 	assert.Equal(t, admin.ID, op.ActorID)
 	assert.Equal(t, "ALLOWED", op.AuthorizationOutcome)
-	assert.Equal(t, "CreateUser", op.AuthorizationDetail)
+	assert.Equal(t, "EraseJITUser", op.AuthorizationDetail)
 	assert.Equal(t, "SUCCESS", op.Result)
 
 	effects := f.effectsOf(op.OperationID)
-	create := f.effectWithAction(effects, "CREATE")
-	assert.Equal(t, "user", create.ResourceType)
-	assert.Equal(t, created.Id, create.ResourceID)
-	assert.Equal(t, "email_sha256", create.EvidenceKind)
-	assert.Equal(t, sha256Hex("new.person@test.example"), create.EvidenceFingerprint,
-		"the digest is of the stored, normalised address")
+	erase := f.effectWithAction(effects, "ERASE")
+	assert.Equal(t, "user", erase.ResourceType)
+	assert.Equal(t, subject.ID, erase.ResourceID)
+	assert.Equal(t, "email_sha256", erase.EvidenceKind)
+	assert.Equal(t, sha256Hex(erasedAddress), erase.EvidenceFingerprint)
+	f.effectWithAction(effects, "ERASE_IDENTITY_LINKS")
+	f.effectWithAction(effects, "ERASE_MEMBERSHIPS")
+	f.effectWithAction(effects, "ERASE_GRANTS")
+	f.effectWithAction(effects, "DESTROY_KEY")
 
-	// Class-three detail: the address itself, readable only through the
-	// subject's own key.
-	require.NotNil(t, create.SealedDetailSubject)
-	assert.Equal(t, created.Id, *create.SealedDetailSubject)
-	opened, err := f.openSealedDetail(created.Id, create.SealedDetail, "email")
-	require.NoError(t, err)
-	assert.Equal(t, "new.person@test.example", opened)
+	_, err = f.store.GetUser(f.ctx(), subject.ID)
+	assert.True(t, store.IsNotFound(err), "the subject row must be gone")
+	_, err = f.store.GetUserEncryptionKey(f.ctx(), subject.ID)
+	assert.True(t, store.IsNotFound(err), "erasure must destroy the subject DEK")
+	_, err = f.openSealedDetail(subject.ID, sealed, "email")
+	assert.Error(t, err, "destroying the DEK must make earlier class-three audit detail unreadable")
 
-	grantEffect := f.effectWithAction(effects, "GRANT")
-	require.NotNil(t, grantEffect.AfterRef)
-	assert.Equal(t, role, *grantEffect.AfterRef)
-}
+	for table, query := range map[string]string{
+		"identity links":    `SELECT count(*) FROM identity_links WHERE user_id = $1`,
+		"group memberships": `SELECT count(*) FROM user_group_members WHERE user_id = $1`,
+		"role grants":       `SELECT count(*) FROM user_roles WHERE user_id = $1`,
+	} {
+		var count int
+		require.NoError(t, f.raw.QueryRow(f.ctx(), query, subject.ID).Scan(&count))
+		assert.Zero(t, count, table+" must be erased")
+	}
 
-// The audit row must never carry the address in a readable slot. This
-// is asserted against the raw bytes of every text column, not against
-// the fields the handler happened to set.
-func TestCreateUser_AuditRowHoldsNoReadableAddress(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	admin := f.seedActor(grant{Permissions: []string{"CreateUser"}})
-
-	const address = "secretive.person@test.example"
-	_, err := f.client.CreateUser(f.ctx(), authed(&pmv1.CreateUserRequest{Email: address}, admin.Token))
-	require.NoError(t, err)
-
+	// The readable address must not survive in any audit text slot.
 	var hits int
 	require.NoError(t, f.raw.QueryRow(f.ctx(), `
 		SELECT count(*) FROM audit_operations
@@ -80,7 +79,7 @@ func TestCreateUser_AuditRowHoldsNoReadableAddress(t *testing.T) {
 		    OR actor_fingerprint LIKE '%' || $1 || '%'
 		    OR request_descriptor LIKE '%' || $1 || '%'
 		    OR authorization_detail LIKE '%' || $1 || '%'
-		    OR result_code LIKE '%' || $1 || '%'`, address).Scan(&hits))
+		    OR result_code LIKE '%' || $1 || '%'`, erasedAddress).Scan(&hits))
 	assert.Zero(t, hits, "the operation row must not contain the address in the clear")
 
 	require.NoError(t, f.raw.QueryRow(f.ctx(), `
@@ -88,28 +87,87 @@ func TestCreateUser_AuditRowHoldsNoReadableAddress(t *testing.T) {
 		 WHERE resource_id LIKE '%' || $1 || '%'
 		    OR evidence_fingerprint LIKE '%' || $1 || '%'
 		    OR array_to_string(changed_fields, ',') LIKE '%' || $1 || '%'
-		    OR encode(sealed_detail, 'escape') LIKE '%' || $1 || '%'`, address).Scan(&hits))
+		    OR encode(sealed_detail, 'escape') LIKE '%' || $1 || '%'`, erasedAddress).Scan(&hits))
 	assert.Zero(t, hits, "the effect row must not contain the address in the clear, sealed or not")
 }
 
-func TestCreateUser_RejectsMalformedEmail(t *testing.T) {
+func TestEraseJITUser_RejectsSCIMSubjectWithoutMutation(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	admin := f.seedActor(grant{Permissions: []string{"CreateUser"}})
+	admin := f.seedActor(grant{Permissions: []string{"EraseJITUser"}})
+	subject := f.seedSubject()
 
-	_, err := f.client.CreateUser(f.ctx(), authed(&pmv1.CreateUserRequest{Email: "not-an-address"}, admin.Token))
-	assert.Equal(t, connect.CodeInvalidArgument, connectCodeOf(t, err))
+	_, err := f.client.EraseJITUser(f.ctx(), authed(&pmv1.EraseJITUserRequest{Id: subject.ID}, admin.Token))
+	assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
+	_, err = f.store.GetUser(f.ctx(), subject.ID)
+	assert.NoError(t, err, "a SCIM-created subject must survive the rejected JIT erasure")
+	_, err = f.store.GetUserEncryptionKey(f.ctx(), subject.ID)
+	assert.NoError(t, err, "the rejected request must not destroy the subject DEK")
+	assert.Empty(t, f.operationsFor(powermanagev1connect.ControlServiceEraseJITUserProcedure))
+}
+
+func TestEraseJITUser_ValidatesIDBeforeWork(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.seedActor(grant{Permissions: []string{"EraseJITUser"}})
+
+	for name, id := range map[string]string{"absent": "", "malformed": "not-a-ulid"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := f.client.EraseJITUser(f.ctx(), authed(&pmv1.EraseJITUserRequest{Id: id}, admin.Token))
+			assert.Equal(t, connect.CodeInvalidArgument, connectCodeOf(t, err))
+		})
+	}
 	assert.Zero(t, f.countAuditOperations(), "a request refused at the boundary performs no work")
 }
 
-func TestCreateUser_RejectsDuplicateAddress(t *testing.T) {
+func TestEraseJITUser_UnknownAndOutOfScopeTargetsAreNotFound(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	admin := f.seedActor(grant{Permissions: []string{"CreateUser"}})
-	existing := f.seedSubject()
+	group := f.insertUserGroup()
+	inside := f.seedJITSubject()
+	f.addUserToGroup(group, inside.ID)
+	outside := f.seedJITSubject()
+	operator := f.seedActor(grant{
+		Permissions: []string{"EraseJITUser"},
+		ScopeKind:   auth.ScopeKindUserGroup,
+		ScopeID:     group,
+	})
 
-	_, err := f.client.CreateUser(f.ctx(), authed(&pmv1.CreateUserRequest{Email: existing.Email}, admin.Token))
-	assert.Equal(t, connect.CodeAlreadyExists, connectCodeOf(t, err))
+	for name, id := range map[string]string{"unknown": newULID(), "outside scope": outside.ID} {
+		t.Run(name, func(t *testing.T) {
+			_, err := f.client.EraseJITUser(f.ctx(), authed(&pmv1.EraseJITUserRequest{Id: id}, operator.Token))
+			assert.Equal(t, connect.CodeNotFound, connectCodeOf(t, err))
+		})
+	}
+
+	_, err := f.client.EraseJITUser(f.ctx(), authed(&pmv1.EraseJITUserRequest{Id: inside.ID}, operator.Token))
+	require.NoError(t, err, "a user-group-scoped grant may erase a JIT subject inside that group")
+	_, err = f.store.GetUser(f.ctx(), outside.ID)
+	assert.NoError(t, err, "the out-of-scope subject must remain untouched")
+}
+
+func TestEraseJITUser_AuditFailureRollsBackErasure(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.seedActor(grant{Permissions: []string{"EraseJITUser"}})
+	subject := f.seedJITSubject()
+	f.insertIdentityLink(subject.ID, f.insertProvider("jit-failure", nil), "jit-subject")
+
+	_, err := f.raw.Exec(f.ctx(), `
+		ALTER TABLE audit_operations ADD CONSTRAINT reject_jit_erasure_audit
+		CHECK (request_descriptor <> '/powermanage.v1.ControlService/EraseJITUser') NOT VALID`)
+	require.NoError(t, err)
+
+	resp, err := f.client.EraseJITUser(f.ctx(), authed(&pmv1.EraseJITUserRequest{Id: subject.ID}, admin.Token))
+	assert.Nil(t, resp)
+	assert.Equal(t, connect.CodeInternal, connectCodeOf(t, err))
+	_, err = f.store.GetUser(f.ctx(), subject.ID)
+	assert.NoError(t, err, "audit failure must roll back the subject deletion")
+	_, err = f.store.GetUserEncryptionKey(f.ctx(), subject.ID)
+	assert.NoError(t, err, "audit failure must roll back DEK destruction")
+	links, err := f.store.ListIdentityLinksForUser(f.ctx(), subject.ID)
+	require.NoError(t, err)
+	assert.Len(t, links, 1, "audit failure must roll back identity-link deletion")
 }
 
 func TestUpdateUserEmail_SealsTheTransitionForTheSubject(t *testing.T) {

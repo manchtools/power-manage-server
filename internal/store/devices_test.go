@@ -26,7 +26,8 @@ func TestDeviceCRUD_ViewsAndFilters(t *testing.T) {
 
 	_, err := st.WithAudit(ctx, mutationOp(), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
 		if _, err := tx.InsertUser(ctx, db.InsertUserParams{
-			ID: userID, Email: "operator@example.test", DisplayName: "Operator",
+			ProvisioningSource: store.UserProvisioningSourceSCIM,
+			ID:                 userID, Email: "operator@example.test", DisplayName: "Operator",
 			LinuxUsername: "operator", LinuxUid: 200001, CreatedAt: &now,
 		}); err != nil {
 			return err

@@ -11,7 +11,6 @@ import (
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // Wire conversion. Nothing here reads the database; a caller assembles
@@ -286,10 +285,4 @@ func idpGroupMapping(raw []byte) map[string]string {
 		return nil
 	}
 	return m
-}
-
-// insertDEKParams is the one place the generated parameter shape for a
-// subject key is built, so the two call sites cannot drift.
-func insertDEKParams(userID, wrapped string) db.InsertUserEncryptionKeyParams {
-	return db.InsertUserEncryptionKeyParams{UserID: userID, WrappedDek: wrapped}
 }
