@@ -29,7 +29,6 @@ type CreateActionSetParams struct {
 	OnFailure   pmv1.OnFailure
 }
 
-
 // CreateActionSet inserts one set with an independent schedule and failure
 // policy.
 func (s *Service) CreateActionSet(ctx context.Context, op store.AuditOperation, p CreateActionSetParams) (store.ActionSetRow, error) {
@@ -233,7 +232,6 @@ func (s *Service) DeleteActionSet(ctx context.Context, op store.AuditOperation, 
 	})
 	return translateNotFound(err)
 }
-
 
 func actionSetSchedule(schedule *pmv1.ActionSchedule) ([]byte, error) {
 	if schedule == nil {

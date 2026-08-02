@@ -245,7 +245,6 @@ func (s *Service) AppendOutputChunk(ctx context.Context, deviceID string, chunk 
 	return err
 }
 
-
 func validID(id string) bool {
 	_, err := ulid.ParseStrict(id)
 	return err == nil

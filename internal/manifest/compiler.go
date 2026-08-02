@@ -40,7 +40,6 @@ func New(st *store.Store) *Compiler {
 	return &Compiler{store: st}
 }
 
-
 // Action creates the singleton manifest for one authored Action.
 func (c *Compiler) Action(ctx context.Context, id string) (*pmv1.Manifest, error) {
 	if !validInput(ctx, id) {
@@ -162,7 +161,6 @@ func FreshCopy(compiled *pmv1.Manifest) (*pmv1.Manifest, error) {
 	}
 	return finish(cloned)
 }
-
 
 func compileSet(set store.ActionSetRow, rows []store.ActionRow, provenance *pmv1.ManifestProvenance, scheduleOverride []byte) (*pmv1.Manifest, error) {
 	if len(rows) == 0 {

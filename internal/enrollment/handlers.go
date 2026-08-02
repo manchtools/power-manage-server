@@ -111,7 +111,6 @@ func (h *Handlers) recordRejected(ctx context.Context, req connect.AnyRequest, p
 	return err
 }
 
-
 // Register binds one token use, one Ed25519 identity and one X25519 recipient
 // key into a device row in the same audited transaction.
 func (h *Handlers) Register(ctx context.Context, req *connect.Request[pmv1.RegisterRequest]) (*connect.Response[pmv1.RegisterResponse], error) {

@@ -12,7 +12,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-
 // CreateDefinition writes one independently scheduled definition.
 func (h *Handlers) CreateDefinition(ctx context.Context, req *connect.Request[pmv1.CreateDefinitionRequest]) (*connect.Response[pmv1.CreateDefinitionResponse], error) {
 	if err := validateAuthoringRequest(h, ctx, req); err != nil {
@@ -251,7 +250,6 @@ func (h *Handlers) ReorderActionSetInDefinition(ctx context.Context, req *connec
 	}
 	return connect.NewResponse(&pmv1.ReorderActionSetInDefinitionResponse{Definition: definition}), nil
 }
-
 
 func (h *Handlers) definitionError(ctx context.Context, operation string, err error) error {
 	switch {

@@ -99,7 +99,6 @@ func (s *Service) Sync(ctx context.Context, deviceID string) (*pmv1.SyncState, e
 	}, nil
 }
 
-
 func unionMaintenanceWindows(rows [][]byte) (*pmv1.MaintenanceWindow, error) {
 	windows := make([]*pmv1.MaintenanceWindow, 0, len(rows))
 	for _, row := range rows {

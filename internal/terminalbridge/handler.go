@@ -184,7 +184,6 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	_ = ws.Close(status, message)
 }
 
-
 func terminalToken(request *http.Request) (string, string) {
 	for _, raw := range request.Header.Values("Sec-WebSocket-Protocol") {
 		for _, offered := range strings.Split(raw, ",") {

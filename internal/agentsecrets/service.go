@@ -273,7 +273,6 @@ func (s *Service) StoreLpsPasswords(ctx context.Context, deviceID string, reques
 	return &pmv1.StoreLpsPasswordsResponse{Success: true}, nil
 }
 
-
 func (s *Service) openAgentField(value *pmv1.SealedValue, message, field string, bindings ...string) ([]byte, error) {
 	if value == nil || value.Version != sealedFieldVersion {
 		return nil, ErrUnsupportedSeal

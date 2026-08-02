@@ -11,7 +11,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-
 // CreateAction validates and writes one ordinary Action with its audit effect.
 func (h *Handlers) CreateAction(ctx context.Context, req *connect.Request[pmv1.CreateActionRequest]) (*connect.Response[pmv1.CreateActionResponse], error) {
 	if err := validateAuthoringRequest(h, ctx, req); err != nil {
@@ -195,7 +194,6 @@ func (h *Handlers) DeleteAction(ctx context.Context, req *connect.Request[pmv1.D
 	}
 	return connect.NewResponse(&pmv1.DeleteActionResponse{}), nil
 }
-
 
 func (h *Handlers) operatorAction(ctx context.Context, id string) (store.ActionRow, error) {
 	row, err := h.store.GetManifestAction(ctx, id)

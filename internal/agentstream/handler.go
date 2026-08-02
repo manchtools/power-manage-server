@@ -222,7 +222,6 @@ func (h *Handler) Stream(ctx context.Context, stream *connect.BidiStream[pmv1.Ag
 	}
 }
 
-
 func (h *Handler) handleAgentMessage(ctx context.Context, agent *connection.Agent, message *pmv1.AgentMessage) error {
 	deviceID := agent.DeviceID
 	switch payload := message.Payload.(type) {
