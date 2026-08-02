@@ -110,6 +110,56 @@ func (q *Queries) GetCurrentLuksKeyForAgent(ctx context.Context, arg GetCurrentL
 	return i, err
 }
 
+const getLpsPasswordForReveal = `-- name: GetLpsPasswordForReveal :one
+SELECT id, device_id, action_id, password
+FROM lps_passwords
+WHERE id = $1
+`
+
+type GetLpsPasswordForRevealRow struct {
+	ID       string `json:"id"`
+	DeviceID string `json:"device_id"`
+	ActionID string `json:"action_id"`
+	Password string `json:"password"`
+}
+
+func (q *Queries) GetLpsPasswordForReveal(ctx context.Context, id string) (GetLpsPasswordForRevealRow, error) {
+	row := q.db.QueryRow(ctx, getLpsPasswordForReveal, id)
+	var i GetLpsPasswordForRevealRow
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.ActionID,
+		&i.Password,
+	)
+	return i, err
+}
+
+const getLuksKeyForReveal = `-- name: GetLuksKeyForReveal :one
+SELECT id, device_id, action_id, passphrase
+FROM luks_keys
+WHERE id = $1
+`
+
+type GetLuksKeyForRevealRow struct {
+	ID         string `json:"id"`
+	DeviceID   string `json:"device_id"`
+	ActionID   string `json:"action_id"`
+	Passphrase string `json:"passphrase"`
+}
+
+func (q *Queries) GetLuksKeyForReveal(ctx context.Context, id string) (GetLuksKeyForRevealRow, error) {
+	row := q.db.QueryRow(ctx, getLuksKeyForReveal, id)
+	var i GetLuksKeyForRevealRow
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.ActionID,
+		&i.Passphrase,
+	)
+	return i, err
+}
+
 const getLuksRevocationTarget = `-- name: GetLuksRevocationTarget :one
 SELECT count(*)::bigint AS key_count,
        COALESCE(bool_or(revocation_status = 'dispatched'), FALSE)::boolean AS dispatch_pending,
@@ -290,7 +340,7 @@ const listCurrentLpsPasswords = `-- name: ListCurrentLpsPasswords :many
 
 SELECT p.id, p.device_id, d.hostname AS device_hostname,
        p.action_id, COALESCE(a.name, '')::text AS action_name,
-       p.username, p.password, p.rotated_at, p.rotation_reason
+       p.username, p.rotated_at, p.rotation_reason
 FROM lps_passwords p
 JOIN devices d ON d.id = p.device_id AND d.is_deleted = FALSE
 LEFT JOIN actions a ON a.id = p.action_id AND a.is_deleted = FALSE
@@ -305,13 +355,13 @@ type ListCurrentLpsPasswordsRow struct {
 	ActionID       string    `json:"action_id"`
 	ActionName     string    `json:"action_name"`
 	Username       string    `json:"username"`
-	Password       string    `json:"password"`
 	RotatedAt      time.Time `json:"rotated_at"`
 	RotationReason string    `json:"rotation_reason"`
 }
 
-// Current and bounded historical device secrets. Secret values remain
-// AES-GCM ciphertext here and are opened only by the authorized RPC sink.
+// Current and bounded historical device-secret metadata. List queries never
+// select ciphertext; one-entry reveal queries are the only administrative
+// read path for stored secret values.
 func (q *Queries) ListCurrentLpsPasswords(ctx context.Context, deviceID string) ([]ListCurrentLpsPasswordsRow, error) {
 	rows, err := q.db.Query(ctx, listCurrentLpsPasswords, deviceID)
 	if err != nil {
@@ -328,7 +378,6 @@ func (q *Queries) ListCurrentLpsPasswords(ctx context.Context, deviceID string) 
 			&i.ActionID,
 			&i.ActionName,
 			&i.Username,
-			&i.Password,
 			&i.RotatedAt,
 			&i.RotationReason,
 		); err != nil {
@@ -345,7 +394,7 @@ func (q *Queries) ListCurrentLpsPasswords(ctx context.Context, deviceID string) 
 const listCurrentLuksKeys = `-- name: ListCurrentLuksKeys :many
 SELECT k.id, k.device_id, d.hostname AS device_hostname,
        k.action_id, COALESCE(a.name, '')::text AS action_name,
-       k.device_path, k.passphrase, k.rotated_at, k.rotation_reason,
+       k.device_path, k.rotated_at, k.rotation_reason,
        k.revocation_status, k.revocation_error, k.revocation_at
 FROM luks_keys k
 JOIN devices d ON d.id = k.device_id AND d.is_deleted = FALSE
@@ -361,7 +410,6 @@ type ListCurrentLuksKeysRow struct {
 	ActionID         string     `json:"action_id"`
 	ActionName       string     `json:"action_name"`
 	DevicePath       string     `json:"device_path"`
-	Passphrase       string     `json:"passphrase"`
 	RotatedAt        time.Time  `json:"rotated_at"`
 	RotationReason   string     `json:"rotation_reason"`
 	RevocationStatus *string    `json:"revocation_status"`
@@ -385,7 +433,6 @@ func (q *Queries) ListCurrentLuksKeys(ctx context.Context, deviceID string) ([]L
 			&i.ActionID,
 			&i.ActionName,
 			&i.DevicePath,
-			&i.Passphrase,
 			&i.RotatedAt,
 			&i.RotationReason,
 			&i.RevocationStatus,
@@ -404,11 +451,11 @@ func (q *Queries) ListCurrentLuksKeys(ctx context.Context, deviceID string) ([]L
 
 const listLpsPasswordHistory = `-- name: ListLpsPasswordHistory :many
 SELECT id, device_id, device_hostname, action_id, action_name,
-       username, password, rotated_at, rotation_reason
+       username, rotated_at, rotation_reason
 FROM (
     SELECT p.id, p.device_id, d.hostname AS device_hostname,
            p.action_id, COALESCE(a.name, '')::text AS action_name,
-           p.username, p.password, p.rotated_at, p.rotation_reason,
+           p.username, p.rotated_at, p.rotation_reason,
            row_number() OVER (
                PARTITION BY p.action_id
                ORDER BY p.rotated_at DESC, p.id DESC
@@ -429,7 +476,6 @@ type ListLpsPasswordHistoryRow struct {
 	ActionID       string    `json:"action_id"`
 	ActionName     string    `json:"action_name"`
 	Username       string    `json:"username"`
-	Password       string    `json:"password"`
 	RotatedAt      time.Time `json:"rotated_at"`
 	RotationReason string    `json:"rotation_reason"`
 }
@@ -450,7 +496,6 @@ func (q *Queries) ListLpsPasswordHistory(ctx context.Context, deviceID string) (
 			&i.ActionID,
 			&i.ActionName,
 			&i.Username,
-			&i.Password,
 			&i.RotatedAt,
 			&i.RotationReason,
 		); err != nil {
@@ -466,12 +511,12 @@ func (q *Queries) ListLpsPasswordHistory(ctx context.Context, deviceID string) (
 
 const listLuksKeyHistory = `-- name: ListLuksKeyHistory :many
 SELECT id, device_id, device_hostname, action_id, action_name,
-       device_path, passphrase, rotated_at, rotation_reason,
+       device_path, rotated_at, rotation_reason,
        revocation_status, revocation_error, revocation_at
 FROM (
     SELECT k.id, k.device_id, d.hostname AS device_hostname,
            k.action_id, COALESCE(a.name, '')::text AS action_name,
-           k.device_path, k.passphrase, k.rotated_at, k.rotation_reason,
+           k.device_path, k.rotated_at, k.rotation_reason,
            k.revocation_status, k.revocation_error, k.revocation_at,
            row_number() OVER (
                PARTITION BY k.action_id
@@ -493,7 +538,6 @@ type ListLuksKeyHistoryRow struct {
 	ActionID         string     `json:"action_id"`
 	ActionName       string     `json:"action_name"`
 	DevicePath       string     `json:"device_path"`
-	Passphrase       string     `json:"passphrase"`
 	RotatedAt        time.Time  `json:"rotated_at"`
 	RotationReason   string     `json:"rotation_reason"`
 	RevocationStatus *string    `json:"revocation_status"`
@@ -517,7 +561,6 @@ func (q *Queries) ListLuksKeyHistory(ctx context.Context, deviceID string) ([]Li
 			&i.ActionID,
 			&i.ActionName,
 			&i.DevicePath,
-			&i.Passphrase,
 			&i.RotatedAt,
 			&i.RotationReason,
 			&i.RevocationStatus,

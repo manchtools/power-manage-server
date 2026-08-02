@@ -20,7 +20,6 @@ const (
 	PermUpdateUserSshSettings      = "UpdateUserSshSettings"
 	PermAddUserSshKey              = "AddUserSshKey"
 	PermRemoveUserSshKey           = "RemoveUserSshKey"
-	PermDeleteUser                 = "DeleteUser"
 	PermSetUserProvisioningEnabled = "SetUserProvisioningEnabled"
 
 	PermCreateRole         = "CreateRole"
@@ -73,7 +72,7 @@ var gatedPermissions = []string{
 	PermGetUser, PermListUsers, PermCreateUser, PermUpdateUserEmail,
 	PermSetUserDisabled, PermUpdateUserProfile, PermUpdateUserLinuxUsername,
 	PermUpdateUserSshSettings, PermAddUserSshKey, PermRemoveUserSshKey,
-	PermDeleteUser, PermSetUserProvisioningEnabled,
+	PermSetUserProvisioningEnabled,
 	PermCreateRole, PermGetRole, PermListRoles, PermUpdateRole, PermDeleteRole,
 	PermAssignRoleToUser, PermRevokeRoleFromUser, PermListPermissions,
 	PermAssignRoleToUserGroup, PermRevokeRoleFromUserGroup,

@@ -87,9 +87,6 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRemoveUserSshKeyProcedure, h.RemoveUserSshKey, opts...))
 	register(powermanagev1connect.ControlServiceSetUserProvisioningEnabledProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetUserProvisioningEnabledProcedure, h.SetUserProvisioningEnabled, opts...))
-	register(powermanagev1connect.ControlServiceDeleteUserProcedure,
-		connect.NewUnaryHandler(powermanagev1connect.ControlServiceDeleteUserProcedure, h.DeleteUser, opts...))
-
 	// User groups and membership.
 	register(powermanagev1connect.ControlServiceCreateUserGroupProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceCreateUserGroupProcedure, h.CreateUserGroup, opts...))
@@ -180,7 +177,6 @@ func MutationProcedures() []string {
 		powermanagev1connect.ControlServiceAddUserSshKeyProcedure,
 		powermanagev1connect.ControlServiceRemoveUserSshKeyProcedure,
 		powermanagev1connect.ControlServiceSetUserProvisioningEnabledProcedure,
-		powermanagev1connect.ControlServiceDeleteUserProcedure,
 		powermanagev1connect.ControlServiceCreateUserGroupProcedure,
 		powermanagev1connect.ControlServiceUpdateUserGroupProcedure,
 		powermanagev1connect.ControlServiceDeleteUserGroupProcedure,

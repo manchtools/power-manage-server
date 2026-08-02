@@ -190,9 +190,11 @@ func TestBootstrapPrincipal_HoldsOnlyTheSetupAuthority(t *testing.T) {
 	issued, err := f.boot.Issue(f.ctx())
 	require.NoError(t, err)
 	subject := f.seedSubject()
-	_, err = f.client.DeleteUser(f.ctx(), bootstrapAuthed(&pmv1.DeleteUserRequest{Id: subject.ID}, issued.Token))
+	_, err = f.client.SetUserDisabled(f.ctx(), bootstrapAuthed(&pmv1.SetUserDisabledRequest{
+		Id: subject.ID, Disabled: true,
+	}, issued.Token))
 	assert.Equal(t, connect.CodePermissionDenied, connectCodeOf(t, err),
-		"erasing a subject is not part of bringing a deployment up")
+		"changing subject access is not part of bringing a deployment up")
 }
 
 // A bootstrap token must not be accepted where a session token belongs:

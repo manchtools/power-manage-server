@@ -77,7 +77,7 @@ func TestAuthorize_AssignedTierDefersToTheOwnerFilter(t *testing.T) {
 func TestAuthorize_RefusesWhatTheActorDoesNotHold(t *testing.T) {
 	t.Parallel()
 	assert.False(t, auth.Authorize(auth.AuthzInput{
-		Permissions: []string{"ListUsers"}, SubjectID: subjectA, SelfEligible: true, Action: "DeleteUser",
+		Permissions: []string{"ListUsers"}, SubjectID: subjectA, SelfEligible: true, Action: "SetUserDisabled",
 	}))
 	assert.False(t, auth.Authorize(auth.AuthzInput{
 		Permissions: nil, SubjectID: subjectA, SelfEligible: true, Action: "ListUsers",

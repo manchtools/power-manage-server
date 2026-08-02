@@ -373,21 +373,28 @@ type ExecutionListFilter struct {
 	AssignedUserID  *string
 }
 
-// LpsPasswordView is one encrypted LPS password plus display enrichment.
+// LpsPasswordView is one LPS entry's display metadata. The ciphertext is
+// deliberately absent and can only be fetched through GetLpsPasswordForReveal.
 type LpsPasswordView struct {
 	ID, DeviceID, DeviceHostname, ActionID, ActionName string
-	Username, Password, RotationReason                 string
+	Username, RotationReason                           string
 	RotatedAt                                          time.Time
 }
 
-// LuksKeyView is one encrypted LUKS passphrase plus display enrichment.
+// LuksKeyView is one LUKS entry's display metadata. The ciphertext is
+// deliberately absent and can only be fetched through GetLuksKeyForReveal.
 type LuksKeyView struct {
 	ID, DeviceID, DeviceHostname, ActionID, ActionName string
-	DevicePath, Passphrase, RotationReason             string
+	DevicePath, RotationReason                         string
 	RotatedAt                                          time.Time
 	RevocationStatus, RevocationError                  *string
 	RevocationAt                                       *time.Time
 }
+
+// LpsPasswordSecret and LuksKeySecret are the narrow ciphertext-bearing rows
+// used by the corresponding one-entry reveal handlers.
+type LpsPasswordSecret = generated.GetLpsPasswordForRevealRow
+type LuksKeySecret = generated.GetLuksKeyForRevealRow
 
 // LuksRevocationTarget summarizes the current keys governed by one encryption
 // action without exposing their encrypted passphrases.
@@ -1377,7 +1384,7 @@ func (s *Store) ListDeviceLpsPasswords(ctx context.Context, deviceID string) ([]
 		current[i] = LpsPasswordView{
 			ID: row.ID, DeviceID: row.DeviceID, DeviceHostname: row.DeviceHostname,
 			ActionID: row.ActionID, ActionName: row.ActionName, Username: row.Username,
-			Password: row.Password, RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
+			RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
 		}
 	}
 	history := make([]LpsPasswordView, len(historyRows))
@@ -1385,10 +1392,20 @@ func (s *Store) ListDeviceLpsPasswords(ctx context.Context, deviceID string) ([]
 		history[i] = LpsPasswordView{
 			ID: row.ID, DeviceID: row.DeviceID, DeviceHostname: row.DeviceHostname,
 			ActionID: row.ActionID, ActionName: row.ActionName, Username: row.Username,
-			Password: row.Password, RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
+			RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
 		}
 	}
 	return current, history, nil
+}
+
+// GetLpsPasswordForReveal returns one encrypted password and the references
+// required for authorization, AAD, and audit attribution.
+func (s *Store) GetLpsPasswordForReveal(ctx context.Context, id string) (LpsPasswordSecret, error) {
+	row, err := s.queries.GetLpsPasswordForReveal(ctx, id)
+	if err != nil {
+		return LpsPasswordSecret{}, fmt.Errorf("lps password: get for reveal: %w", translateNotFound(err))
+	}
+	return row, nil
 }
 
 // ListDeviceLuksKeys returns current rows and at most three historical rows
@@ -1407,7 +1424,7 @@ func (s *Store) ListDeviceLuksKeys(ctx context.Context, deviceID string) ([]Luks
 		current[i] = LuksKeyView{
 			ID: row.ID, DeviceID: row.DeviceID, DeviceHostname: row.DeviceHostname,
 			ActionID: row.ActionID, ActionName: row.ActionName, DevicePath: row.DevicePath,
-			Passphrase: row.Passphrase, RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
+			RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
 			RevocationStatus: row.RevocationStatus, RevocationError: row.RevocationError,
 			RevocationAt: row.RevocationAt,
 		}
@@ -1417,12 +1434,22 @@ func (s *Store) ListDeviceLuksKeys(ctx context.Context, deviceID string) ([]Luks
 		history[i] = LuksKeyView{
 			ID: row.ID, DeviceID: row.DeviceID, DeviceHostname: row.DeviceHostname,
 			ActionID: row.ActionID, ActionName: row.ActionName, DevicePath: row.DevicePath,
-			Passphrase: row.Passphrase, RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
+			RotatedAt: row.RotatedAt, RotationReason: row.RotationReason,
 			RevocationStatus: row.RevocationStatus, RevocationError: row.RevocationError,
 			RevocationAt: row.RevocationAt,
 		}
 	}
 	return current, history, nil
+}
+
+// GetLuksKeyForReveal returns one encrypted key and the references required
+// for authorization, AAD, and audit attribution.
+func (s *Store) GetLuksKeyForReveal(ctx context.Context, id string) (LuksKeySecret, error) {
+	row, err := s.queries.GetLuksKeyForReveal(ctx, id)
+	if err != nil {
+		return LuksKeySecret{}, fmt.Errorf("luks key: get for reveal: %w", translateNotFound(err))
+	}
+	return row, nil
 }
 
 // GetLuksRevocationTarget returns the current-key count and terminal state used

@@ -576,9 +576,9 @@ func TestRecordOperation_SensitiveRead(t *testing.T) {
 		ActorType:            "user",
 		ActorID:              subject,
 		Origin:               "rpc",
-		RequestDescriptor:    "powermanage.v1.ControlService/GetDeviceLuksKeys",
+		RequestDescriptor:    "powermanage.v1.ControlService/RevealLuksKey",
 		AuthorizationOutcome: store.AuthorizationAllowed,
-		AuthorizationDetail:  "GetDeviceLuksKeys",
+		AuthorizationDetail:  "RevealLuksKey",
 		Result:               store.ResultSuccess,
 		ResultCode:           "OK",
 	}, store.AuditEffect{

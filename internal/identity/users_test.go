@@ -290,7 +290,7 @@ func TestSetUserDisabled_HasNoSelfOrScopedTier(t *testing.T) {
 		"a subject cannot change their own disabled state")
 }
 
-func TestDisableAndDeleteUser_RefuseLastEnabledAdmin(t *testing.T) {
+func TestSetUserDisabled_RefusesLastEnabledAdmin(t *testing.T) {
 	for _, viaGroup := range []bool{false, true} {
 		name := "direct"
 		if viaGroup {
@@ -315,14 +315,10 @@ func TestDisableAndDeleteUser_RefuseLastEnabledAdmin(t *testing.T) {
 				Id: soleAdmin.ID, Disabled: true,
 			}, token))
 			assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
-			_, err = f.client.DeleteUser(f.ctx(), authed(&pmv1.DeleteUserRequest{Id: soleAdmin.ID}, token))
-			assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
-
 			state, err := f.store.GetUserSessionState(f.ctx(), soleAdmin.ID)
 			require.NoError(t, err)
 			assert.False(t, state.Disabled)
 			assert.Empty(t, f.operationsFor(powermanagev1connect.ControlServiceSetUserDisabledProcedure))
-			assert.Empty(t, f.operationsFor(powermanagev1connect.ControlServiceDeleteUserProcedure))
 		})
 	}
 }
@@ -424,63 +420,6 @@ func TestUpdateUserLinuxUsername_HasNoSelfTier(t *testing.T) {
 	}, selfish.Token))
 	assert.Equal(t, connect.CodePermissionDenied, connectCodeOf(t, err),
 		"the account name keys sudo policy on managed devices; a subject cannot choose their own")
-}
-
-func TestDeleteUser_ErasesStateAndDestroysTheSubjectKey(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	admin := f.seedActor(grant{Permissions: []string{"DeleteUser", "GetUser", "UpdateUserEmail"}})
-	subject := f.seedSubject()
-	provider := f.insertProvider("corp", nil)
-	f.insertIdentityLink(subject.ID, provider, "external-1")
-	group := f.insertUserGroup()
-	f.addUserToGroup(group, subject.ID)
-
-	// A prior mutation leaves class-three detail sealed for the
-	// subject, which erasure must render unreadable.
-	_, err := f.client.UpdateUserEmail(f.ctx(), authed(&pmv1.UpdateUserEmailRequest{
-		Id: subject.ID, Email: "before-erasure@test.example",
-	}, admin.Token))
-	require.NoError(t, err)
-	priorOp := f.onlyOperationFor(powermanagev1connect.ControlServiceUpdateUserEmailProcedure)
-	priorEffect := f.effectWithAction(f.effectsOf(priorOp.OperationID), "UPDATE_EMAIL")
-	_, err = f.openSealedDetail(subject.ID, priorEffect.SealedDetail, "email")
-	require.NoError(t, err, "the detail is readable while the subject's key exists")
-
-	_, err = f.client.DeleteUser(f.ctx(), authed(&pmv1.DeleteUserRequest{Id: subject.ID}, admin.Token))
-	require.NoError(t, err)
-
-	_, err = f.store.GetUser(f.ctx(), subject.ID)
-	assert.Error(t, err, "the subject row is gone")
-	_, err = f.store.GetUserEncryptionKey(f.ctx(), subject.ID)
-	assert.Error(t, err, "the subject's key is destroyed")
-
-	// The sealed detail survives as bytes and is now permanently
-	// unreadable: attribution without personal data.
-	_, err = f.openSealedDetail(subject.ID, priorEffect.SealedDetail, "email")
-	assert.Error(t, err, "destroying the key makes every sealed detail unreadable")
-
-	var effectsRemain int
-	require.NoError(t, f.raw.QueryRow(f.ctx(),
-		`SELECT count(*) FROM audit_effects WHERE operation_id = $1`, priorOp.OperationID).Scan(&effectsRemain))
-	assert.Positive(t, effectsRemain, "the audit row itself is never deleted by erasure")
-
-	op := f.onlyOperationFor(powermanagev1connect.ControlServiceDeleteUserProcedure)
-	effects := f.effectsOf(op.OperationID)
-	erase := f.effectWithAction(effects, "ERASE")
-	assert.Nil(t, erase.SealedDetail,
-		"the erasure record carries no class-three detail: its key is destroyed in the same transaction")
-	assert.Equal(t, sha256Hex("before-erasure@test.example"), erase.EvidenceFingerprint)
-
-	links := f.effectWithAction(effects, "ERASE_LINKS")
-	require.NotNil(t, links.BeforeCount)
-	assert.Equal(t, int64(1), *links.BeforeCount)
-	memberships := f.effectWithAction(effects, "ERASE_MEMBERSHIPS")
-	require.NotNil(t, memberships.BeforeCount)
-	assert.Equal(t, int64(1), *memberships.BeforeCount)
-	keys := f.effectWithAction(effects, "DESTROY_KEY")
-	require.NotNil(t, keys.BeforeCount)
-	assert.Equal(t, int64(1), *keys.BeforeCount)
 }
 
 func TestListUsers_ConfinedCallerSeesOnlyTheirScope(t *testing.T) {

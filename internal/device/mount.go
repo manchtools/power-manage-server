@@ -13,7 +13,7 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	if mux == nil {
 		panic("device: mux is required")
 	}
-	mounted := make([]string, 0, 29)
+	mounted := make([]string, 0, 31)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -38,10 +38,14 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListExecutionsProcedure, h.ListExecutions, opts...))
 	register(powermanagev1connect.ControlServiceCancelExecutionProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceCancelExecutionProcedure, h.CancelExecution, opts...))
-	register(powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
-		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure, h.GetDeviceLpsPasswords, opts...))
-	register(powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
-		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure, h.GetDeviceLuksKeys, opts...))
+	register(powermanagev1connect.ControlServiceListLpsPasswordsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListLpsPasswordsProcedure, h.ListLpsPasswords, opts...))
+	register(powermanagev1connect.ControlServiceRevealLpsPasswordProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRevealLpsPasswordProcedure, h.RevealLpsPassword, opts...))
+	register(powermanagev1connect.ControlServiceListLuksKeysProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListLuksKeysProcedure, h.ListLuksKeys, opts...))
+	register(powermanagev1connect.ControlServiceRevealLuksKeyProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRevealLuksKeyProcedure, h.RevealLuksKey, opts...))
 	register(powermanagev1connect.ControlServiceCreateLuksTokenProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceCreateLuksTokenProcedure, h.CreateLuksToken, opts...))
 	register(powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure,
@@ -121,8 +125,10 @@ func SensitiveReadProcedures() []string {
 		powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
 		powermanagev1connect.ControlServiceGetExecutionProcedure,
 		powermanagev1connect.ControlServiceListExecutionsProcedure,
-		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
-		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
+		powermanagev1connect.ControlServiceListLpsPasswordsProcedure,
+		powermanagev1connect.ControlServiceRevealLpsPasswordProcedure,
+		powermanagev1connect.ControlServiceListLuksKeysProcedure,
+		powermanagev1connect.ControlServiceRevealLuksKeyProcedure,
 		powermanagev1connect.ControlServiceListActiveTerminalSessionsProcedure,
 	}
 }

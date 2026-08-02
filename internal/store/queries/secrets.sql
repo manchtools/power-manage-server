@@ -1,10 +1,11 @@
--- Current and bounded historical device secrets. Secret values remain
--- AES-GCM ciphertext here and are opened only by the authorized RPC sink.
+-- Current and bounded historical device-secret metadata. List queries never
+-- select ciphertext; one-entry reveal queries are the only administrative
+-- read path for stored secret values.
 
 -- name: ListCurrentLpsPasswords :many
 SELECT p.id, p.device_id, d.hostname AS device_hostname,
        p.action_id, COALESCE(a.name, '')::text AS action_name,
-       p.username, p.password, p.rotated_at, p.rotation_reason
+       p.username, p.rotated_at, p.rotation_reason
 FROM lps_passwords p
 JOIN devices d ON d.id = p.device_id AND d.is_deleted = FALSE
 LEFT JOIN actions a ON a.id = p.action_id AND a.is_deleted = FALSE
@@ -13,11 +14,11 @@ ORDER BY p.action_id, p.username, p.id;
 
 -- name: ListLpsPasswordHistory :many
 SELECT id, device_id, device_hostname, action_id, action_name,
-       username, password, rotated_at, rotation_reason
+       username, rotated_at, rotation_reason
 FROM (
     SELECT p.id, p.device_id, d.hostname AS device_hostname,
            p.action_id, COALESCE(a.name, '')::text AS action_name,
-           p.username, p.password, p.rotated_at, p.rotation_reason,
+           p.username, p.rotated_at, p.rotation_reason,
            row_number() OVER (
                PARTITION BY p.action_id
                ORDER BY p.rotated_at DESC, p.id DESC
@@ -29,6 +30,11 @@ FROM (
 ) ranked
 WHERE history_position <= 3
 ORDER BY rotated_at DESC, id DESC;
+
+-- name: GetLpsPasswordForReveal :one
+SELECT id, device_id, action_id, password
+FROM lps_passwords
+WHERE id = $1;
 
 -- name: InsertLuksToken :one
 INSERT INTO luks_tokens (
@@ -94,7 +100,7 @@ RETURNING *;
 -- name: ListCurrentLuksKeys :many
 SELECT k.id, k.device_id, d.hostname AS device_hostname,
        k.action_id, COALESCE(a.name, '')::text AS action_name,
-       k.device_path, k.passphrase, k.rotated_at, k.rotation_reason,
+       k.device_path, k.rotated_at, k.rotation_reason,
        k.revocation_status, k.revocation_error, k.revocation_at
 FROM luks_keys k
 JOIN devices d ON d.id = k.device_id AND d.is_deleted = FALSE
@@ -104,12 +110,12 @@ ORDER BY k.action_id, k.device_path, k.id;
 
 -- name: ListLuksKeyHistory :many
 SELECT id, device_id, device_hostname, action_id, action_name,
-       device_path, passphrase, rotated_at, rotation_reason,
+       device_path, rotated_at, rotation_reason,
        revocation_status, revocation_error, revocation_at
 FROM (
     SELECT k.id, k.device_id, d.hostname AS device_hostname,
            k.action_id, COALESCE(a.name, '')::text AS action_name,
-           k.device_path, k.passphrase, k.rotated_at, k.rotation_reason,
+           k.device_path, k.rotated_at, k.rotation_reason,
            k.revocation_status, k.revocation_error, k.revocation_at,
            row_number() OVER (
                PARTITION BY k.action_id
@@ -122,6 +128,11 @@ FROM (
 ) ranked
 WHERE history_position <= 3
 ORDER BY rotated_at DESC, id DESC;
+
+-- name: GetLuksKeyForReveal :one
+SELECT id, device_id, action_id, passphrase
+FROM luks_keys
+WHERE id = $1;
 
 -- name: GetLuksRevocationTarget :one
 SELECT count(*)::bigint AS key_count,

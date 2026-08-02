@@ -16,6 +16,7 @@ import (
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -23,8 +24,9 @@ import (
 
 const luksTokenTTL = 24 * time.Hour
 
-// GetDeviceLpsPasswords returns bounded current and historical LPS secrets.
-func (h *Handlers) GetDeviceLpsPasswords(ctx context.Context, req *connect.Request[pmv1.GetDeviceLpsPasswordsRequest]) (*connect.Response[pmv1.GetDeviceLpsPasswordsResponse], error) {
+// ListLpsPasswords returns bounded current and historical LPS metadata. Its
+// store query does not select ciphertext.
+func (h *Handlers) ListLpsPasswords(ctx context.Context, req *connect.Request[pmv1.ListLpsPasswordsRequest]) (*connect.Response[pmv1.ListLpsPasswordsResponse], error) {
 	if err := validateRequest(h, ctx, req); err != nil {
 		return nil, err
 	}
@@ -32,7 +34,7 @@ func (h *Handlers) GetDeviceLpsPasswords(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, err
 	}
-	if _, err := h.readDevice(ctx, "GetDeviceLpsPasswords", req.Msg.DeviceId); err != nil {
+	if _, err := h.readDevice(ctx, "ListLpsPasswords", req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
 	currentRows, historyRows, err := h.store.ListDeviceLpsPasswords(ctx, req.Msg.DeviceId)
@@ -48,15 +50,16 @@ func (h *Handlers) GetDeviceLpsPasswords(ctx context.Context, req *connect.Reque
 		return nil, h.internal(ctx, "decode historical LPS passwords", err)
 	}
 	if err := h.recordSensitiveRead(ctx, req, actor,
-		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
-		"GetDeviceLpsPasswords", "device_lps_passwords", req.Msg.DeviceId); err != nil {
+		powermanagev1connect.ControlServiceListLpsPasswordsProcedure,
+		"ListLpsPasswords", "device_lps_passwords", req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&pmv1.GetDeviceLpsPasswordsResponse{Current: current, History: history}), nil
+	return connect.NewResponse(&pmv1.ListLpsPasswordsResponse{Current: current, History: history}), nil
 }
 
-// GetDeviceLuksKeys returns bounded current and historical LUKS secrets.
-func (h *Handlers) GetDeviceLuksKeys(ctx context.Context, req *connect.Request[pmv1.GetDeviceLuksKeysRequest]) (*connect.Response[pmv1.GetDeviceLuksKeysResponse], error) {
+// RevealLpsPassword returns one plaintext password only after the dedicated
+// reveal operation and its device/action/entry effects are durable.
+func (h *Handlers) RevealLpsPassword(ctx context.Context, req *connect.Request[pmv1.RevealLpsPasswordRequest]) (*connect.Response[pmv1.RevealLpsPasswordResponse], error) {
 	if err := validateRequest(h, ctx, req); err != nil {
 		return nil, err
 	}
@@ -64,7 +67,43 @@ func (h *Handlers) GetDeviceLuksKeys(ctx context.Context, req *connect.Request[p
 	if err != nil {
 		return nil, err
 	}
-	if _, err := h.readDevice(ctx, "GetDeviceLuksKeys", req.Msg.DeviceId); err != nil {
+	if err := h.authorize(ctx, "RevealLpsPassword", ""); err != nil {
+		return nil, err
+	}
+	secret, err := h.store.GetLpsPasswordForReveal(ctx, req.Msg.Id)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, errLpsPasswordNotFound, "LPS password not found")
+		}
+		return nil, h.internal(ctx, "read LPS password for reveal", err)
+	}
+	if _, err := h.readDevice(ctx, "RevealLpsPassword", secret.DeviceID); err != nil {
+		return nil, err
+	}
+	password, err := h.openStoredSecret(secret.Password,
+		pmcrypto.SecretAAD(secret.DeviceID, secret.ActionID, "lps"))
+	if err != nil {
+		return nil, h.internal(ctx, "open LPS password", err)
+	}
+	if err := h.recordSecretReveal(ctx, req, actor,
+		powermanagev1connect.ControlServiceRevealLpsPasswordProcedure,
+		"RevealLpsPassword", "lps_password", secret.ID, secret.DeviceID, secret.ActionID); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.RevealLpsPasswordResponse{Password: password}), nil
+}
+
+// ListLuksKeys returns bounded current and historical LUKS metadata. Its store
+// query does not select ciphertext.
+func (h *Handlers) ListLuksKeys(ctx context.Context, req *connect.Request[pmv1.ListLuksKeysRequest]) (*connect.Response[pmv1.ListLuksKeysResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := h.readDevice(ctx, "ListLuksKeys", req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
 	currentRows, historyRows, err := h.store.ListDeviceLuksKeys(ctx, req.Msg.DeviceId)
@@ -80,28 +119,60 @@ func (h *Handlers) GetDeviceLuksKeys(ctx context.Context, req *connect.Request[p
 		return nil, h.internal(ctx, "decode historical LUKS keys", err)
 	}
 	if err := h.recordSensitiveRead(ctx, req, actor,
-		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
-		"GetDeviceLuksKeys", "device_luks_keys", req.Msg.DeviceId); err != nil {
+		powermanagev1connect.ControlServiceListLuksKeysProcedure,
+		"ListLuksKeys", "device_luks_keys", req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&pmv1.GetDeviceLuksKeysResponse{Current: current, History: history}), nil
+	return connect.NewResponse(&pmv1.ListLuksKeysResponse{Current: current, History: history}), nil
+}
+
+// RevealLuksKey returns one plaintext passphrase only after the dedicated
+// reveal operation and its device/action/entry effects are durable.
+func (h *Handlers) RevealLuksKey(ctx context.Context, req *connect.Request[pmv1.RevealLuksKeyRequest]) (*connect.Response[pmv1.RevealLuksKeyResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, "RevealLuksKey", ""); err != nil {
+		return nil, err
+	}
+	secret, err := h.store.GetLuksKeyForReveal(ctx, req.Msg.Id)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, errLuksKeyNotFound, "LUKS key not found")
+		}
+		return nil, h.internal(ctx, "read LUKS key for reveal", err)
+	}
+	if _, err := h.readDevice(ctx, "RevealLuksKey", secret.DeviceID); err != nil {
+		return nil, err
+	}
+	passphrase, err := h.openStoredSecret(secret.Passphrase,
+		pmcrypto.SecretAAD(secret.DeviceID, secret.ActionID, "luks"))
+	if err != nil {
+		return nil, h.internal(ctx, "open LUKS passphrase", err)
+	}
+	if err := h.recordSecretReveal(ctx, req, actor,
+		powermanagev1connect.ControlServiceRevealLuksKeyProcedure,
+		"RevealLuksKey", "luks_key", secret.ID, secret.DeviceID, secret.ActionID); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.RevealLuksKeyResponse{Passphrase: passphrase}), nil
 }
 
 func (h *Handlers) lpsPasswordsToProto(rows []store.LpsPasswordView) ([]*pmv1.LpsPassword, error) {
 	out := make([]*pmv1.LpsPassword, len(rows))
 	for i, row := range rows {
-		password, err := h.openStoredSecret(row.Password, pmcrypto.SecretAAD(row.DeviceID, row.ActionID, "lps"))
-		if err != nil {
-			return nil, fmt.Errorf("open LPS password for device %s action %s: %w", row.DeviceID, row.ActionID, err)
-		}
 		reason, ok := rotationReasonFromString(row.RotationReason)
 		if !ok {
 			return nil, fmt.Errorf("invalid LPS rotation reason %q", row.RotationReason)
 		}
 		out[i] = &pmv1.LpsPassword{
-			DeviceId: row.DeviceID, DeviceHostname: row.DeviceHostname,
+			Id: row.ID, DeviceId: row.DeviceID, DeviceHostname: row.DeviceHostname,
 			ActionId: row.ActionID, ActionName: row.ActionName,
-			Username: row.Username, Password: password,
+			Username:  row.Username,
 			RotatedAt: timestamppb.New(row.RotatedAt), RotationReason: reason,
 		}
 	}
@@ -111,19 +182,15 @@ func (h *Handlers) lpsPasswordsToProto(rows []store.LpsPasswordView) ([]*pmv1.Lp
 func (h *Handlers) luksKeysToProto(rows []store.LuksKeyView) ([]*pmv1.LuksKey, error) {
 	out := make([]*pmv1.LuksKey, len(rows))
 	for i, row := range rows {
-		passphrase, err := h.openStoredSecret(row.Passphrase, pmcrypto.SecretAAD(row.DeviceID, row.ActionID, "luks"))
-		if err != nil {
-			return nil, fmt.Errorf("open LUKS passphrase for device %s action %s: %w", row.DeviceID, row.ActionID, err)
-		}
 		reason, ok := rotationReasonFromString(row.RotationReason)
 		if !ok {
 			return nil, fmt.Errorf("invalid LUKS rotation reason %q", row.RotationReason)
 		}
 		key := &pmv1.LuksKey{
-			DeviceId: row.DeviceID, DeviceHostname: row.DeviceHostname,
+			Id: row.ID, DeviceId: row.DeviceID, DeviceHostname: row.DeviceHostname,
 			ActionId: row.ActionID, ActionName: row.ActionName,
-			DevicePath: row.DevicePath, Passphrase: passphrase,
-			RotatedAt: timestamppb.New(row.RotatedAt), RotationReason: reason,
+			DevicePath: row.DevicePath,
+			RotatedAt:  timestamppb.New(row.RotatedAt), RotationReason: reason,
 		}
 		if row.RevocationStatus != nil {
 			status, ok := luksRevocationStatusFromString(*row.RevocationStatus)
@@ -141,6 +208,24 @@ func (h *Handlers) luksKeysToProto(rows []store.LuksKeyView) ([]*pmv1.LuksKey, e
 		out[i] = key
 	}
 	return out, nil
+}
+
+func (h *Handlers) recordSecretReveal(
+	ctx context.Context,
+	req connect.AnyRequest,
+	actor *auth.UserContext,
+	procedure, permission, secretType, secretID, deviceID, actionID string,
+) error {
+	op := h.operation(req, actor, procedure, permission)
+	op.Class = store.ClassSensitiveRead
+	if _, err := h.store.RecordOperation(ctx, op,
+		store.AuditEffect{ResourceType: secretType, ResourceID: secretID, Action: "REVEAL", Outcome: store.EffectApplied},
+		store.AuditEffect{ResourceType: "device", ResourceID: deviceID, Action: "REVEAL", Outcome: store.EffectApplied},
+		store.AuditEffect{ResourceType: "action", ResourceID: actionID, Action: "REVEAL", Outcome: store.EffectApplied},
+	); err != nil {
+		return h.internal(ctx, "record secret reveal", err)
+	}
+	return nil
 }
 
 // CreateLuksToken atomically persists a hash of a one-time owner token with

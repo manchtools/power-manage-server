@@ -140,7 +140,6 @@ func registryPermissions() []permEntry {
 		{"SetUserDisabled", "Users", "Disable/enable users", TargetUnspecified},
 		{"UpdateUserProfile", "Users", "Update any user's profile", TargetUser},
 		{"UpdateUserProfile:self", "Users", "Update own profile", TargetUnspecified},
-		{"DeleteUser", "Users", "Delete users", TargetUser},
 		{"UpdateUserSshSettings", "Users", "Update any user's SSH settings", TargetUser},
 		{"UpdateUserSshSettings:self", "Users", "Update own SSH settings", TargetUnspecified},
 		// linux_username keys pm-tty/sudo account naming on managed devices, so
@@ -291,10 +290,12 @@ func registryPermissions() []permEntry {
 		{"GetDeviceCompliancePolicyStatus:assigned", "Compliance Policies", "View compliance policy status for assigned devices", TargetUnspecified},
 		// Audit — org-tier (V2 may revisit)
 		{"ListAuditEvents", "Audit", "View audit log", TargetUnspecified},
-		// LPS — security-sensitive, org-tier
-		{"GetDeviceLpsPasswords", "LPS", "View LPS passwords", TargetUnspecified},
-		// LUKS — security-sensitive, org-tier
-		{"GetDeviceLuksKeys", "LUKS", "View LUKS keys", TargetUnspecified},
+		// LPS — metadata and plaintext reveal are independently assignable.
+		{"ListLpsPasswords", "LPS", "List LPS password metadata", TargetUnspecified},
+		{"RevealLpsPassword", "LPS", "Reveal one LPS password", TargetUnspecified},
+		// LUKS — metadata and plaintext reveal are independently assignable.
+		{"ListLuksKeys", "LUKS", "List LUKS key metadata", TargetUnspecified},
+		{"RevealLuksKey", "LUKS", "Reveal one LUKS key", TargetUnspecified},
 		{"CreateLuksToken", "LUKS", "Create LUKS recovery token", TargetUnspecified},
 		{"RevokeLuksDeviceKey", "LUKS", "Revoke LUKS device key", TargetUnspecified},
 		// Roles — org-tier. AssignRoleScope grants the authority to

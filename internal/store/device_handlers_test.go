@@ -200,11 +200,17 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.CancelExecution(context.Background(),
 		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	_, err = f.handlers.GetDeviceLpsPasswords(context.Background(),
-		connect.NewRequest(&pmv1.GetDeviceLpsPasswordsRequest{DeviceId: "bad"}))
+	_, err = f.handlers.ListLpsPasswords(context.Background(),
+		connect.NewRequest(&pmv1.ListLpsPasswordsRequest{DeviceId: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	_, err = f.handlers.GetDeviceLuksKeys(context.Background(),
-		connect.NewRequest(&pmv1.GetDeviceLuksKeysRequest{DeviceId: "bad"}))
+	_, err = f.handlers.RevealLpsPassword(context.Background(),
+		connect.NewRequest(&pmv1.RevealLpsPasswordRequest{Id: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.ListLuksKeys(context.Background(),
+		connect.NewRequest(&pmv1.ListLuksKeysRequest{DeviceId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.RevealLuksKey(context.Background(),
+		connect.NewRequest(&pmv1.RevealLuksKeyRequest{Id: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	_, err = f.handlers.CreateLuksToken(context.Background(),
 		connect.NewRequest(&pmv1.CreateLuksTokenRequest{DeviceId: "bad", ActionId: "bad"}))
@@ -263,11 +269,17 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.CancelExecution(context.Background(),
 		connect.NewRequest(&pmv1.CancelExecutionRequest{ExecutionId: newID()}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-	_, err = f.handlers.GetDeviceLpsPasswords(context.Background(),
-		connect.NewRequest(&pmv1.GetDeviceLpsPasswordsRequest{DeviceId: f.directID}))
+	_, err = f.handlers.ListLpsPasswords(context.Background(),
+		connect.NewRequest(&pmv1.ListLpsPasswordsRequest{DeviceId: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-	_, err = f.handlers.GetDeviceLuksKeys(context.Background(),
-		connect.NewRequest(&pmv1.GetDeviceLuksKeysRequest{DeviceId: f.directID}))
+	_, err = f.handlers.RevealLpsPassword(context.Background(),
+		connect.NewRequest(&pmv1.RevealLpsPasswordRequest{Id: newID()}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.ListLuksKeys(context.Background(),
+		connect.NewRequest(&pmv1.ListLuksKeysRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.RevealLuksKey(context.Background(),
+		connect.NewRequest(&pmv1.RevealLuksKeyRequest{Id: newID()}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	_, err = f.handlers.CreateLuksToken(context.Background(),
 		connect.NewRequest(&pmv1.CreateLuksTokenRequest{DeviceId: f.directID, ActionId: newID()}))
@@ -770,7 +782,7 @@ func TestDeviceHandlers_CancelExecutionIsDirectAndIdempotent(t *testing.T) {
 	assert.Equal(t, "scheduled", rolledBack.Status, "audit failure must roll the cancellation back")
 }
 
-func TestDeviceHandlers_SecretReadsDecryptAtSinkAndBoundHistory(t *testing.T) {
+func TestDeviceHandlers_SecretListsAreMetadataAndRevealsAreIndividuallyAudited(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	lpsActionID, luksActionID := newID(), newID()
 	_, err := f.raw.Exec(context.Background(), `
@@ -786,66 +798,98 @@ func TestDeviceHandlers_SecretReadsDecryptAtSinkAndBoundHistory(t *testing.T) {
 	passphrase, err := f.encryptor.EncryptWithContext("disk-secret",
 		pmcrypto.SecretAAD(f.directID, luksActionID, "luks"))
 	require.NoError(t, err)
+	lpsIDs := make([]string, 5)
+	luksIDs := make([]string, 5)
 	for i := 0; i < 5; i++ {
+		lpsIDs[i], luksIDs[i] = newID(), newID()
 		current := i == 0
 		rotatedAt := f.now.Add(-time.Duration(i) * time.Hour)
 		_, err = f.raw.Exec(context.Background(), `
 			INSERT INTO lps_passwords
 				(id, device_id, action_id, username, password, rotated_at, rotation_reason, is_current)
 			VALUES ($1, $2, $3, 'localadmin', $4, $5, 'scheduled', $6)`,
-			newID(), f.directID, lpsActionID, password, rotatedAt, current)
+			lpsIDs[i], f.directID, lpsActionID, password, rotatedAt, current)
 		require.NoError(t, err)
 		_, err = f.raw.Exec(context.Background(), `
 			INSERT INTO luks_keys
 				(id, device_id, action_id, device_path, passphrase, rotated_at,
 				 rotation_reason, is_current, revocation_status)
 			VALUES ($1, $2, $3, '/dev/vda', $4, $5, 'initial', $6, 'dispatched')`,
-			newID(), f.directID, luksActionID, passphrase, rotatedAt, current)
+			luksIDs[i], f.directID, luksActionID, passphrase, rotatedAt, current)
 		require.NoError(t, err)
 	}
 
-	lps, err := f.handlers.GetDeviceLpsPasswords(f.actor("GetDeviceLpsPasswords"),
-		connect.NewRequest(&pmv1.GetDeviceLpsPasswordsRequest{DeviceId: f.directID}))
+	lps, err := f.handlers.ListLpsPasswords(f.actor("ListLpsPasswords"),
+		connect.NewRequest(&pmv1.ListLpsPasswordsRequest{DeviceId: f.directID}))
 	require.NoError(t, err)
 	require.Len(t, lps.Msg.Current, 1)
 	require.Len(t, lps.Msg.History, 3)
-	assert.Equal(t, "local-secret", lps.Msg.Current[0].Password)
+	assert.Equal(t, lpsIDs[0], lps.Msg.Current[0].Id)
 	assert.Equal(t, "direct", lps.Msg.History[0].DeviceHostname)
 	assert.Equal(t, "Local admin", lps.Msg.Current[0].ActionName)
 
-	luks, err := f.handlers.GetDeviceLuksKeys(f.actor("GetDeviceLuksKeys"),
-		connect.NewRequest(&pmv1.GetDeviceLuksKeysRequest{DeviceId: f.directID}))
+	luks, err := f.handlers.ListLuksKeys(f.actor("ListLuksKeys"),
+		connect.NewRequest(&pmv1.ListLuksKeysRequest{DeviceId: f.directID}))
 	require.NoError(t, err)
 	require.Len(t, luks.Msg.Current, 1)
 	require.Len(t, luks.Msg.History, 3)
-	assert.Equal(t, "disk-secret", luks.Msg.Current[0].Passphrase)
+	assert.Equal(t, luksIDs[0], luks.Msg.Current[0].Id)
 	assert.Equal(t, "Root disk", luks.Msg.Current[0].ActionName)
 	assert.Equal(t, pmv1.LuksRevocationStatus_LUKS_REVOCATION_STATUS_DISPATCHED,
 		luks.Msg.Current[0].RevocationStatus)
 
 	assertSensitiveDeviceRead(t, f,
-		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
+		powermanagev1connect.ControlServiceListLpsPasswordsProcedure,
 		"device_lps_passwords", f.directID)
 	assertSensitiveDeviceRead(t, f,
-		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
+		powermanagev1connect.ControlServiceListLuksKeysProcedure,
 		"device_luks_keys", f.directID)
+
+	_, err = f.handlers.RevealLpsPassword(f.actor("ListLpsPasswords"),
+		connect.NewRequest(&pmv1.RevealLpsPasswordRequest{Id: lpsIDs[0]}))
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"metadata access must not imply plaintext access")
+	lpsReveal, err := f.handlers.RevealLpsPassword(f.actor("RevealLpsPassword"),
+		connect.NewRequest(&pmv1.RevealLpsPasswordRequest{Id: lpsIDs[0]}))
+	require.NoError(t, err)
+	assert.Equal(t, "local-secret", lpsReveal.Msg.Password)
+	assertSecretReveal(t, f, powermanagev1connect.ControlServiceRevealLpsPasswordProcedure,
+		"lps_password", lpsIDs[0], f.directID, lpsActionID)
+
+	luksReveal, err := f.handlers.RevealLuksKey(f.actor("RevealLuksKey"),
+		connect.NewRequest(&pmv1.RevealLuksKeyRequest{Id: luksIDs[0]}))
+	require.NoError(t, err)
+	assert.Equal(t, "disk-secret", luksReveal.Msg.Passphrase)
+	assertSecretReveal(t, f, powermanagev1connect.ControlServiceRevealLuksKeyProcedure,
+		"luks_key", luksIDs[0], f.directID, luksActionID)
 
 	_, err = f.raw.Exec(context.Background(), `
 		UPDATE lps_passwords SET password = 'enc:v1:not-base64'
-		WHERE device_id = $1 AND action_id = $2 AND is_current = TRUE`,
-		f.directID, lpsActionID)
+		WHERE id = $1`, lpsIDs[0])
 	require.NoError(t, err)
-	_, err = f.handlers.GetDeviceLpsPasswords(f.actor("GetDeviceLpsPasswords"),
-		connect.NewRequest(&pmv1.GetDeviceLpsPasswordsRequest{DeviceId: f.directID}))
+	_, err = f.handlers.ListLpsPasswords(f.actor("ListLpsPasswords"),
+		connect.NewRequest(&pmv1.ListLpsPasswordsRequest{DeviceId: f.directID}))
+	require.NoError(t, err, "metadata listing must not open ciphertext")
+	_, err = f.handlers.RevealLpsPassword(f.actor("RevealLpsPassword"),
+		connect.NewRequest(&pmv1.RevealLpsPasswordRequest{Id: lpsIDs[0]}))
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "corrupt ciphertext must fail closed")
 	_, err = f.raw.Exec(context.Background(), `
 		UPDATE lps_passwords SET password = 'legacy-plaintext'
-		WHERE device_id = $1 AND action_id = $2 AND is_current = TRUE`,
-		f.directID, lpsActionID)
+		WHERE id = $1`, lpsIDs[0])
 	require.NoError(t, err)
-	_, err = f.handlers.GetDeviceLpsPasswords(f.actor("GetDeviceLpsPasswords"),
-		connect.NewRequest(&pmv1.GetDeviceLpsPasswordsRequest{DeviceId: f.directID}))
+	_, err = f.handlers.RevealLpsPassword(f.actor("RevealLpsPassword"),
+		connect.NewRequest(&pmv1.RevealLpsPasswordRequest{Id: lpsIDs[0]}))
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "plaintext storage must not get a compatibility path")
+
+	_, err = f.raw.Exec(context.Background(), `
+		ALTER TABLE audit_operations ADD CONSTRAINT reject_luks_reveal_audit
+		CHECK (request_descriptor <> '/powermanage.v1.ControlService/RevealLuksKey') NOT VALID`)
+	require.NoError(t, err)
+	blocked, err := f.handlers.RevealLuksKey(f.actor("RevealLuksKey"),
+		connect.NewRequest(&pmv1.RevealLuksKeyRequest{Id: luksIDs[1]}))
+	assert.Nil(t, blocked)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
+		"audit persistence failure must prevent the plaintext response")
 }
 
 func TestDeviceHandlers_CreateLuksTokenIsOwnerOnlyHashedAndAudited(t *testing.T) {
@@ -1610,8 +1654,10 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetExecutionProcedure,
 		powermanagev1connect.ControlServiceListExecutionsProcedure,
 		powermanagev1connect.ControlServiceCancelExecutionProcedure,
-		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
-		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
+		powermanagev1connect.ControlServiceListLpsPasswordsProcedure,
+		powermanagev1connect.ControlServiceRevealLpsPasswordProcedure,
+		powermanagev1connect.ControlServiceListLuksKeysProcedure,
+		powermanagev1connect.ControlServiceRevealLuksKeyProcedure,
 		powermanagev1connect.ControlServiceCreateLuksTokenProcedure,
 		powermanagev1connect.ControlServiceRevokeLuksDeviceKeyProcedure,
 		powermanagev1connect.ControlServiceDispatchOSQueryProcedure,
@@ -1639,8 +1685,10 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
 		powermanagev1connect.ControlServiceGetExecutionProcedure,
 		powermanagev1connect.ControlServiceListExecutionsProcedure,
-		powermanagev1connect.ControlServiceGetDeviceLpsPasswordsProcedure,
-		powermanagev1connect.ControlServiceGetDeviceLuksKeysProcedure,
+		powermanagev1connect.ControlServiceListLpsPasswordsProcedure,
+		powermanagev1connect.ControlServiceRevealLpsPasswordProcedure,
+		powermanagev1connect.ControlServiceListLuksKeysProcedure,
+		powermanagev1connect.ControlServiceRevealLuksKeyProcedure,
 		powermanagev1connect.ControlServiceListActiveTerminalSessionsProcedure,
 	}, device.SensitiveReadProcedures())
 	classified := append(device.MutationProcedures(), device.ReadProcedures()...)
@@ -1663,6 +1711,27 @@ func assertSensitiveDeviceRead(
 	assert.Equal(t, resourceType, effects[0].ResourceType)
 	assert.Equal(t, resourceID, effects[0].ResourceID)
 	assert.Equal(t, "READ", effects[0].Action)
+}
+
+func assertSecretReveal(
+	t *testing.T,
+	f *deviceHandlerFixture,
+	procedure, secretType, secretID, deviceID, actionID string,
+) {
+	t.Helper()
+	operation, err := latestOperationFor(t, f.store, f.raw, procedure)
+	require.NoError(t, err)
+	assert.Equal(t, string(store.ClassSensitiveRead), operation.OperationClass)
+	effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, effects, 3)
+	want := map[string]string{secretType: secretID, "device": deviceID, "action": actionID}
+	for _, effect := range effects {
+		assert.Equal(t, want[effect.ResourceType], effect.ResourceID)
+		assert.Equal(t, "REVEAL", effect.Action)
+		delete(want, effect.ResourceType)
+	}
+	assert.Empty(t, want)
 }
 
 func latestOperationFor(t *testing.T, st *store.Store, raw *pgxpool.Pool, procedure string) (store.AuditOperationRow, error) {

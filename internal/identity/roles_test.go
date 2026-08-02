@@ -485,9 +485,9 @@ func TestListPermissions_ExposesTheRegistryWithTargetKinds(t *testing.T) {
 		"a privilege-granting permission is never scopable, so it declares no target kind")
 
 	// No local-credential or second-factor permission survives: human
-	// identity is the identity provider's business. GetDeviceLpsPasswords
-	// stays — it reads a MANAGED DEVICE's rotated local-administrator
-	// password, which has nothing to do with how a human signs in here.
+	// identity is the identity provider's business. ListLpsPasswords and
+	// RevealLpsPassword concern a MANAGED DEVICE's rotated local-administrator
+	// password, not how a human signs in here.
 	for _, gone := range []string{
 		"UpdateUserPassword", "UpdateUserPassword:self",
 		"SetupTOTP", "VerifyTOTP", "DisableTOTP", "GetTOTPStatus",

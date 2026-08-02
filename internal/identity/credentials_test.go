@@ -124,10 +124,6 @@ var authenticatedMutations = map[string]call{
 		}, token))
 		return err
 	},
-	powermanagev1connect.ControlServiceDeleteUserProcedure: func(f *fixture, token string) error {
-		_, err := f.client.DeleteUser(f.ctx(), authed(&pmv1.DeleteUserRequest{Id: newULID()}, token))
-		return err
-	},
 	powermanagev1connect.ControlServiceCreateUserGroupProcedure: func(f *fixture, token string) error {
 		_, err := f.client.CreateUserGroup(f.ctx(), authed(&pmv1.CreateUserGroupRequest{Name: "Operators"}, token))
 		return err
