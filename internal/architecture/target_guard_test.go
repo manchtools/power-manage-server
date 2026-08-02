@@ -1,10 +1,14 @@
 package architecture_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -54,5 +58,90 @@ func TestAbolishedArchitectureCannotReturn(t *testing.T) {
 		if strings.Contains(string(mod), dependency) {
 			t.Errorf("abolished dependency returned: %s", dependency)
 		}
+	}
+}
+
+func TestAbolishedRuntimeAPIsCannotReturn(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate test source")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+
+	forbiddenImports := []string{
+		"github.com/hibiken/asynq",
+		"github.com/redis/go-redis",
+		"github.com/alicebob/miniredis",
+		"power-manage-sdk/verify",
+	}
+	forbiddenIdentifiers := []string{
+		"ActionEnvelope",
+		"AppendEvent",
+		"Asynq",
+		"CertificateRevocationList",
+		"CRLDistribution",
+		"DomainEvent",
+		"EventStore",
+		"Gateway",
+		"GetCertificateRevocationList",
+		"Projector",
+		"Redis",
+		"ReplayEvent",
+		"SignedAction",
+		"Valkey",
+	}
+
+	files := 0
+	identifiers := 0
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "vendor", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		files++
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		for _, imported := range parsed.Imports {
+			importPath, err := strconv.Unquote(imported.Path.Value)
+			if err != nil {
+				return err
+			}
+			for _, forbidden := range forbiddenImports {
+				if strings.Contains(importPath, forbidden) {
+					t.Errorf("abolished runtime import %q returned in %s", importPath, path)
+				}
+			}
+		}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			identifiers++
+			for _, forbidden := range forbiddenIdentifiers {
+				if strings.Contains(identifier.Name, forbidden) {
+					t.Errorf("abolished runtime identifier %q returned in %s", identifier.Name, path)
+				}
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files == 0 || identifiers == 0 {
+		t.Fatalf("matches-zero guard: inspected %d production Go files and %d identifiers", files, identifiers)
 	}
 }
