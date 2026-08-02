@@ -274,29 +274,31 @@ type RateLimiters struct {
 	Rejected *RateLimiter
 }
 
-// isExpensiveProcedure reports whether an authenticated procedure runs
-// a heavy operation — query evaluation, search, an index rebuild, a
-// log/osquery fan-out or a bulk export — and warrants a tighter
-// per-user ceiling.
-//
-// Self-discovered from the action name so a newly added Evaluate* /
-// Search* / Rebuild* / Query* / *Query / Export* procedure is covered
-// automatically rather than from a hand-maintained list that fails
-// open. A test walks the real procedure set and asserts the matcher
-// recognises at least one, so it can never silently match zero.
-func isExpensiveProcedure(action string) bool {
-	return strings.HasPrefix(action, "Evaluate") ||
-		strings.HasPrefix(action, "Search") ||
-		strings.HasPrefix(action, "Rebuild") ||
-		strings.HasPrefix(action, "Query") ||
-		strings.HasSuffix(action, "Query") ||
-		strings.HasPrefix(action, "Export")
+// expensiveProcedureActions is the reviewed set of authenticated procedures
+// whose query evaluation, search, rebuild, fan-out, or bulk export warrants a
+// tighter per-user ceiling. The descriptor-backed exact-set test makes renames
+// and additions explicit instead of inferring security policy from a method
+// name prefix.
+var expensiveProcedureActions = map[string]bool{
+	"DispatchOSQuery":          true,
+	"EvaluateDynamicGroup":     true,
+	"EvaluateDynamicUserGroup": true,
+	"ExportAuditEvents":        true,
+	"QueryDeviceLogs":          true,
+	"RebuildSearchIndex":       true,
+	"Search":                   true,
+	"UpdateDeviceGroupQuery":   true,
+	"UpdateUserGroupQuery":     true,
+	"ValidateDynamicQuery":     true,
+	"ValidateUserGroupQuery":   true,
 }
 
-// IsExpensiveProcedure reports whether an action name matches the
-// heavy set. Exported so a guard test can assert the matcher recognises
-// at least one real procedure — a self-discovering matcher that matches
-// nothing would gate nothing while looking like it did.
+func isExpensiveProcedure(action string) bool {
+	return expensiveProcedureActions[action]
+}
+
+// IsExpensiveProcedure reports whether an action is in the reviewed heavy set.
+// Exported for the descriptor-backed exact-set guard.
 func IsExpensiveProcedure(action string) bool { return isExpensiveProcedure(action) }
 
 // ProcedureAction extracts the trailing method name from a Connect

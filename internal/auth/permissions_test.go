@@ -220,10 +220,9 @@ func TestAdminPermissions_AreTheWholeRegistry(t *testing.T) {
 	}
 }
 
-// isExpensiveProcedure is a self-discovering matcher. It must recognise
-// at least one real procedure, or the tighter per-user ceiling it gates
-// would silently apply to nothing.
-func TestExpensiveProcedureMatcher_RecognisesRealProcedures(t *testing.T) {
+// The expensive tier is an exact reviewed set. A rename or a broad naming
+// heuristic must not silently add/remove rate limiting from an RPC.
+func TestExpensiveProcedureSetIsExactAndReal(t *testing.T) {
 	t.Parallel()
 	rpcs := controlRPCNames(t)
 	var matched []string
@@ -232,6 +231,18 @@ func TestExpensiveProcedureMatcher_RecognisesRealProcedures(t *testing.T) {
 			matched = append(matched, name)
 		}
 	}
-	assert.NotEmpty(t, matched,
-		"the heavy-procedure matcher recognises no real procedure, so its rate limit gates nothing")
+	sort.Strings(matched)
+	assert.Equal(t, []string{
+		"DispatchOSQuery",
+		"EvaluateDynamicGroup",
+		"EvaluateDynamicUserGroup",
+		"ExportAuditEvents",
+		"QueryDeviceLogs",
+		"RebuildSearchIndex",
+		"Search",
+		"UpdateDeviceGroupQuery",
+		"UpdateUserGroupQuery",
+		"ValidateDynamicQuery",
+		"ValidateUserGroupQuery",
+	}, matched)
 }
