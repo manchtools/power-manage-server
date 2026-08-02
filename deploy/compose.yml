@@ -14,6 +14,7 @@ services:
     volumes:
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro,z
       - ./traefik/dynamic:/etc/traefik/dynamic:ro,z
+      - ./certs/ca.crt:/run/certs/ca.crt:ro,z
       - ./data/traefik:/letsencrypt:z
     networks:
       internal:
@@ -81,7 +82,7 @@ services:
       - ./data/artifacts:/var/lib/power-manage/artifacts:z
       - ./data/backups:/var/lib/power-manage/backups:z
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8081/ready"]
+      test: ["CMD", "wget", "--no-check-certificate", "-q", "--spider", "https://127.0.0.1:8081/ready"]
       interval: 10s
       timeout: 5s
       retries: 10

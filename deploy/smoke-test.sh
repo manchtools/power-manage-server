@@ -79,7 +79,7 @@ control_id="$(compose ps -q control)"
 docker run --rm --network "container:$control_id" --user 0:0 \
     -v "$WORK_DIR:/work:ro" -v "$SOURCE_DIR/rpc-surface-probe.sh:/probe.sh:ro" \
     --entrypoint sh docker.io/curlimages/curl:8.11.1 \
-    /probe.sh http://127.0.0.1:8081 /work/expected-rpcs.txt /work/forbidden-rpcs.txt
+    /probe.sh https://127.0.0.1:8081 /work/expected-rpcs.txt /work/forbidden-rpcs.txt
 
 compose up -d --wait traefik
 
@@ -87,6 +87,25 @@ public_status="$(docker run --rm --network "container:$control_id" \
     docker.io/curlimages/curl:8.11.1 -sk -o /dev/null -w '%{http_code}' \
     --resolve manage.example.test:443:172.29.0.2 https://manage.example.test/health)"
 [[ "$public_status" == 200 ]] || { printf 'public Traefik route failed\n' >&2; exit 1; }
+
+log_canary="bootstrap-token-must-not-appear-${PROJECT_NAME}"
+docker run --rm --network "container:$control_id" \
+    docker.io/curlimages/curl:8.11.1 -sk -o /dev/null \
+    --resolve manage.example.test:443:172.29.0.2 \
+    "https://manage.example.test/health?bootstrap_token=${log_canary}"
+traefik_logs="$(compose logs --no-color traefik)"
+[[ "$traefik_logs" == *'"RequestMethod":"GET"'* ]] || {
+    printf 'Traefik did not emit the expected access-log record\n' >&2
+    exit 1
+}
+[[ "$traefik_logs" == *'"ServiceURL":"https://control:8081"'* ]] || {
+    printf 'Traefik did not use the authenticated TLS backend\n' >&2
+    exit 1
+}
+[[ "$traefik_logs" != *"$log_canary"* ]] || {
+    printf 'Traefik access log exposed a query-string credential\n' >&2
+    exit 1
+}
 
 openssl genpkey -algorithm Ed25519 -out "$WORK_DIR/certs/smoke-agent.key" >/dev/null 2>&1
 openssl req -new -key "$WORK_DIR/certs/smoke-agent.key" \
@@ -116,4 +135,4 @@ direct_status="$(docker run --rm --network "container:$control_id" --user 0:0 \
     exit 1
 }
 
-printf 'PASS: three-service deployment, PostgreSQL FTS, exact RPC surface, and isolated agent route\n'
+printf 'PASS: three services, PostgreSQL FTS, exact RPC surface, authenticated backend TLS, query-safe logs, and isolated agent route\n'

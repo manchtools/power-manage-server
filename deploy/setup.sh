@@ -100,6 +100,8 @@ ensure_certificates() {
         "subjectAltName=DNS:$AGENT_DOMAIN,DNS:control,DNS:localhost\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature"
     openssl x509 -in "$CERTS_DIR/control.crt" -checkhost "$AGENT_DOMAIN" -noout >/dev/null \
         || fail "control.crt does not cover AGENT_DOMAIN; replace control.crt and control.key"
+    openssl x509 -in "$CERTS_DIR/control.crt" -checkhost control -noout >/dev/null \
+        || fail "control.crt does not cover the internal control service name; replace control.crt and control.key"
 
     ensure_certificate postgres "/CN=postgres/O=Power Manage" \
         "subjectAltName=DNS:postgres,DNS:localhost\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature"
@@ -161,6 +163,8 @@ write_config() {
   "ca_key_file": "/run/certs/ca.key",
   "agent_tls_cert_file": "/run/certs/control.crt",
   "agent_tls_key_file": "/run/certs/control.key",
+  "public_tls_cert_file": "/run/certs/control.crt",
+  "public_tls_key_file": "/run/certs/control.key",
   "database_url_file": "/run/secrets/database.url",
   "encryption_key_file": "/run/secrets/encryption.key",
   "session_signing_key_file": "/run/secrets/session-signing.pem",

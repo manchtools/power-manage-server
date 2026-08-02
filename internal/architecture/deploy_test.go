@@ -56,11 +56,29 @@ func TestDeploymentIsTheThreeServiceTarget(t *testing.T) {
 	if !strings.Contains(compose, "internal: true") {
 		t.Error("agent proxy network is not isolated")
 	}
+	if strings.Contains(compose, `http://127.0.0.1:8081/ready`) ||
+		!strings.Contains(compose, `https://127.0.0.1:8081/ready`) {
+		t.Error("control healthcheck must use its TLS public listener")
+	}
 
 	routes := readDeploymentFile(t, root, filepath.Join("traefik", "dynamic", "routes.yml"))
-	for _, required := range []string{"passthrough: true", "proxyProtocol:", "version: 2", "172.30.0.3:8082"} {
+	for _, required := range []string{
+		"passthrough: true", "proxyProtocol:", "version: 2", "172.30.0.3:8082",
+		"https://control:8081", "serversTransport: control-tls", "serverName: control",
+		"rootCAs:", "/run/certs/ca.crt", "minVersion: VersionTLS13", "maxVersion: VersionTLS13",
+	} {
 		if !strings.Contains(routes, required) {
-			t.Errorf("static agent route is missing %q", required)
+			t.Errorf("static route configuration is missing %q", required)
+		}
+	}
+	if strings.Contains(routes, "url: http://") {
+		t.Error("Traefik backend route must not use plaintext HTTP")
+	}
+
+	traefik := readDeploymentFile(t, root, filepath.Join("traefik", "traefik.yml"))
+	for _, required := range []string{"format: json", "RequestPath: drop", "RequestLine: drop"} {
+		if !strings.Contains(traefik, required) {
+			t.Errorf("Traefik access-log configuration is missing %q", required)
 		}
 	}
 }

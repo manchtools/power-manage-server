@@ -1,4 +1,12 @@
 http:
+  # docref: begin public-backend-tls
+  serversTransports:
+    control-tls:
+      serverName: control
+      rootCAs:
+        - /run/certs/ca.crt
+      minVersion: VersionTLS13
+      maxVersion: VersionTLS13
   routers:
     control:
       rule: 'Host(`{{ env "CONTROL_DOMAIN" }}`)'
@@ -18,8 +26,10 @@ http:
   services:
     control:
       loadBalancer:
+        serversTransport: control-tls
         servers:
-          - url: http://172.29.0.3:8081
+          - url: https://control:8081
+  # docref: end public-backend-tls
 
 # docref: begin agent-route
 tcp:

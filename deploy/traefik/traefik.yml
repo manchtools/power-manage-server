@@ -4,7 +4,19 @@ api:
 log:
   level: INFO
 
-accessLog: {}
+# docref: begin safe-access-log
+accessLog:
+  format: json
+  fields:
+    names:
+      # Traefik 3.7.1 cannot remove only the query component, so omit both
+      # fields that contain the request URI. Method, host, status, timing,
+      # router, service, and client metadata remain available.
+      RequestPath: drop
+      RequestLine: drop
+    headers:
+      defaultMode: drop
+# docref: end safe-access-log
 
 entryPoints:
   web:

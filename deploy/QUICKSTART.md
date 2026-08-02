@@ -1,6 +1,6 @@
 # Power Manage server quickstart
 
-<!-- docref: begin src=deploy/compose.yml#@deployment-services:821c3d9b -->
+<!-- docref: begin src=deploy/compose.yml#@deployment-services:c8bd2e6c -->
 The consolidation stack has exactly three services: Traefik, one control
 process, and PostgreSQL. The authoritative system design is
 `../../DESIGN_2026_07_31/00_TARGET_DESIGN.md`.
@@ -11,7 +11,7 @@ process, and PostgreSQL. The authoritative system design is
 Copy `.env.example` to `.env`, edit the three required public values, then run
 `./setup.sh`.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:56204711 -->
+<!-- docref: begin src=deploy/setup.sh#@generated-material:c04bb228 -->
 `setup.sh` creates the internal Ed25519 CA, the control and datastore
 certificates, the session and sealing keys, the PostgreSQL password, and
 `config/control.json` with a 90-day audit-retention policy. Existing complete
@@ -25,6 +25,14 @@ The public and agent hostnames must differ. Traefik terminates browser/API TLS
 for `CONTROL_DOMAIN`. For `AGENT_DOMAIN`, it passes TLS through and adds PROXY
 protocol v2 on an isolated network; control itself authenticates the device
 certificate and checks revocation.
+<!-- docref: end -->
+
+<!-- docref: begin src=deploy/traefik/dynamic/routes.yml#@public-backend-tls:965c0116,deploy/traefik/traefik.yml#@safe-access-log:e383937a -->
+Traefik also authenticates control's internal TLS certificate against the
+deployment CA, so browser/API traffic stays encrypted after public TLS
+termination. Its JSON access log omits the URI-bearing `RequestPath` and
+`RequestLine` fields; method, host, status, timing, router, service, and client
+metadata remain available without recording query-string credentials.
 <!-- docref: end -->
 
 ## Start
