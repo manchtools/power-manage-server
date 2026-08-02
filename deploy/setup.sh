@@ -103,19 +103,9 @@ ensure_certificates() {
     openssl x509 -in "$CERTS_DIR/control.crt" -checkhost control -noout >/dev/null \
         || fail "control.crt does not cover the internal control service name; replace control.crt and control.key"
 
-    ensure_certificate postgres "/CN=postgres/O=Power Manage" \
-        "subjectAltName=DNS:postgres,DNS:localhost\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature"
-    openssl x509 -in "$CERTS_DIR/postgres.crt" -checkhost postgres -noout >/dev/null \
-        || fail "postgres.crt does not cover the postgres service name"
-
-    ensure_certificate control-datastore "/CN=powermanage/O=Power Manage" \
-        "extendedKeyUsage=clientAuth\nkeyUsage=digitalSignature"
 }
 
 ensure_secret_files() {
-    if [[ ! -f "$SECRETS_DIR/postgres.password" ]]; then
-        openssl rand -base64 48 > "$SECRETS_DIR/postgres.password"
-    fi
     if [[ ! -f "$SECRETS_DIR/encryption.key" ]]; then
         openssl rand -hex 32 > "$SECRETS_DIR/encryption.key"
     fi
@@ -125,13 +115,6 @@ ensure_secret_files() {
     if [[ ! -f "$SECRETS_DIR/sealing.key" ]]; then
         openssl rand -hex 32 > "$SECRETS_DIR/sealing.key"
     fi
-
-    printf '%s\n' \
-        'postgres://powermanage@postgres:5432/powermanage?sslmode=verify-full&sslrootcert=/run/certs/ca.crt&sslcert=/run/certs/control-datastore.crt&sslkey=/run/certs/control-datastore.key' \
-        > "$SECRETS_DIR/database.url"
-
-    [[ -s "$SECRETS_DIR/postgres.password" && "$(wc -c < "$SECRETS_DIR/postgres.password")" -le 256 ]] \
-        || fail "postgres.password must be non-empty and no larger than 256 bytes"
     grep -Eq '^[0-9a-fA-F]{64}$' "$SECRETS_DIR/encryption.key" \
         || fail "encryption.key must contain exactly 32 hex-encoded bytes"
     grep -Eq '^[0-9a-fA-F]{64}$' "$SECRETS_DIR/sealing.key" \
@@ -158,6 +141,7 @@ write_config() {
   "heartbeat_interval": "30s",
 	"audit_retention": "2160h",
   "artifact_path": "/var/lib/power-manage/artifacts",
+  "database_path": "/var/lib/power-manage/state/control.db",
   "backup_path": "/var/lib/power-manage/backups",
   "backup_max_lag": "26h",
   "webhook_url": "",
@@ -167,7 +151,6 @@ write_config() {
   "agent_tls_key_file": "/run/certs/control.key",
   "public_tls_cert_file": "/run/certs/control.crt",
   "public_tls_key_file": "/run/certs/control.key",
-  "database_url_file": "/run/secrets/database.url",
   "encryption_key_file": "/run/secrets/encryption.key",
   "session_signing_key_file": "/run/secrets/session-signing.pem",
   "sealing_key_file": "/run/secrets/sealing.key"
@@ -177,13 +160,12 @@ EOF
 
 validate_permissions() {
     local private
-    for private in "$CERTS_DIR/ca.key" "$CERTS_DIR/control.key" "$CERTS_DIR/postgres.key" \
-        "$CERTS_DIR/control-datastore.key" "$SECRETS_DIR"/*; do
+    for private in "$CERTS_DIR/ca.key" "$CERTS_DIR/control.key" "$SECRETS_DIR"/*; do
         [[ "$(stat -c '%a' "$private")" =~ ^[0-6]00$ ]] \
             || fail "$private must not be group/world accessible"
     done
-    [[ -w "$DATA_DIR/artifacts" && -w "$DATA_DIR/backups" ]] \
-        || fail "artifact and backup paths must be writable"
+    [[ -w "$DATA_DIR/control" && -w "$DATA_DIR/artifacts" && -w "$DATA_DIR/backups" ]] \
+        || fail "state, artifact, and backup paths must be writable"
 }
 
 main() {
@@ -194,11 +176,9 @@ main() {
     validate_environment
 
     mkdir -p "$CERTS_DIR" "$CONFIG_DIR" "$SECRETS_DIR" \
-        "$DATA_DIR/postgres" "$DATA_DIR/traefik" "$DATA_DIR/artifacts" "$DATA_DIR/backups"
+        "$DATA_DIR/control" "$DATA_DIR/traefik" "$DATA_DIR/artifacts" "$DATA_DIR/backups"
     chmod 700 "$CERTS_DIR" "$CONFIG_DIR" "$SECRETS_DIR"
-    # PostgreSQL's entrypoint drops to its service UID after preparing PGDATA;
-    # it must be able to traverse the bind-mount root on the second pass.
-    chmod 755 "$DATA_DIR/postgres"
+    chmod 700 "$DATA_DIR/control" "$DATA_DIR/artifacts" "$DATA_DIR/backups"
     chmod 600 "$SCRIPT_DIR/.env"
     touch "$DATA_DIR/traefik/acme.json"
     chmod 600 "$DATA_DIR/traefik/acme.json"

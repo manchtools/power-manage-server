@@ -1,6 +1,6 @@
 FROM docker.io/library/alpine:3.23
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates sqlite
 
 ARG BINARY
 COPY ${BINARY} /usr/local/bin/control

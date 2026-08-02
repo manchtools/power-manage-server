@@ -26,10 +26,13 @@ compose() {
 
 umask 077
 stamp="$(date -u '+%Y%m%dT%H%M%S%NZ')"
-artifact="postgres-${stamp}.dump"
+artifact="sqlite-${stamp}.db"
 final_path="$BACKUP_DIR/$artifact"
-temp_path="$(mktemp "$BACKUP_DIR/.postgres-backup-XXXXXX.dump")"
-status_temp="$(mktemp "$BACKUP_DIR/.postgres-backup-status-XXXXXX.json")"
+temp_artifact=".sqlite-backup-${stamp}-$$.db"
+temp_path="$BACKUP_DIR/$temp_artifact"
+status_temp="$(mktemp "$BACKUP_DIR/.backup-status-XXXXXX.json")"
+container_database="/var/lib/power-manage/state/control.db"
+container_temp="/var/lib/power-manage/backups/$temp_artifact"
 
 cleanup() {
     local status=$?
@@ -40,16 +43,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# docref: begin postgres-backup
-compose exec -T postgres pg_dump \
-    --username powermanage --dbname powermanage --format=custom \
-    --no-owner --no-privileges > "$temp_path"
-compose exec -T postgres pg_restore --list < "$temp_path" >/dev/null
+# docref: begin sqlite-backup
+compose exec -T control test -f "$container_database" \
+    || { printf 'SQLite database does not exist\n' >&2; exit 1; }
+schema_version="$(compose exec -T control sqlite3 "$container_database" 'PRAGMA user_version;')"
+[[ "$schema_version" == 1 ]] || { printf 'SQLite schema version is %s, want 1\n' "$schema_version" >&2; exit 1; }
+[[ ! -e "$temp_path" ]] || { printf 'temporary backup name collision\n' >&2; exit 1; }
+compose exec -T control sqlite3 "$container_database" ".backup '$container_temp'"
+compose exec -T control chmod 600 "$container_temp"
+
+integrity="$(compose exec -T control sqlite3 "$container_temp" 'PRAGMA integrity_check;')"
+[[ "$integrity" == ok ]] || { printf 'SQLite backup integrity check failed: %s\n' "$integrity" >&2; exit 1; }
+foreign_key_violations="$(compose exec -T control sqlite3 "$container_temp" 'PRAGMA foreign_key_check;')"
+[[ -z "$foreign_key_violations" ]] || { printf 'SQLite backup foreign-key check failed\n%s\n' "$foreign_key_violations" >&2; exit 1; }
 
 completed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-size_bytes="$(stat -c '%s' "$temp_path")"
-(( size_bytes > 0 )) || { printf 'PostgreSQL backup is empty\n' >&2; exit 1; }
-sha256="$(sha256sum "$temp_path")"
+size_bytes="$(compose exec -T control stat -c '%s' "$container_temp")"
+(( size_bytes > 0 )) || { printf 'SQLite backup is empty\n' >&2; exit 1; }
+sha256="$(compose exec -T control sha256sum "$container_temp")"
 sha256="${sha256%% *}"
 [[ ! -e "$final_path" ]] || { printf 'backup name collision\n' >&2; exit 1; }
 chmod 600 "$temp_path"
@@ -59,13 +70,13 @@ temp_path=""
 printf '{"version":1,"completed_at":"%s","artifact":"%s","size_bytes":%s,"sha256":"%s"}\n' \
     "$completed_at" "$artifact" "$size_bytes" "$sha256" > "$status_temp"
 chmod 600 "$status_temp"
-mv -- "$status_temp" "$BACKUP_DIR/postgres-backup-status.json"
+mv -- "$status_temp" "$BACKUP_DIR/backup-status.json"
 status_temp=""
 
-mapfile -t backups < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'postgres-*.dump' -printf '%f\n' | sort -r)
+mapfile -t backups < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'sqlite-*.db' -printf '%f\n' | sort -r)
 for ((index = BACKUP_KEEP; index < ${#backups[@]}; index++)); do
     rm -f -- "$BACKUP_DIR/${backups[$index]}"
 done
-# docref: end postgres-backup
+# docref: end sqlite-backup
 
-printf 'Verified PostgreSQL backup: %s\n' "$final_path"
+printf 'Verified SQLite backup: %s\n' "$final_path"

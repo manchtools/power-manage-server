@@ -22,50 +22,10 @@ services:
       agent_proxy:
         ipv4_address: 172.30.0.2
 
-  postgres:
-    image: docker.io/postgres:18-alpine
-    container_name: pm-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: powermanage
-      POSTGRES_DB: powermanage
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres.password
-    entrypoint:
-      - sh
-      - -ec
-      - >-
-        cp /run/certs/postgres.key /tmp/postgres.key;
-        chown postgres:postgres /tmp/postgres.key;
-        chmod 600 /tmp/postgres.key;
-        exec docker-entrypoint.sh postgres
-        -c ssl=on
-        -c ssl_cert_file=/run/certs/postgres.crt
-        -c ssl_key_file=/tmp/postgres.key
-        -c ssl_ca_file=/run/certs/ca.crt
-        -c hba_file=/etc/postgresql/pg_hba.conf
-    volumes:
-      - ./data/postgres:/var/lib/postgresql:z
-      - ./certs/ca.crt:/run/certs/ca.crt:ro,z
-      - ./certs/postgres.crt:/run/certs/postgres.crt:ro,z
-      - ./certs/postgres.key:/run/certs/postgres.key:ro,z
-      - ./secrets/postgres.password:/run/secrets/postgres.password:ro,z
-      - ./pg_hba.conf:/etc/postgresql/pg_hba.conf:ro,z
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U powermanage -d powermanage"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    networks:
-      internal:
-        ipv4_address: 172.29.0.4
-
   control:
     image: ghcr.io/manchtools/power-manage-control:${IMAGE_TAG:-latest}
     container_name: pm-control
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
     command: ["-config", "/etc/power-manage/control.json"]
     volumes:
       - ./config/control.json:/etc/power-manage/control.json:ro,z
@@ -73,12 +33,10 @@ services:
       - ./certs/ca.key:/run/certs/ca.key:ro,z
       - ./certs/control.crt:/run/certs/control.crt:ro,z
       - ./certs/control.key:/run/certs/control.key:ro,z
-      - ./certs/control-datastore.crt:/run/certs/control-datastore.crt:ro,z
-      - ./certs/control-datastore.key:/run/certs/control-datastore.key:ro,z
-      - ./secrets/database.url:/run/secrets/database.url:ro,z
       - ./secrets/encryption.key:/run/secrets/encryption.key:ro,z
       - ./secrets/session-signing.pem:/run/secrets/session-signing.pem:ro,z
       - ./secrets/sealing.key:/run/secrets/sealing.key:ro,z
+      - ./data/control:/var/lib/power-manage/state:z
       - ./data/artifacts:/var/lib/power-manage/artifacts:z
       - ./data/backups:/var/lib/power-manage/backups:z
     healthcheck:

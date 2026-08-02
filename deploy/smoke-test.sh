@@ -23,7 +23,7 @@ cleanup() {
     fi
     compose down --remove-orphans >/dev/null 2>&1 || true
     docker run --rm -v "$WORK_DIR:/work" docker.io/library/alpine:3.23 \
-        sh -c 'rm -rf /work/data/postgres' >/dev/null 2>&1 || true
+        sh -c 'rm -rf /work/data/control' >/dev/null 2>&1 || true
     if [[ -n "$BUILT_IMAGE" ]]; then
         docker image rm "$BUILT_IMAGE" >/dev/null 2>&1 || true
     fi
@@ -52,7 +52,7 @@ cd "$WORK_DIR"
 bash ./setup.sh >/dev/null
 
 mapfile -t services < <(compose config --services | sort)
-[[ "${services[*]}" == "control postgres traefik" ]] || {
+[[ "${services[*]}" == "control traefik" ]] || {
     printf 'unexpected deployment services: %s\n' "${services[*]}" >&2
     exit 1
 }
@@ -61,11 +61,13 @@ if compose config | grep -q '/var/run/docker.sock'; then
     exit 1
 fi
 
-compose up -d --wait postgres control
+compose up -d --wait control
 
-fts="$(compose exec -T postgres psql -U powermanage -d powermanage -Atc \
-    "SELECT to_tsvector('simple','Power Manage') @@ plainto_tsquery('simple','manage');")"
-[[ "$fts" == t ]] || { printf 'PostgreSQL FTS probe failed\n' >&2; exit 1; }
+schema_version="$(compose exec -T control sqlite3 /var/lib/power-manage/state/control.db 'PRAGMA user_version;')"
+[[ "$schema_version" == 1 ]] || { printf 'SQLite schema probe failed\n' >&2; exit 1; }
+fts="$(compose exec -T control sqlite3 /var/lib/power-manage/state/control.db \
+    "SELECT count(*) FROM sqlite_schema WHERE name = 'search_fts';")"
+[[ "$fts" == 1 ]] || { printf 'SQLite FTS5 probe failed\n' >&2; exit 1; }
 
 COMPOSE_PROJECT_NAME="$PROJECT_NAME" bash ./backup.sh >/dev/null
 if ! compose exec -T control control backup-status >/dev/null; then
@@ -141,4 +143,4 @@ direct_status="$(docker run --rm --network "container:$control_id" --user 0:0 \
     exit 1
 }
 
-printf 'PASS: three services, verified PostgreSQL backup, FTS, exact RPC surface, authenticated backend TLS, query-safe logs, and isolated agent route\n'
+printf 'PASS: two services, verified SQLite backup, FTS5, exact RPC surface, authenticated backend TLS, query-safe logs, and isolated agent route\n'

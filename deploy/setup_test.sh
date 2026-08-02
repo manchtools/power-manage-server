@@ -48,13 +48,16 @@ test_secure_idempotent_setup() {
     grep -q '"public_tls_cert_file": "/run/certs/control.crt"' "$directory/config/control.json"
     grep -q '"public_tls_key_file": "/run/certs/control.key"' "$directory/config/control.json"
     grep -q '"artifact_path": "/var/lib/power-manage/artifacts"' "$directory/config/control.json"
+    grep -q '"database_path": "/var/lib/power-manage/state/control.db"' "$directory/config/control.json"
     grep -q '"backup_path": "/var/lib/power-manage/backups"' "$directory/config/control.json"
 	grep -q '"webhook_url": ""' "$directory/config/control.json"
 	grep -q '"backup_max_lag": "26h"' "$directory/config/control.json"
 	grep -q '"audit_retention": "2160h"' "$directory/config/control.json"
-    if grep -R -iEq 'valkey|asynq|indexer|password_auth' "$directory/config"; then
+    if grep -R -iEq 'valkey|asynq|indexer|password_auth|postgres|database_url' "$directory/config"; then
         return 1
     fi
+	[[ ! -e "$directory/certs/postgres.crt" ]]
+	[[ ! -e "$directory/secrets/postgres.password" ]]
     python3 -m json.tool "$directory/config/control.json" >/dev/null
     openssl x509 -in "$directory/certs/control.crt" -checkhost agents.example.test -noout >/dev/null
     openssl x509 -in "$directory/certs/control.crt" -checkhost control -noout >/dev/null

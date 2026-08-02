@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestDeploymentIsTheThreeServiceTarget(t *testing.T) {
+func TestDeploymentIsTheTwoServiceTarget(t *testing.T) {
 	root := repositoryRoot(t)
 	compose := readDeploymentFile(t, root, "compose.yml")
 
@@ -32,7 +32,7 @@ func TestDeploymentIsTheThreeServiceTarget(t *testing.T) {
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("scan compose services: %v", err)
 	}
-	want := map[string]struct{}{"traefik": {}, "postgres": {}, "control": {}}
+	want := map[string]struct{}{"traefik": {}, "control": {}}
 	if len(services) != len(want) {
 		t.Fatalf("deployment services = %v; want exactly %v", services, want)
 	}
@@ -48,6 +48,7 @@ func TestDeploymentIsTheThreeServiceTarget(t *testing.T) {
 		"valkey",
 		"asynq",
 		"indexer",
+		"postgres",
 	} {
 		if strings.Contains(strings.ToLower(compose), forbidden) {
 			t.Errorf("compose contains abolished runtime %q", forbidden)
