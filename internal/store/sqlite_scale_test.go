@@ -118,6 +118,11 @@ func TestSQLiteScale_MixedWorkloadAtTenThousandAgents(t *testing.T) {
 	now := time.Now().UTC()
 	deviceIDs := seedScaleDevices(t, raw, now)
 	deliveries := seedScaleDeliveries(t, raw, deviceIDs, now)
+	// The bulk seed writes device rows directly. Production cannot: every device
+	// mutation refreshes its search document inside the same audited
+	// transaction. Rebuild once through the production path so the search
+	// workload measures a real 10,000-document FTS5 corpus.
+	rebuildSearchFixture(t, st)
 
 	runtime.GC()
 	var beforeAgents, afterAgents runtime.MemStats
