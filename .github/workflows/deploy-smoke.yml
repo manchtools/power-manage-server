@@ -27,5 +27,5 @@ jobs:
         run: docker version && docker compose version
       - name: Run deployed-stack verification
         env:
-          IMAGE_TAG: ${{ github.event.inputs.image_tag || 'latest-rc' }}
+          IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.image_tag || '' }}
         run: bash deploy/smoke-test.sh

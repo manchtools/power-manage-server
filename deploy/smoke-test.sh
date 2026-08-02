@@ -5,7 +5,10 @@ set -euo pipefail
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(mktemp -d)"
 PROJECT_NAME="pm-smoke-$$"
-REQUESTED_IMAGE_TAG="${IMAGE_TAG:-latest}"
+PUBLISHED_IMAGE_TAG="${IMAGE_TAG:-}"
+REQUESTED_IMAGE_TAG="${PUBLISHED_IMAGE_TAG:-smoke-$$}"
+CONTROL_IMAGE="ghcr.io/manchtools/power-manage-control:$REQUESTED_IMAGE_TAG"
+BUILT_IMAGE=""
 
 compose() {
     docker compose --project-directory "$WORK_DIR" --project-name "$PROJECT_NAME" "$@"
@@ -21,12 +24,21 @@ cleanup() {
     compose down --remove-orphans >/dev/null 2>&1 || true
     docker run --rm -v "$WORK_DIR:/work" docker.io/library/alpine:3.23 \
         sh -c 'rm -rf /work/data/postgres' >/dev/null 2>&1 || true
+    if [[ -n "$BUILT_IMAGE" ]]; then
+        docker image rm "$BUILT_IMAGE" >/dev/null 2>&1 || true
+    fi
     rm -rf "$WORK_DIR"
     exit "$status"
 }
 trap cleanup EXIT
 
 cp -R "$SOURCE_DIR/." "$WORK_DIR/"
+if [[ -z "$PUBLISHED_IMAGE_TAG" ]]; then
+    CGO_ENABLED=0 go -C "$SOURCE_DIR/.." build -o "$WORK_DIR/control" ./cmd/control
+    docker build --build-arg BINARY=control -f "$SOURCE_DIR/Containerfile.control" \
+        -t "$CONTROL_IMAGE" "$WORK_DIR"
+    BUILT_IMAGE="$CONTROL_IMAGE"
+fi
 cat > "$WORK_DIR/.env" <<EOF
 CONTROL_DOMAIN=manage.example.test
 AGENT_DOMAIN=agents.example.test
