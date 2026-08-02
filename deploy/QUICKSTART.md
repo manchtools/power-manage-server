@@ -68,7 +68,7 @@ replicate that path off-host, and back up the database, artifacts, `certs`, and
 `secrets` as one deployment unit.
 <!-- docref: end -->
 
-<!-- docref: begin src=internal/store/reads.go#ListDueDeliveries:081847c0,internal/store/search.go#Search:8542ac77 -->
+<!-- docref: begin src=internal/store/reads.go#ListDueDeliveries:081847c0,internal/store/search.go#Search:12db8002 -->
 Pending dispatch is ordinary PostgreSQL state. Search uses PostgreSQL FTS.
 There is no broker, projector rebuild, dynamic proxy provider, or auxiliary
 search process to operate.
