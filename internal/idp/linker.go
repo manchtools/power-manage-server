@@ -132,7 +132,7 @@ func (l *Linker) LinkOrCreate(
 	}
 
 	if provider.AutoLinkByEmail && claims.Email != "" {
-		user, err := tx.GetUserByEmail(ctx, claims.Email)
+		user, err := tx.GetUserByEmail(ctx, normalizeEmail(claims.Email))
 		switch {
 		case err == nil:
 			// Cross-provider takeover guard. An account that is ALREADY
@@ -221,7 +221,7 @@ func (l *Linker) createUser(
 
 	if _, err := tx.InsertUser(ctx, db.InsertUserParams{
 		ID:                 userID,
-		Email:              claims.Email,
+		Email:              normalizeEmail(claims.Email),
 		DisplayName:        claims.Name,
 		GivenName:          claims.GivenName,
 		FamilyName:         claims.FamilyName,
@@ -444,6 +444,13 @@ func ParseGroupMapping(data []byte) map[string]string {
 	}
 	return m
 }
+
+// normalizeEmail folds an email to the canonical form the SCIM and
+// manual lookup paths store and query by. The active-unique email index
+// is COLLATE NOCASE, so a JIT write that skipped this would be unfindable
+// by a normalized lookup yet still block re-insert. Semantics match the
+// scim and identity packages' own normalizeEmail exactly.
+func normalizeEmail(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
 
 // fingerprint reduces a value to its SHA-256 hex digest, which is what
 // the audit log accepts as class-two evidence. The value itself never
