@@ -111,7 +111,7 @@ func (q *Queries) GetCurrentLuksKeyForAgent(ctx context.Context, arg GetCurrentL
 }
 
 const getLpsPasswordForReveal = `-- name: GetLpsPasswordForReveal :one
-SELECT id, device_id, action_id, password
+SELECT id, device_id, action_id, username, password
 FROM lps_passwords
 WHERE id = ?
 `
@@ -120,6 +120,7 @@ type GetLpsPasswordForRevealRow struct {
 	ID       string `json:"id"`
 	DeviceID string `json:"device_id"`
 	ActionID string `json:"action_id"`
+	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
@@ -130,13 +131,14 @@ func (q *Queries) GetLpsPasswordForReveal(ctx context.Context, id string) (GetLp
 		&i.ID,
 		&i.DeviceID,
 		&i.ActionID,
+		&i.Username,
 		&i.Password,
 	)
 	return i, err
 }
 
 const getLuksKeyForReveal = `-- name: GetLuksKeyForReveal :one
-SELECT id, device_id, action_id, passphrase
+SELECT id, device_id, action_id, device_path, passphrase
 FROM luks_keys
 WHERE id = ?
 `
@@ -145,6 +147,7 @@ type GetLuksKeyForRevealRow struct {
 	ID         string `json:"id"`
 	DeviceID   string `json:"device_id"`
 	ActionID   string `json:"action_id"`
+	DevicePath string `json:"device_path"`
 	Passphrase string `json:"passphrase"`
 }
 
@@ -155,6 +158,7 @@ func (q *Queries) GetLuksKeyForReveal(ctx context.Context, id string) (GetLuksKe
 		&i.ID,
 		&i.DeviceID,
 		&i.ActionID,
+		&i.DevicePath,
 		&i.Passphrase,
 	)
 	return i, err

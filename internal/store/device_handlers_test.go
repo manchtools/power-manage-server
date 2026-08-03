@@ -806,11 +806,13 @@ func TestDeviceHandlers_SecretListsAreMetadataAndRevealsAreIndividuallyAudited(t
 		lpsActionID, int32(pmv1.ActionType_ACTION_TYPE_LPS), f.actorID,
 		luksActionID, int32(pmv1.ActionType_ACTION_TYPE_ENCRYPTION))
 	require.NoError(t, err)
+	// Seal under the same row-discriminated AAD the reveal handlers compute:
+	// the LPS username and the LUKS device_path the rows below are inserted with.
 	password, err := f.encryptor.EncryptWithContext("local-secret",
-		pmcrypto.SecretAAD(f.directID, lpsActionID, "lps"))
+		pmcrypto.SecretAADForRow(f.directID, lpsActionID, "lps", "localadmin"))
 	require.NoError(t, err)
 	passphrase, err := f.encryptor.EncryptWithContext("disk-secret",
-		pmcrypto.SecretAAD(f.directID, luksActionID, "luks"))
+		pmcrypto.SecretAADForRow(f.directID, luksActionID, "luks", "/dev/vda"))
 	require.NoError(t, err)
 	lpsIDs := make([]string, 5)
 	luksIDs := make([]string, 5)

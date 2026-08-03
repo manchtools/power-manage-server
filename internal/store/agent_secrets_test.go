@@ -98,7 +98,7 @@ func TestAgentSecrets_LuksFieldsAreSealedInTransitAndEncryptedAtRest(t *testing.
 	assert.NotEqual(t, passphrase, row.Passphrase)
 	assert.True(t, strings.HasPrefix(row.Passphrase, "enc:v1:"))
 	openedAtRest, err := f.atRest.DecryptWithContext(row.Passphrase,
-		pmcrypto.SecretAAD(f.deviceID, f.luksActionID, "luks"))
+		pmcrypto.SecretAADForRow(f.deviceID, f.luksActionID, "luks", "/dev/vda3"))
 	require.NoError(t, err)
 	assert.Equal(t, passphrase, openedAtRest)
 
@@ -173,13 +173,24 @@ func TestAgentSecrets_LpsBatchIsAtomicAndUsernameBound(t *testing.T) {
 		require.NoError(t, rows.Scan(&username, &ciphertext))
 		assert.True(t, strings.HasPrefix(ciphertext, "enc:v1:"))
 		plaintext, err := f.atRest.DecryptWithContext(ciphertext,
-			pmcrypto.SecretAAD(f.deviceID, f.lpsActionID, "lps"))
+			pmcrypto.SecretAADForRow(f.deviceID, f.lpsActionID, "lps", username))
 		require.NoError(t, err)
 		assert.Equal(t, want[username], plaintext)
 		delete(want, username)
 	}
 	require.NoError(t, rows.Err())
 	assert.Empty(t, want)
+
+	// The at-rest AAD binds the username: alice's ciphertext must not open
+	// under bob's row context, though they share the device and action.
+	var aliceCipher string
+	require.NoError(t, f.raw.QueryRow(ctx, `
+		SELECT password FROM lps_passwords
+		WHERE device_id = $1 AND action_id = $2 AND username = 'alice' AND is_current = TRUE`,
+		f.deviceID, f.lpsActionID).Scan(&aliceCipher))
+	_, err = f.atRest.DecryptWithContext(aliceCipher,
+		pmcrypto.SecretAADForRow(f.deviceID, f.lpsActionID, "lps", "bob"))
+	assert.Error(t, err, "an LPS ciphertext must not open under a sibling username's AAD")
 
 	duplicate := &pmv1.StoreLpsPasswordsRequest{
 		ActionId: f.lpsActionID,

@@ -119,7 +119,8 @@ func (s *Service) GetLuksKey(ctx context.Context, deviceID string, request *pmv1
 	if !strings.HasPrefix(key.Passphrase, "enc:v1:") {
 		return nil, errors.New("LUKS passphrase is not encrypted at rest")
 	}
-	plaintext, err := s.atRest.DecryptWithContext(key.Passphrase, pmcrypto.SecretAAD(deviceID, request.ActionId, "luks"))
+	plaintext, err := s.atRest.DecryptWithContext(key.Passphrase,
+		pmcrypto.SecretAADForRow(deviceID, request.ActionId, "luks", key.DevicePath))
 	if err != nil {
 		return nil, fmt.Errorf("open LUKS passphrase at rest: %w", err)
 	}
@@ -164,7 +165,8 @@ func (s *Service) StoreLuksKey(ctx context.Context, deviceID string, request *pm
 		return nil, err
 	}
 	defer clear(plaintext)
-	ciphertext, err := s.atRest.EncryptWithContext(string(plaintext), pmcrypto.SecretAAD(deviceID, request.ActionId, "luks"))
+	ciphertext, err := s.atRest.EncryptWithContext(string(plaintext),
+		pmcrypto.SecretAADForRow(deviceID, request.ActionId, "luks", request.DevicePath))
 	if err != nil {
 		return nil, fmt.Errorf("encrypt LUKS passphrase at rest: %w", err)
 	}
@@ -228,7 +230,7 @@ func (s *Service) StoreLpsPasswords(ctx context.Context, deviceID string, reques
 			return nil, err
 		}
 		ciphertext, encryptErr := s.atRest.EncryptWithContext(string(plaintext),
-			pmcrypto.SecretAAD(deviceID, request.ActionId, "lps"))
+			pmcrypto.SecretAADForRow(deviceID, request.ActionId, "lps", rotation.Username))
 		clear(plaintext)
 		if encryptErr != nil {
 			return nil, fmt.Errorf("encrypt LPS password at rest: %w", encryptErr)

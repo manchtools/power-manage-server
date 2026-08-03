@@ -32,7 +32,7 @@ WHERE history_position <= 3
 ORDER BY rotated_at DESC, id DESC;
 
 -- name: GetLpsPasswordForReveal :one
-SELECT id, device_id, action_id, password
+SELECT id, device_id, action_id, username, password
 FROM lps_passwords
 WHERE id = ?;
 
@@ -130,7 +130,7 @@ WHERE history_position <= 3
 ORDER BY rotated_at DESC, id DESC;
 
 -- name: GetLuksKeyForReveal :one
-SELECT id, device_id, action_id, passphrase
+SELECT id, device_id, action_id, device_path, passphrase
 FROM luks_keys
 WHERE id = ?;
 
