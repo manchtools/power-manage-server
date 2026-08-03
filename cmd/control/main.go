@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,14 +29,12 @@ import (
 var version = "dev"
 
 func main() {
-	command, args := "serve", os.Args[1:]
-	if len(args) > 0 {
-		switch args[0] {
-		case "bootstrap-admin", "backup-status":
-			command, args = args[0], args[1:]
-		}
+	command, err := parseCommand(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "control:", err)
+		os.Exit(2)
 	}
-	cfg, err := loadConfig(args)
+	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "control: invalid configuration:", err)
 		os.Exit(2)
@@ -53,6 +52,23 @@ func main() {
 		logger.Error("control stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+// parseCommand selects the subcommand to run. Configuration comes entirely
+// from the environment, so control accepts no flags and no other arguments.
+func parseCommand(args []string) (string, error) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "bootstrap-admin", "backup-status":
+			if len(args) > 1 {
+				return "", fmt.Errorf("unexpected arguments: %s", strings.Join(args[1:], " "))
+			}
+			return args[0], nil
+		default:
+			return "", fmt.Errorf("unexpected arguments: %s", strings.Join(args, " "))
+		}
+	}
+	return "serve", nil
 }
 
 func run(cfg *Config, logger *slog.Logger) error {

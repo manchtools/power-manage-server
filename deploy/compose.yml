@@ -26,9 +26,8 @@ services:
     image: ghcr.io/manchtools/power-manage-control:${IMAGE_TAG:-latest}
     container_name: pm-control
     restart: unless-stopped
-    command: ["-config", "/etc/power-manage/control.json"]
+    env_file: ./config/control.env
     volumes:
-      - ./config/control.json:/etc/power-manage/control.json:ro,z
       - ./certs/ca.crt:/run/certs/ca.crt:ro,z
       - ./certs/ca.key:/run/certs/ca.key:ro,z
       - ./certs/control.crt:/run/certs/control.crt:ro,z

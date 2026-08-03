@@ -44,8 +44,6 @@ CONTROL_DOMAIN=manage.example.test
 AGENT_DOMAIN=agents.example.test
 ACME_EMAIL=admin@example.test
 IMAGE_TAG=$REQUESTED_IMAGE_TAG
-LOG_LEVEL=info
-LOG_FORMAT=json
 EOF
 
 cd "$WORK_DIR"

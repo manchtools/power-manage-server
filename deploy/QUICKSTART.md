@@ -1,23 +1,34 @@
 # Power Manage server quickstart
 
-<!-- docref: begin src=deploy/compose.yml#@deployment-services:5fb8f238 -->
+<!-- docref: begin src=deploy/compose.yml#@deployment-services:a9ac8ed8 -->
 The stack has exactly two services: Traefik and one control process with an
-embedded SQLite database. The authoritative system design is
+embedded SQLite database. Compose gives control no arguments and passes it the
+rendered `config/control.env` as the container's environment file. The
+authoritative system design is
 `../../DESIGN_2026_07_31/00_TARGET_DESIGN.md`.
 <!-- docref: end -->
 
 ## Prepare
 
-Copy `.env.example` to `.env`, edit the three required public values, then run
-`./setup.sh`.
+Copy `.env.example` to `.env`, set the three required public values
+(`CONTROL_DOMAIN`, `AGENT_DOMAIN`, and `ACME_EMAIL`), then run `./setup.sh`.
+`.env` carries only those values and `IMAGE_TAG`; it is Compose's own
+environment file, not control's configuration.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:cc0ee234 -->
+Control is configured entirely by `POWER_MANAGE_`-prefixed environment
+variables and reads no configuration file. `setup.sh` renders every one of them
+into `config/control.env`, and that file is where ordinary settings such as the
+log level or the retention windows are edited. `setup.sh` re-renders it on
+every run, including through `./deploy.sh`, so re-apply local edits afterwards.
+
+<!-- docref: begin src=deploy/setup.sh#@generated-material:e174bfa7 -->
 `setup.sh` creates the internal Ed25519 CA, the control certificate, the
-encryption, session and sealing keys, and `config/control.json` with a 90-day
-audit-retention policy and the SQLite `database_path`. Existing complete
-keypairs are retained, which permits a pre-provisioned CA. Partial or unusable
-material fails closed. Generated secret files are mode 0600 and are never
-printed.
+encryption, session and sealing keys, and `config/control.env` with a 90-day
+audit-retention policy and the SQLite `POWER_MANAGE_DATABASE_PATH`. Existing
+complete keypairs are retained, which permits a pre-provisioned CA. Partial or
+unusable material fails closed. Generated secret files and `config/control.env`
+are mode 0600, verified before the script reports success, and no secret value
+is ever printed.
 <!-- docref: end -->
 
 <!-- docref: begin src=deploy/traefik/dynamic/routes.yml#@agent-route:2b16b515,cmd/control/httpserver.go#serveAgent:0543d07f,cmd/control/httpserver.go#buildAgentServer:ccd04d34,internal/agentstream/identity.go#MTLSMiddleware:f1b23680 -->
@@ -63,13 +74,15 @@ SQLite database lives under `data/control`; ACME state lives under
 
 <!-- docref: begin src=internal/maintenance/service.go#Service.RetainAudit:c0aefcae,cmd/control/config.go#Config.AuditRetention:0e4ab606 -->
 Control writes integrity-sealed audit anchors and archive-before-delete chain
-prefixes to `backup_path`; `audit_retention` defaults to 90 days. Mount or
+prefixes to `POWER_MANAGE_BACKUP_PATH`; `POWER_MANAGE_AUDIT_RETENTION` defaults
+to 90 days. Mount or
 replicate that path off-host, and back up the database, artifacts, `certs`, and
 `secrets` as one deployment unit.
 <!-- docref: end -->
 
 <!-- docref: begin src=cmd/control/config.go#Config.WebhookURL:341af9cf,internal/maintenance/service.go#Service.InspectSecurity:223fcf91,internal/maintenance/service.go#Service.InspectBackup:d8c2e6fd -->
-Set the optional `webhook_url` to an HTTPS endpoint to receive generic security
+Set the optional `POWER_MANAGE_WEBHOOK_URL` to an HTTPS endpoint to receive
+generic security
 and backup-lag notifications. The payload contains only the event name and
 occurrence time; control has no email or provider-specific notification
 integration.
@@ -80,8 +93,8 @@ Run `./backup.sh` from a host timer at least daily. It takes an online SQLite
 `.backup`, then verifies the copy with `integrity_check` and `foreign_key_check`
 before atomically publishing `backup-status.json`. It retains seven backups by
 default and never touches readiness. Inspect the latest success and current lag
-with `docker compose exec control control backup-status`; `backup_max_lag`
-defaults to 26 hours.
+with `docker compose exec control control backup-status`;
+`POWER_MANAGE_BACKUP_MAX_LAG` defaults to 26 hours.
 <!-- docref: end -->
 
 <!-- docref: begin src=internal/store/reads.go#ListDueDeliveries:bbaaa8a0,internal/store/search.go#Search:3244914e -->

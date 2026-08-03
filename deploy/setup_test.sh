@@ -4,6 +4,39 @@ set -euo pipefail
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# The single expected control.env surface. Every name assertion derives from
+# this list, so an added, removed, or duplicated variable is caught once.
+CONTROL_ENV_VARIABLES=(
+    POWER_MANAGE_PUBLIC_LISTEN
+    POWER_MANAGE_AGENT_LISTEN
+    POWER_MANAGE_PUBLIC_BASE_URL
+    POWER_MANAGE_AGENT_URL
+    POWER_MANAGE_TERMINAL_URL
+    POWER_MANAGE_CORS_ORIGINS
+    POWER_MANAGE_TERMINAL_ORIGINS
+    POWER_MANAGE_TRUSTED_PROXIES
+    POWER_MANAGE_AGENT_PROXY_SOURCES
+    POWER_MANAGE_LOG_LEVEL
+    POWER_MANAGE_LOG_FORMAT
+    POWER_MANAGE_CERTIFICATE_VALIDITY
+    POWER_MANAGE_HEARTBEAT_INTERVAL
+    POWER_MANAGE_AUDIT_RETENTION
+    POWER_MANAGE_ARTIFACT_PATH
+    POWER_MANAGE_DATABASE_PATH
+    POWER_MANAGE_BACKUP_PATH
+    POWER_MANAGE_BACKUP_MAX_LAG
+    POWER_MANAGE_WEBHOOK_URL
+    POWER_MANAGE_CA_CERT_FILE
+    POWER_MANAGE_CA_KEY_FILE
+    POWER_MANAGE_AGENT_TLS_CERT_FILE
+    POWER_MANAGE_AGENT_TLS_KEY_FILE
+    POWER_MANAGE_PUBLIC_TLS_CERT_FILE
+    POWER_MANAGE_PUBLIC_TLS_KEY_FILE
+    POWER_MANAGE_ENCRYPTION_KEY_FILE
+    POWER_MANAGE_SESSION_SIGNING_KEY_FILE
+    POWER_MANAGE_SEALING_KEY_FILE
+)
+
 new_fixture() {
     local directory="$1" control_domain="$2" agent_domain="$3"
     mkdir -p "$directory"
@@ -11,9 +44,31 @@ new_fixture() {
 CONTROL_DOMAIN=$control_domain
 AGENT_DOMAIN=$agent_domain
 ACME_EMAIL=admin@example.test
-LOG_LEVEL=info
-LOG_FORMAT=json
 EOF
+}
+
+# The rendered file is consumed verbatim by Compose as an env file, so assert
+# whole lines: a name that merely appears as a substring is not a setting.
+assert_env_line() {
+    local file="$1" line="$2"
+    grep -Fxq -- "$line" "$file" || {
+        printf 'missing %s in %s\n' "$line" "$file" >&2
+        return 1
+    }
+}
+
+# Every rendered line must name exactly one expected variable, and every
+# expected variable must be rendered exactly once. Taking the name from every
+# line rather than only from assignment-shaped lines also rejects stray output.
+assert_env_variable_set() {
+    local file="$1" expected actual
+    expected="$(printf '%s\n' "${CONTROL_ENV_VARIABLES[@]}" | LC_ALL=C sort)"
+    actual="$(cut -d= -f1 < "$file" | LC_ALL=C sort)"
+    [[ "$expected" == "$actual" ]] || {
+        printf 'unexpected control.env variables:\n%s\n' \
+            "$(diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") || true)" >&2
+        return 1
+    }
 }
 
 run_setup() {
@@ -43,22 +98,48 @@ test_secure_idempotent_setup() {
 
     [[ "$(stat -c '%a' "$directory/secrets/encryption.key")" == 600 ]]
     [[ "$(stat -c '%a' "$directory/certs/ca.key")" == 600 ]]
-    grep -q '"agent_listen": "172.30.0.3:8082"' "$directory/config/control.json"
-    grep -q '"agent_proxy_sources": \["172.30.0.2"\]' "$directory/config/control.json"
-    grep -q '"public_tls_cert_file": "/run/certs/control.crt"' "$directory/config/control.json"
-    grep -q '"public_tls_key_file": "/run/certs/control.key"' "$directory/config/control.json"
-    grep -q '"artifact_path": "/var/lib/power-manage/artifacts"' "$directory/config/control.json"
-    grep -q '"database_path": "/var/lib/power-manage/state/control.db"' "$directory/config/control.json"
-    grep -q '"backup_path": "/var/lib/power-manage/backups"' "$directory/config/control.json"
-	grep -q '"webhook_url": ""' "$directory/config/control.json"
-	grep -q '"backup_max_lag": "26h"' "$directory/config/control.json"
-	grep -q '"audit_retention": "2160h"' "$directory/config/control.json"
+
+    local config="$directory/config/control.env"
+    [[ -f "$config" ]]
+    [[ "$(stat -c '%a' "$config")" == 600 ]]
+    # Control is configured entirely by the environment; no file is rendered.
+    [[ ! -e "$directory/config/control.json" ]]
+    assert_env_variable_set "$config"
+    assert_env_line "$config" 'POWER_MANAGE_PUBLIC_LISTEN=0.0.0.0:8081'
+    assert_env_line "$config" 'POWER_MANAGE_AGENT_LISTEN=172.30.0.3:8082'
+    assert_env_line "$config" 'POWER_MANAGE_PUBLIC_BASE_URL=https://manage.example.test'
+    assert_env_line "$config" 'POWER_MANAGE_AGENT_URL=https://agents.example.test'
+    assert_env_line "$config" 'POWER_MANAGE_TERMINAL_URL=wss://manage.example.test/terminal'
+    assert_env_line "$config" 'POWER_MANAGE_CORS_ORIGINS=https://manage.example.test'
+    assert_env_line "$config" 'POWER_MANAGE_TERMINAL_ORIGINS=manage.example.test'
+    assert_env_line "$config" 'POWER_MANAGE_TRUSTED_PROXIES=172.29.0.2'
+    assert_env_line "$config" 'POWER_MANAGE_AGENT_PROXY_SOURCES=172.30.0.2'
+    # Both defaults are rendered by setup.sh; the fixture .env never set them.
+    assert_env_line "$config" 'POWER_MANAGE_LOG_LEVEL=info'
+    assert_env_line "$config" 'POWER_MANAGE_LOG_FORMAT=json'
+    assert_env_line "$config" 'POWER_MANAGE_CERTIFICATE_VALIDITY=8760h'
+    assert_env_line "$config" 'POWER_MANAGE_HEARTBEAT_INTERVAL=30s'
+    assert_env_line "$config" 'POWER_MANAGE_AUDIT_RETENTION=2160h'
+    assert_env_line "$config" 'POWER_MANAGE_ARTIFACT_PATH=/var/lib/power-manage/artifacts'
+    assert_env_line "$config" 'POWER_MANAGE_DATABASE_PATH=/var/lib/power-manage/state/control.db'
+    assert_env_line "$config" 'POWER_MANAGE_BACKUP_PATH=/var/lib/power-manage/backups'
+    assert_env_line "$config" 'POWER_MANAGE_BACKUP_MAX_LAG=26h'
+    assert_env_line "$config" 'POWER_MANAGE_WEBHOOK_URL='
+    assert_env_line "$config" 'POWER_MANAGE_CA_CERT_FILE=/run/certs/ca.crt'
+    assert_env_line "$config" 'POWER_MANAGE_CA_KEY_FILE=/run/certs/ca.key'
+    assert_env_line "$config" 'POWER_MANAGE_AGENT_TLS_CERT_FILE=/run/certs/control.crt'
+    assert_env_line "$config" 'POWER_MANAGE_AGENT_TLS_KEY_FILE=/run/certs/control.key'
+    assert_env_line "$config" 'POWER_MANAGE_PUBLIC_TLS_CERT_FILE=/run/certs/control.crt'
+    assert_env_line "$config" 'POWER_MANAGE_PUBLIC_TLS_KEY_FILE=/run/certs/control.key'
+    assert_env_line "$config" 'POWER_MANAGE_ENCRYPTION_KEY_FILE=/run/secrets/encryption.key'
+    assert_env_line "$config" 'POWER_MANAGE_SESSION_SIGNING_KEY_FILE=/run/secrets/session-signing.pem'
+    assert_env_line "$config" 'POWER_MANAGE_SEALING_KEY_FILE=/run/secrets/sealing.key'
+
     if grep -R -iEq 'valkey|asynq|indexer|password_auth|postgres|database_url' "$directory/config"; then
         return 1
     fi
 	[[ ! -e "$directory/certs/postgres.crt" ]]
 	[[ ! -e "$directory/secrets/postgres.password" ]]
-    python3 -m json.tool "$directory/config/control.json" >/dev/null
     # Match the verdict text, not the exit status: OpenSSL 3.0 exits 0 even for
     # a name that does NOT match, so an exit-code assertion here would hold on
     # any certificate and prove nothing.
