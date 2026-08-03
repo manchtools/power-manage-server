@@ -27,7 +27,7 @@ Control must fail readiness when the schema is not current, required keys or CA
 material are unusable, artifact paths are not writable, or the agent listener
 cannot enforce revocation.
 
-<!-- docref: begin src=cmd/control/main.go#parseCommand:67a0ee2b,cmd/control/config.go#configEnvironment:30e9356f,cmd/control/config.go#readEnvironment:88fc4d61,cmd/control/config.go#parseList:02da4e62 -->
+<!-- docref: begin src=cmd/control/main.go#parseCommand:9ba09808,cmd/control/config.go#configEnvironment:30e9356f,cmd/control/config.go#readEnvironment:88fc4d61,cmd/control/config.go#parseList:02da4e62 -->
 Configuration is entirely environmental: every option is its own documented
 `POWER_MANAGE_`-prefixed variable. There is no configuration file and no
 `-config` flag, and the only accepted arguments are the `bootstrap-admin` and

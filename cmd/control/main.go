@@ -65,7 +65,8 @@ func parseCommand(args []string) (string, error) {
 			}
 			return args[0], nil
 		default:
-			return "", fmt.Errorf("unexpected arguments: %s", strings.Join(args, " "))
+			return "", fmt.Errorf("unexpected arguments: %s (accepted commands: bootstrap-admin, backup-status)",
+				strings.Join(args, " "))
 		}
 	}
 	return "serve", nil

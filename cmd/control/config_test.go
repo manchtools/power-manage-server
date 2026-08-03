@@ -412,15 +412,16 @@ func TestParseCommandAcceptsSubcommandsAndRejectsEverythingElse(t *testing.T) {
 		assert.Equal(t, name, command)
 	}
 
-	for _, args := range [][]string{
-		{"-config", "/etc/power-manage/control.json"},
-		{"--help"},
-		{"serve"},
-		{"bootstrap-admin", "extra"},
-		{"backup-status", "-config", "/etc/power-manage/control.json"},
+	const hint = " (accepted commands: bootstrap-admin, backup-status)"
+	for message, args := range map[string][]string{
+		"unexpected arguments: -config /etc/power-manage/control.json" + hint: {"-config", "/etc/power-manage/control.json"},
+		"unexpected arguments: --help" + hint:                                 {"--help"},
+		"unexpected arguments: serve" + hint:                                  {"serve"},
+		"unexpected arguments: extra":                                         {"bootstrap-admin", "extra"},
+		"unexpected arguments: -config /etc/power-manage/control.json":        {"backup-status", "-config", "/etc/power-manage/control.json"},
 	} {
 		command, err := parseCommand(args)
-		assert.ErrorContains(t, err, "unexpected arguments", "%v must be rejected", args)
+		assert.EqualError(t, err, message, "%v must be rejected", args)
 		assert.Empty(t, command)
 	}
 }
