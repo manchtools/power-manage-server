@@ -10,8 +10,15 @@ REQUESTED_IMAGE_TAG="${PUBLISHED_IMAGE_TAG:-smoke-$$}"
 CONTROL_IMAGE="ghcr.io/manchtools/power-manage-control:$REQUESTED_IMAGE_TAG"
 BUILT_IMAGE=""
 
+# Compose substitutes from the process environment before any env file, and CI
+# exports IMAGE_TAG as an empty string, which resolves compose.yml's
+# ${IMAGE_TAG:-latest} to the stale published image instead of this run's tag.
+# Export the tag this run actually uses so environment and .env agree.
+export IMAGE_TAG="$REQUESTED_IMAGE_TAG"
+
 compose() {
-    docker compose --project-directory "$WORK_DIR" --project-name "$PROJECT_NAME" "$@"
+    docker compose --project-directory "$WORK_DIR" --project-name "$PROJECT_NAME" \
+        --env-file "$WORK_DIR/.env" "$@"
 }
 
 cleanup() {
@@ -44,8 +51,6 @@ CONTROL_DOMAIN=manage.example.test
 AGENT_DOMAIN=agents.example.test
 ACME_EMAIL=admin@example.test
 IMAGE_TAG=$REQUESTED_IMAGE_TAG
-LOG_LEVEL=info
-LOG_FORMAT=json
 EOF
 
 cd "$WORK_DIR"

@@ -34,8 +34,6 @@ validate_environment() {
     [[ "$CONTROL_DOMAIN" != manage.example.com && "$AGENT_DOMAIN" != agents.example.com ]] \
         || fail "replace the example hostnames in .env"
     [[ "$ACME_EMAIL" != admin@example.com ]] || fail "replace the example ACME email in .env"
-    [[ "${LOG_LEVEL:-info}" =~ ^(debug|info|warn|error)$ ]] || fail "LOG_LEVEL must be debug, info, warn, or error"
-    [[ "${LOG_FORMAT:-json}" =~ ^(json|text)$ ]] || fail "LOG_FORMAT must be json or text"
 }
 
 require_pair() {
@@ -136,43 +134,41 @@ ensure_secret_files() {
 }
 
 write_config() {
-    cat > "$CONFIG_DIR/control.json" <<EOF
-{
-  "public_listen": "0.0.0.0:8081",
-  "agent_listen": "172.30.0.3:8082",
-  "public_base_url": "https://${CONTROL_DOMAIN}",
-  "agent_url": "https://${AGENT_DOMAIN}",
-  "terminal_url": "wss://${CONTROL_DOMAIN}/terminal",
-  "cors_origins": ["https://${CONTROL_DOMAIN}"],
-  "terminal_origins": ["${CONTROL_DOMAIN}"],
-  "trusted_proxies": ["172.29.0.2"],
-  "agent_proxy_sources": ["172.30.0.2"],
-  "log_level": "${LOG_LEVEL:-info}",
-  "log_format": "${LOG_FORMAT:-json}",
-  "certificate_validity": "8760h",
-  "heartbeat_interval": "30s",
-	"audit_retention": "2160h",
-  "artifact_path": "/var/lib/power-manage/artifacts",
-  "database_path": "/var/lib/power-manage/state/control.db",
-  "backup_path": "/var/lib/power-manage/backups",
-  "backup_max_lag": "26h",
-  "webhook_url": "",
-  "ca_cert_file": "/run/certs/ca.crt",
-  "ca_key_file": "/run/certs/ca.key",
-  "agent_tls_cert_file": "/run/certs/control.crt",
-  "agent_tls_key_file": "/run/certs/control.key",
-  "public_tls_cert_file": "/run/certs/control.crt",
-  "public_tls_key_file": "/run/certs/control.key",
-  "encryption_key_file": "/run/secrets/encryption.key",
-  "session_signing_key_file": "/run/secrets/session-signing.pem",
-  "sealing_key_file": "/run/secrets/sealing.key"
-}
+    cat > "$CONFIG_DIR/control.env" <<EOF
+POWER_MANAGE_PUBLIC_LISTEN=0.0.0.0:8081
+POWER_MANAGE_AGENT_LISTEN=172.30.0.3:8082
+POWER_MANAGE_PUBLIC_BASE_URL=https://${CONTROL_DOMAIN}
+POWER_MANAGE_AGENT_URL=https://${AGENT_DOMAIN}
+POWER_MANAGE_TERMINAL_URL=wss://${CONTROL_DOMAIN}/terminal
+POWER_MANAGE_CORS_ORIGINS=https://${CONTROL_DOMAIN}
+POWER_MANAGE_TERMINAL_ORIGINS=${CONTROL_DOMAIN}
+POWER_MANAGE_TRUSTED_PROXIES=172.29.0.2
+POWER_MANAGE_AGENT_PROXY_SOURCES=172.30.0.2
+POWER_MANAGE_LOG_LEVEL=info
+POWER_MANAGE_LOG_FORMAT=json
+POWER_MANAGE_CERTIFICATE_VALIDITY=8760h
+POWER_MANAGE_HEARTBEAT_INTERVAL=30s
+POWER_MANAGE_AUDIT_RETENTION=2160h
+POWER_MANAGE_ARTIFACT_PATH=/var/lib/power-manage/artifacts
+POWER_MANAGE_DATABASE_PATH=/var/lib/power-manage/state/control.db
+POWER_MANAGE_BACKUP_PATH=/var/lib/power-manage/backups
+POWER_MANAGE_BACKUP_MAX_LAG=26h
+POWER_MANAGE_WEBHOOK_URL=
+POWER_MANAGE_CA_CERT_FILE=/run/certs/ca.crt
+POWER_MANAGE_CA_KEY_FILE=/run/certs/ca.key
+POWER_MANAGE_AGENT_TLS_CERT_FILE=/run/certs/control.crt
+POWER_MANAGE_AGENT_TLS_KEY_FILE=/run/certs/control.key
+POWER_MANAGE_PUBLIC_TLS_CERT_FILE=/run/certs/control.crt
+POWER_MANAGE_PUBLIC_TLS_KEY_FILE=/run/certs/control.key
+POWER_MANAGE_ENCRYPTION_KEY_FILE=/run/secrets/encryption.key
+POWER_MANAGE_SESSION_SIGNING_KEY_FILE=/run/secrets/session-signing.pem
+POWER_MANAGE_SEALING_KEY_FILE=/run/secrets/sealing.key
 EOF
 }
 
 validate_permissions() {
     local private
-    for private in "$CERTS_DIR/ca.key" "$CERTS_DIR/control.key" "$SECRETS_DIR"/*; do
+    for private in "$CERTS_DIR/ca.key" "$CERTS_DIR/control.key" "$SECRETS_DIR"/* "$CONFIG_DIR/control.env"; do
         [[ "$(stat -c '%a' "$private")" =~ ^[0-6]00$ ]] \
             || fail "$private must not be group/world accessible"
     done
@@ -200,7 +196,7 @@ main() {
     ensure_secret_files
     write_config
 
-    chmod 600 "$CERTS_DIR"/*.key "$SECRETS_DIR"/* "$CONFIG_DIR/control.json"
+    chmod 600 "$CERTS_DIR"/*.key "$SECRETS_DIR"/* "$CONFIG_DIR/control.env"
     chmod 644 "$CERTS_DIR"/*.crt
     validate_permissions
 

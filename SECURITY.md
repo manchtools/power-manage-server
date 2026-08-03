@@ -85,9 +85,10 @@ silent replay of non-idempotent effects.
 - Protect CA, JWT, sealing, database, and at-rest encryption keys with strict
   filesystem or deployment-secret permissions.
 <!-- docref: begin src=deploy/backup.sh#@sqlite-backup:99bc90ed,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
-- Run `deploy/backup.sh` from a host timer and replicate `backup_path` off-host:
-  it contains verified bounded SQLite backups, audit anchors, and archived
-  prefixes. Back up artifacts too, and monitor `control backup-status`.
+- Run `deploy/backup.sh` from a host timer and replicate the
+  `POWER_MANAGE_BACKUP_PATH` directory off-host: it contains verified bounded
+  SQLite backups, audit anchors, and archived prefixes. Back up artifacts too,
+  and monitor `control backup-status`.
 <!-- docref: end -->
 
 Gateway, Valkey, Asynq, external indexing, CRL distribution, local

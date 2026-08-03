@@ -27,9 +27,32 @@ Control must fail readiness when the schema is not current, required keys or CA
 material are unusable, artifact paths are not writable, or the agent listener
 cannot enforce revocation.
 
-Ordinary settings belong in a documented configuration file. Deployment
-secrets may use narrow environment or file overrides. Do not add one
-environment variable per ordinary option.
+<!-- docref: begin src=cmd/control/main.go#parseCommand:9ba09808,cmd/control/config.go#configEnvironment:30e9356f,cmd/control/config.go#readEnvironment:88fc4d61,cmd/control/config.go#parseList:02da4e62 -->
+Configuration is entirely environmental: every option is its own documented
+`POWER_MANAGE_`-prefixed variable. There is no configuration file and no
+`-config` flag, and the only accepted arguments are the `bootstrap-admin` and
+`backup-status` subcommands. The `configEnvironment` declarations in
+`config.go` are the authoritative option list — each field's tag names its
+variable and its type selects the parser — and startup fails closed on any
+`POWER_MANAGE_` variable that is not declared there, so a misspelling stops the
+process by name instead of silently leaving its option at the default. List
+options are comma-separated and reject an empty entry; malformed booleans and
+durations name their variable and fail startup.
+<!-- docref: end -->
+
+<!-- docref: begin src=cmd/control/config.go#loadSecret:b9678c7e,cmd/control/config.go#readSecretFile:60ffa83b,cmd/control/config.go#loadEd25519PrivateKey:3cc11345 -->
+Private keys are file-referenced only: `POWER_MANAGE_SESSION_SIGNING_KEY_FILE`
+must name one PEM-encoded Ed25519 PKCS#8 key. The two symmetric secrets accept
+either form — exactly one of `POWER_MANAGE_ENCRYPTION_KEY` or
+`POWER_MANAGE_ENCRYPTION_KEY_FILE`, and exactly one of
+`POWER_MANAGE_SEALING_KEY` or `POWER_MANAGE_SEALING_KEY_FILE`. Naming both of a
+pair is a configuration mistake rather than a precedence question and fails
+startup, as does naming neither. A referenced secret file must be a small
+regular file that is not group/world accessible. Configuration errors report
+variable names only; secret values are never echoed.
+<!-- docref: end -->
+
+For the values the reference deployment renders, see `../../deploy/QUICKSTART.md`.
 
 Initial administration uses the host-authorized `bootstrap-admin` command to
 produce a single-use, short-lived URL. Configure OIDC/SCIM immediately; there
@@ -38,7 +61,7 @@ is no local administrator password.
 ## Database
 
 Control embeds SQLite in WAL mode with `synchronous=FULL` and owns the file
-named by `database_path`. Search runs on FTS5.
+named by `POWER_MANAGE_DATABASE_PATH`. Search runs on FTS5.
 
 That datastore port deliberately came last: state was first converted to CRUD,
 audit to dedicated append-only tables, work to database jobs, and search to

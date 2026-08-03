@@ -6,16 +6,15 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,41 +23,53 @@ import (
 )
 
 const (
-	defaultConfigPath = "/etc/power-manage/control.json"
-	maxConfigBytes    = 1 << 20
-	maxSecretBytes    = 64 << 10
+	// optionPrefix marks the variables control owns. Every variable carrying
+	// it must be declared on configEnvironment, so a misspelled variable fails
+	// startup instead of leaving the option it meant to set at its default.
+	optionPrefix   = "POWER_MANAGE_"
+	maxSecretBytes = 64 << 10
 )
 
-type configDocument struct {
-	PublicListen          string   `json:"public_listen"`
-	AgentListen           string   `json:"agent_listen"`
-	PublicBaseURL         string   `json:"public_base_url"`
-	AgentURL              string   `json:"agent_url"`
-	TerminalURL           string   `json:"terminal_url"`
-	CORSOrigins           []string `json:"cors_origins"`
-	TerminalOrigins       []string `json:"terminal_origins"`
-	TrustedProxies        []string `json:"trusted_proxies"`
-	AgentProxySources     []string `json:"agent_proxy_sources"`
-	CORSAllowAll          bool     `json:"cors_allow_all"`
-	LogLevel              string   `json:"log_level"`
-	LogFormat             string   `json:"log_format"`
-	CertificateValidity   string   `json:"certificate_validity"`
-	HeartbeatInterval     string   `json:"heartbeat_interval"`
-	AuditRetention        string   `json:"audit_retention"`
-	ArtifactPath          string   `json:"artifact_path"`
-	BackupPath            string   `json:"backup_path"`
-	BackupMaxLag          string   `json:"backup_max_lag"`
-	WebhookURL            string   `json:"webhook_url"`
-	CACertFile            string   `json:"ca_cert_file"`
-	CAKeyFile             string   `json:"ca_key_file"`
-	AgentTLSCertFile      string   `json:"agent_tls_cert_file"`
-	AgentTLSKeyFile       string   `json:"agent_tls_key_file"`
-	PublicTLSCertFile     string   `json:"public_tls_cert_file"`
-	PublicTLSKeyFile      string   `json:"public_tls_key_file"`
-	DatabasePath          string   `json:"database_path"`
-	EncryptionKeyFile     string   `json:"encryption_key_file"`
-	SessionSigningKeyFile string   `json:"session_signing_key_file"`
-	SealingKeyFile        string   `json:"sealing_key_file"`
+// configEnviron reports the process environment. It is a package variable so
+// tests can drive the loader without inheriting POWER_MANAGE_ variables that
+// already exist in the surrounding shell.
+var configEnviron = os.Environ
+
+// configEnvironment declares every recognized option exactly once: the tag
+// names its variable and the field type selects its parser. The recognized set
+// is derived from these declarations rather than from a second list.
+type configEnvironment struct {
+	PublicListen          string        `env:"POWER_MANAGE_PUBLIC_LISTEN"`
+	AgentListen           string        `env:"POWER_MANAGE_AGENT_LISTEN"`
+	PublicBaseURL         string        `env:"POWER_MANAGE_PUBLIC_BASE_URL"`
+	AgentURL              string        `env:"POWER_MANAGE_AGENT_URL"`
+	TerminalURL           string        `env:"POWER_MANAGE_TERMINAL_URL"`
+	CORSOrigins           []string      `env:"POWER_MANAGE_CORS_ORIGINS"`
+	TerminalOrigins       []string      `env:"POWER_MANAGE_TERMINAL_ORIGINS"`
+	TrustedProxies        []string      `env:"POWER_MANAGE_TRUSTED_PROXIES"`
+	AgentProxySources     []string      `env:"POWER_MANAGE_AGENT_PROXY_SOURCES"`
+	CORSAllowAll          bool          `env:"POWER_MANAGE_CORS_ALLOW_ALL"`
+	LogLevel              string        `env:"POWER_MANAGE_LOG_LEVEL"`
+	LogFormat             string        `env:"POWER_MANAGE_LOG_FORMAT"`
+	CertificateValidity   time.Duration `env:"POWER_MANAGE_CERTIFICATE_VALIDITY"`
+	HeartbeatInterval     time.Duration `env:"POWER_MANAGE_HEARTBEAT_INTERVAL"`
+	AuditRetention        time.Duration `env:"POWER_MANAGE_AUDIT_RETENTION"`
+	ArtifactPath          string        `env:"POWER_MANAGE_ARTIFACT_PATH"`
+	BackupPath            string        `env:"POWER_MANAGE_BACKUP_PATH"`
+	BackupMaxLag          time.Duration `env:"POWER_MANAGE_BACKUP_MAX_LAG"`
+	WebhookURL            string        `env:"POWER_MANAGE_WEBHOOK_URL"`
+	CACertFile            string        `env:"POWER_MANAGE_CA_CERT_FILE"`
+	CAKeyFile             string        `env:"POWER_MANAGE_CA_KEY_FILE"`
+	AgentTLSCertFile      string        `env:"POWER_MANAGE_AGENT_TLS_CERT_FILE"`
+	AgentTLSKeyFile       string        `env:"POWER_MANAGE_AGENT_TLS_KEY_FILE"`
+	PublicTLSCertFile     string        `env:"POWER_MANAGE_PUBLIC_TLS_CERT_FILE"`
+	PublicTLSKeyFile      string        `env:"POWER_MANAGE_PUBLIC_TLS_KEY_FILE"`
+	DatabasePath          string        `env:"POWER_MANAGE_DATABASE_PATH"`
+	EncryptionKey         string        `env:"POWER_MANAGE_ENCRYPTION_KEY"`
+	EncryptionKeyFile     string        `env:"POWER_MANAGE_ENCRYPTION_KEY_FILE"`
+	SessionSigningKeyFile string        `env:"POWER_MANAGE_SESSION_SIGNING_KEY_FILE"`
+	SealingKey            string        `env:"POWER_MANAGE_SEALING_KEY"`
+	SealingKeyFile        string        `env:"POWER_MANAGE_SEALING_KEY_FILE"`
 }
 
 type Config struct {
@@ -93,78 +104,54 @@ type Config struct {
 	SealingKey          *ecdh.PrivateKey
 }
 
-func loadConfig(args []string) (*Config, error) {
-	flags := flag.NewFlagSet("control", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	defaultPath := os.Getenv("POWER_MANAGE_CONFIG_FILE")
-	if defaultPath == "" {
-		defaultPath = defaultConfigPath
-	}
-	path := flags.String("config", defaultPath, "path to control.json")
-	if err := flags.Parse(args); err != nil {
+// loadConfig builds the control configuration from the POWER_MANAGE_
+// environment. There is no configuration file.
+func loadConfig() (*Config, error) {
+	document, err := readEnvironment(configEnviron())
+	if err != nil {
 		return nil, err
 	}
-	if flags.NArg() != 0 {
-		return nil, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
-	}
 
-	var document configDocument
-	if err := decodeConfigFile(*path, &document); err != nil {
+	encryptionKey, _, err := loadSecret(
+		"POWER_MANAGE_ENCRYPTION_KEY", document.EncryptionKey,
+		"POWER_MANAGE_ENCRYPTION_KEY_FILE", document.EncryptionKeyFile)
+	if err != nil {
 		return nil, err
 	}
-	applyDefaults(&document)
-
-	encryptionKey, err := loadSecret("POWER_MANAGE_ENCRYPTION_KEY", "POWER_MANAGE_ENCRYPTION_KEY_FILE", document.EncryptionKeyFile)
+	sessionKey, err := loadEd25519PrivateKey(document.SessionSigningKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("encryption key: %w", err)
+		return nil, fmt.Errorf("POWER_MANAGE_SESSION_SIGNING_KEY_FILE: %w", err)
 	}
-	sessionKeyPath := pathOverride("POWER_MANAGE_SESSION_SIGNING_KEY_FILE", document.SessionSigningKeyFile)
-	sessionKey, err := loadEd25519PrivateKey(sessionKeyPath)
+	sealingSecret, sealingVariable, err := loadSecret(
+		"POWER_MANAGE_SEALING_KEY", document.SealingKey,
+		"POWER_MANAGE_SEALING_KEY_FILE", document.SealingKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("session signing key: %w", err)
+		return nil, err
 	}
-	sealingKeyPath := pathOverride("POWER_MANAGE_SEALING_KEY_FILE", document.SealingKeyFile)
-	sealingKey, err := loadX25519PrivateKey(sealingKeyPath)
+	sealingKey, err := parseX25519PrivateKey(sealingSecret)
 	if err != nil {
-		return nil, fmt.Errorf("sealing key: %w", err)
+		return nil, fmt.Errorf("%s: %w", sealingVariable, err)
 	}
 
-	certificateValidity, err := time.ParseDuration(document.CertificateValidity)
-	if err != nil || certificateValidity <= 0 {
-		return nil, errors.New("certificate_validity must be a positive duration")
-	}
-	heartbeatInterval, err := time.ParseDuration(document.HeartbeatInterval)
-	if err != nil || heartbeatInterval <= 0 {
-		return nil, errors.New("heartbeat_interval must be a positive duration")
-	}
-	auditRetention, err := time.ParseDuration(document.AuditRetention)
-	if err != nil || auditRetention <= 0 {
-		return nil, errors.New("audit_retention must be a positive duration")
-	}
-	backupMaxLag, err := time.ParseDuration(document.BackupMaxLag)
-	if err != nil || backupMaxLag <= 0 {
-		return nil, errors.New("backup_max_lag must be a positive duration")
-	}
 	cfg := &Config{
 		PublicListen: document.PublicListen, AgentListen: document.AgentListen,
 		PublicBaseURL: document.PublicBaseURL, AgentURL: document.AgentURL, TerminalURL: document.TerminalURL,
-		CORSOrigins:     append([]string(nil), document.CORSOrigins...),
-		TerminalOrigins: append([]string(nil), document.TerminalOrigins...),
-		TrustedProxies:  append([]string(nil), document.TrustedProxies...), CORSAllowAll: document.CORSAllowAll,
-		AgentProxySources: append([]string(nil), document.AgentProxySources...),
-		LogLevel:          document.LogLevel, LogFormat: document.LogFormat,
-		CertificateValidity: certificateValidity, HeartbeatInterval: heartbeatInterval,
-		AuditRetention:    auditRetention,
+		CORSOrigins: document.CORSOrigins, TerminalOrigins: document.TerminalOrigins,
+		TrustedProxies: document.TrustedProxies, AgentProxySources: document.AgentProxySources,
+		CORSAllowAll: document.CORSAllowAll,
+		LogLevel:     document.LogLevel, LogFormat: document.LogFormat,
+		CertificateValidity: document.CertificateValidity, HeartbeatInterval: document.HeartbeatInterval,
+		AuditRetention:    document.AuditRetention,
 		ArtifactPath:      document.ArtifactPath,
 		BackupPath:        document.BackupPath,
-		BackupMaxLag:      backupMaxLag,
+		BackupMaxLag:      document.BackupMaxLag,
 		WebhookURL:        document.WebhookURL,
 		CACertFile:        document.CACertFile,
-		CAKeyFile:         pathOverride("POWER_MANAGE_CA_KEY_FILE", document.CAKeyFile),
+		CAKeyFile:         document.CAKeyFile,
 		AgentTLSCertFile:  document.AgentTLSCertFile,
-		AgentTLSKeyFile:   pathOverride("POWER_MANAGE_AGENT_TLS_KEY_FILE", document.AgentTLSKeyFile),
+		AgentTLSKeyFile:   document.AgentTLSKeyFile,
 		PublicTLSCertFile: document.PublicTLSCertFile,
-		PublicTLSKeyFile:  pathOverride("POWER_MANAGE_PUBLIC_TLS_KEY_FILE", document.PublicTLSKeyFile),
+		PublicTLSKeyFile:  document.PublicTLSKeyFile,
 		DatabasePath:      document.DatabasePath, EncryptionKey: encryptionKey,
 		SessionSigningKey: sessionKey, SealingKey: sealingKey,
 	}
@@ -177,58 +164,118 @@ func loadConfig(args []string) (*Config, error) {
 	return cfg, nil
 }
 
-func decodeConfigFile(path string, target *configDocument) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("stat config %q: %w", path, err)
+// readEnvironment resolves the declared options from the raw environment
+// entries. Unrecognized POWER_MANAGE_ variables are rejected before anything
+// is parsed, and only variable names are reported because values may be
+// secrets.
+func readEnvironment(entries []string) (configEnvironment, error) {
+	document := defaultEnvironment()
+	declared := declaredOptions()
+	values := make(map[string]string, len(declared))
+	for _, entry := range entries {
+		name, value, separated := strings.Cut(entry, "=")
+		if !separated || !strings.HasPrefix(name, optionPrefix) {
+			continue
+		}
+		if _, recognized := declared[name]; !recognized {
+			return document, fmt.Errorf("unrecognized configuration variable %s", name)
+		}
+		values[name] = value
 	}
-	if !info.Mode().IsRegular() || info.Size() > maxConfigBytes {
-		return fmt.Errorf("config %q must be a regular file no larger than %d bytes", path, maxConfigBytes)
+	if err := applyEnvironment(&document, values); err != nil {
+		return document, err
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open config %q: %w", path, err)
+	return document, nil
+}
+
+// declaredOptions is the recognized variable set, derived from the
+// configEnvironment declarations so that declaring an option extends the
+// fail-closed guard with it.
+func declaredOptions() map[string]struct{} {
+	fields := reflect.VisibleFields(reflect.TypeOf(configEnvironment{}))
+	declared := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		if name := field.Tag.Get("env"); name != "" {
+			declared[name] = struct{}{}
+		}
 	}
-	defer func() { _ = file.Close() }()
-	decoder := json.NewDecoder(io.LimitReader(file, maxConfigBytes+1))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("decode config %q: %w", path, err)
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("decode config %q: trailing content", path)
+	return declared
+}
+
+// applyEnvironment overwrites the defaults with the variables that carry a
+// value. Malformed values fail closed and name their variable.
+func applyEnvironment(document *configEnvironment, values map[string]string) error {
+	fields := reflect.ValueOf(document).Elem()
+	for _, field := range reflect.VisibleFields(fields.Type()) {
+		name := field.Tag.Get("env")
+		if name == "" {
+			return fmt.Errorf("option %s declares no environment variable", field.Name)
+		}
+		// A blank variable leaves a scalar at its default; a blank list option
+		// is an empty list, which is what an unset list means too.
+		raw := strings.TrimSpace(values[name])
+		if raw == "" && field.Type.Kind() != reflect.Slice {
+			continue
+		}
+		target := fields.FieldByIndex(field.Index)
+		switch target.Interface().(type) {
+		case string:
+			target.SetString(raw)
+		case []string:
+			list, err := parseList(name, raw)
+			if err != nil {
+				return err
+			}
+			target.Set(reflect.ValueOf(list))
+		case bool:
+			parsed, err := strconv.ParseBool(raw)
+			if err != nil {
+				return fmt.Errorf("%s must be a boolean", name)
+			}
+			target.SetBool(parsed)
+		case time.Duration:
+			parsed, err := time.ParseDuration(raw)
+			if err != nil || parsed <= 0 {
+				return fmt.Errorf("%s must be a positive duration", name)
+			}
+			target.SetInt(int64(parsed))
+		default:
+			return fmt.Errorf("option %s has unsupported type %s", field.Name, field.Type)
+		}
 	}
 	return nil
 }
 
-func applyDefaults(document *configDocument) {
-	if document.PublicListen == "" {
-		document.PublicListen = ":8081"
+// parseList splits a comma-separated option and trims each entry. An empty
+// entry is a typo rather than an intent to configure nothing, so it fails
+// closed instead of being dropped silently.
+func parseList(name, raw string) ([]string, error) {
+	if raw == "" {
+		return nil, nil
 	}
-	if document.AgentListen == "" {
-		document.AgentListen = ":8082"
+	parts := strings.Split(raw, ",")
+	list := make([]string, 0, len(parts))
+	for _, part := range parts {
+		entry := strings.TrimSpace(part)
+		if entry == "" {
+			return nil, fmt.Errorf("%s must not contain an empty entry", name)
+		}
+		list = append(list, entry)
 	}
-	if document.LogLevel == "" {
-		document.LogLevel = "info"
-	}
-	if document.LogFormat == "" {
-		document.LogFormat = "json"
-	}
-	if document.CertificateValidity == "" {
-		document.CertificateValidity = "8760h"
-	}
-	if document.HeartbeatInterval == "" {
-		document.HeartbeatInterval = "30s"
-	}
-	if document.AuditRetention == "" {
-		document.AuditRetention = "2160h"
-	}
-	if document.BackupMaxLag == "" {
-		document.BackupMaxLag = "26h"
-	}
-	if document.DatabasePath == "" {
-		document.DatabasePath = "/var/lib/power-manage/control.db"
+	return list, nil
+}
+
+func defaultEnvironment() configEnvironment {
+	return configEnvironment{
+		PublicListen:        ":8081",
+		AgentListen:         ":8082",
+		LogLevel:            "info",
+		LogFormat:           "json",
+		CertificateValidity: 8760 * time.Hour,
+		HeartbeatInterval:   30 * time.Second,
+		AuditRetention:      2160 * time.Hour,
+		BackupMaxLag:        26 * time.Hour,
+		DatabasePath:        "/var/lib/power-manage/control.db",
 	}
 }
 
@@ -366,30 +413,28 @@ func originHosts(origins []string) []string {
 	return hosts
 }
 
-func pathOverride(environment, configured string) string {
-	if value := strings.TrimSpace(os.Getenv(environment)); value != "" {
-		return value
+// loadSecret resolves a secret from either its direct value variable or its
+// file variable and reports which one supplied it. Naming both is a
+// configuration mistake rather than a precedence question, so it fails closed.
+// Errors name variables only; secret values are never echoed.
+func loadSecret(valueVariable, value, fileVariable, file string) (string, string, error) {
+	switch {
+	case value != "" && file != "":
+		return "", "", fmt.Errorf("%s and %s must not both be set", valueVariable, fileVariable)
+	case value != "":
+		return value, valueVariable, nil
+	case file == "":
+		return "", "", fmt.Errorf("%s or %s is required", valueVariable, fileVariable)
 	}
-	return configured
-}
-
-func loadSecret(valueEnvironment, fileEnvironment, configuredFile string) (string, error) {
-	if value := strings.TrimSpace(os.Getenv(valueEnvironment)); value != "" {
-		return value, nil
-	}
-	path := pathOverride(fileEnvironment, configuredFile)
-	if path == "" {
-		return "", errors.New("secret file is required")
-	}
-	data, err := readSecretFile(path)
+	data, err := readSecretFile(file)
 	if err != nil {
-		return "", err
+		return "", "", fmt.Errorf("%s: %w", fileVariable, err)
 	}
-	value := strings.TrimSpace(string(data))
-	if value == "" {
-		return "", errors.New("secret file is empty")
+	secret := strings.TrimSpace(string(data))
+	if secret == "" {
+		return "", "", fmt.Errorf("%s names an empty secret file", fileVariable)
 	}
-	return value, nil
+	return secret, fileVariable, nil
 }
 
 func readSecretFile(path string) ([]byte, error) {
@@ -433,15 +478,13 @@ func loadEd25519PrivateKey(path string) (ed25519.PrivateKey, error) {
 	return append(ed25519.PrivateKey(nil), key...), nil
 }
 
-func loadX25519PrivateKey(path string) (*ecdh.PrivateKey, error) {
-	data, err := readSecretFile(path)
-	if err != nil {
-		return nil, err
-	}
-	rawText := strings.TrimSpace(string(data))
+// parseX25519PrivateKey decodes the sealing key material. The encoded text is
+// secret, so decoding failures describe the expected shape and never the
+// value.
+func parseX25519PrivateKey(text string) (*ecdh.PrivateKey, error) {
 	var raw []byte
 	for _, decode := range []func(string) ([]byte, error){hex.DecodeString, base64.RawStdEncoding.DecodeString, base64.StdEncoding.DecodeString} {
-		decoded, decodeErr := decode(rawText)
+		decoded, decodeErr := decode(text)
 		if decodeErr == nil && len(decoded) == 32 {
 			raw = decoded
 			break
