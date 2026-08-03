@@ -194,6 +194,16 @@ func (d *Dispatcher) queueDue(ctx context.Context) error {
 	return nil
 }
 
+// Sendable reports whether a delivery row is due to be pushed to a connection
+// at the given live epoch as of now. A future PENDING delivery remains
+// scheduled and is never pulled forward; the sole exception is a PUSHED row
+// awaiting reconnect redelivery on a newer epoch, which bypasses the previous
+// stream's retry delay. This is the single availability/epoch guard shared by
+// the dispatcher and the agent sync path so neither can drift from the other.
+func Sendable(row store.DeliveryRow, epoch int64, now time.Time) bool {
+	return !row.AvailableAt.After(now) || (row.State == StatePushed && epoch > row.PushEpoch)
+}
+
 // Dispatch attempts one delivery against the device's current connection. An
 // offline or just-replaced connection is normal: the row remains durable and a
 // reconnect notification or sweep retries it.
@@ -223,7 +233,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, deliveryID string) error {
 	}
 	// A reconnect should not wait for the previous stream's retry delay. A
 	// future PENDING delivery remains scheduled and is never pulled forward.
-	if row.AvailableAt.After(d.now()) && !(row.State == StatePushed && agent.Epoch > row.PushEpoch) {
+	if !Sendable(row, agent.Epoch, d.now()) {
 		return nil
 	}
 
