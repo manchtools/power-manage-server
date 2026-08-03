@@ -97,8 +97,10 @@ func TestAgentSecrets_LuksFieldsAreSealedInTransitAndEncryptedAtRest(t *testing.
 	require.NoError(t, err)
 	assert.NotEqual(t, passphrase, row.Passphrase)
 	assert.True(t, strings.HasPrefix(row.Passphrase, "enc:v1:"))
+	// The at-rest AAD binds the row's immutable id, not the device_path, so a
+	// DB attacker cannot relocate this ciphertext onto a sibling rotation row.
 	openedAtRest, err := f.atRest.DecryptWithContext(row.Passphrase,
-		pmcrypto.SecretAADForRow(f.deviceID, f.luksActionID, "luks", "/dev/vda3"))
+		pmcrypto.SecretAADForRow(f.deviceID, f.luksActionID, "luks", row.ID))
 	require.NoError(t, err)
 	assert.Equal(t, passphrase, openedAtRest)
 
@@ -129,7 +131,7 @@ func TestAgentSecrets_LuksFieldsAreSealedInTransitAndEncryptedAtRest(t *testing.
 	assert.Zero(t, wrongRows)
 }
 
-func TestAgentSecrets_LpsBatchIsAtomicAndUsernameBound(t *testing.T) {
+func TestAgentSecrets_LpsBatchIsAtomicAndRowIDBound(t *testing.T) {
 	f := newAgentSecretFixture(t)
 	ctx := context.Background()
 	rotation := func(username, password string) *pmv1.LpsPasswordRotation {
@@ -162,35 +164,62 @@ func TestAgentSecrets_LpsBatchIsAtomicAndUsernameBound(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, response.Success)
 	rows, err := f.raw.Query(ctx, `
-		SELECT username, password FROM lps_passwords
+		SELECT id, username, password FROM lps_passwords
 		WHERE device_id = $1 AND action_id = $2 AND is_current = TRUE ORDER BY username`,
 		f.deviceID, f.lpsActionID)
 	require.NoError(t, err)
 	defer rows.Close()
 	want := map[string]string{"alice": "alice-secret", "bob": "bob-secret"}
+	aliceID := ""
 	for rows.Next() {
-		var username, ciphertext string
-		require.NoError(t, rows.Scan(&username, &ciphertext))
+		var id, username, ciphertext string
+		require.NoError(t, rows.Scan(&id, &username, &ciphertext))
 		assert.True(t, strings.HasPrefix(ciphertext, "enc:v1:"))
+		// The at-rest AAD binds the row's immutable id, so opening a row needs
+		// that row's own id — the shared username is not sufficient.
 		plaintext, err := f.atRest.DecryptWithContext(ciphertext,
-			pmcrypto.SecretAADForRow(f.deviceID, f.lpsActionID, "lps", username))
+			pmcrypto.SecretAADForRow(f.deviceID, f.lpsActionID, "lps", id))
 		require.NoError(t, err)
 		assert.Equal(t, want[username], plaintext)
+		_, err = f.atRest.DecryptWithContext(ciphertext,
+			pmcrypto.SecretAADForRow(f.deviceID, f.lpsActionID, "lps", username))
+		assert.Error(t, err, "an LPS ciphertext must not open under the shared username AAD")
+		if username == "alice" {
+			aliceID = id
+		}
 		delete(want, username)
 	}
 	require.NoError(t, rows.Err())
 	assert.Empty(t, want)
+	require.NotEmpty(t, aliceID)
 
-	// The at-rest AAD binds the username: alice's ciphertext must not open
-	// under bob's row context, though they share the device and action.
-	var aliceCipher string
+	// Rotate alice again: a second rotation row for the SAME username with a
+	// distinct immutable row id. Because the AAD binds the row id and not the
+	// username, the retired row's ciphertext must not open under the new
+	// current row's id — a DB-level attacker cannot swap ciphertext between
+	// sibling rotation rows that share (device, action, username).
+	_, err = f.service.StoreLpsPasswords(ctx, f.deviceID, &pmv1.StoreLpsPasswordsRequest{
+		ActionId:  f.lpsActionID,
+		Rotations: []*pmv1.LpsPasswordRotation{rotation("alice", "alice-rotated")},
+	})
+	require.NoError(t, err)
+	var newAliceID, oldAliceCipher string
+	require.NoError(t, f.raw.QueryRow(ctx, `
+		SELECT id FROM lps_passwords
+		WHERE device_id = $1 AND action_id = $2 AND username = 'alice' AND is_current = TRUE`,
+		f.deviceID, f.lpsActionID).Scan(&newAliceID))
 	require.NoError(t, f.raw.QueryRow(ctx, `
 		SELECT password FROM lps_passwords
-		WHERE device_id = $1 AND action_id = $2 AND username = 'alice' AND is_current = TRUE`,
-		f.deviceID, f.lpsActionID).Scan(&aliceCipher))
-	_, err = f.atRest.DecryptWithContext(aliceCipher,
-		pmcrypto.SecretAADForRow(f.deviceID, f.lpsActionID, "lps", "bob"))
-	assert.Error(t, err, "an LPS ciphertext must not open under a sibling username's AAD")
+		WHERE device_id = $1 AND action_id = $2 AND id = $3`,
+		f.deviceID, f.lpsActionID, aliceID).Scan(&oldAliceCipher))
+	require.NotEqual(t, aliceID, newAliceID, "a rotation mints a new immutable row id")
+	retired, err := f.atRest.DecryptWithContext(oldAliceCipher,
+		pmcrypto.SecretAADForRow(f.deviceID, f.lpsActionID, "lps", aliceID))
+	require.NoError(t, err, "the retired row must still open under its own id")
+	assert.Equal(t, "alice-secret", retired)
+	_, err = f.atRest.DecryptWithContext(oldAliceCipher,
+		pmcrypto.SecretAADForRow(f.deviceID, f.lpsActionID, "lps", newAliceID))
+	assert.Error(t, err, "sibling rotation rows sharing a username must not be interchangeable")
 
 	duplicate := &pmv1.StoreLpsPasswordsRequest{
 		ActionId: f.lpsActionID,

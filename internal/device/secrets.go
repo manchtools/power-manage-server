@@ -81,7 +81,7 @@ func (h *Handlers) RevealLpsPassword(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 	password, err := h.openStoredSecret(secret.Password,
-		pmcrypto.SecretAADForRow(secret.DeviceID, secret.ActionID, "lps", secret.Username))
+		pmcrypto.SecretAADForRow(secret.DeviceID, secret.ActionID, "lps", secret.ID))
 	if err != nil {
 		return nil, h.internal(ctx, "open LPS password", err)
 	}
@@ -150,7 +150,7 @@ func (h *Handlers) RevealLuksKey(ctx context.Context, req *connect.Request[pmv1.
 		return nil, err
 	}
 	passphrase, err := h.openStoredSecret(secret.Passphrase,
-		pmcrypto.SecretAADForRow(secret.DeviceID, secret.ActionID, "luks", secret.DevicePath))
+		pmcrypto.SecretAADForRow(secret.DeviceID, secret.ActionID, "luks", secret.ID))
 	if err != nil {
 		return nil, h.internal(ctx, "open LUKS passphrase", err)
 	}

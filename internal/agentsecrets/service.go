@@ -120,7 +120,7 @@ func (s *Service) GetLuksKey(ctx context.Context, deviceID string, request *pmv1
 		return nil, errors.New("LUKS passphrase is not encrypted at rest")
 	}
 	plaintext, err := s.atRest.DecryptWithContext(key.Passphrase,
-		pmcrypto.SecretAADForRow(deviceID, request.ActionId, "luks", key.DevicePath))
+		pmcrypto.SecretAADForRow(deviceID, request.ActionId, "luks", key.ID))
 	if err != nil {
 		return nil, fmt.Errorf("open LUKS passphrase at rest: %w", err)
 	}
@@ -165,8 +165,13 @@ func (s *Service) StoreLuksKey(ctx context.Context, deviceID string, request *pm
 		return nil, err
 	}
 	defer clear(plaintext)
+	// The at-rest AAD binds the row's immutable id, so mint it before sealing
+	// and insert the row under the same id. The device_path is shared by every
+	// rotation row for this disk; only the row id makes the ciphertext
+	// non-relocatable onto a sibling rotation row.
+	rowID := ulid.Make().String()
 	ciphertext, err := s.atRest.EncryptWithContext(string(plaintext),
-		pmcrypto.SecretAADForRow(deviceID, request.ActionId, "luks", request.DevicePath))
+		pmcrypto.SecretAADForRow(deviceID, request.ActionId, "luks", rowID))
 	if err != nil {
 		return nil, fmt.Errorf("encrypt LUKS passphrase at rest: %w", err)
 	}
@@ -175,7 +180,6 @@ func (s *Service) StoreLuksKey(ctx context.Context, deviceID string, request *pm
 		return nil, ErrInvalidInput
 	}
 	now := s.now().UTC().Truncate(time.Microsecond)
-	rowID := ulid.Make().String()
 	_, err = s.store.WithAudit(ctx, agentOperation(deviceID, "StoreLuksKey"),
 		func(ctx context.Context, tx *store.Tx, recorder *store.AuditRecorder) error {
 			if _, err := tx.RetireCurrentLuksKeys(ctx, db.RetireCurrentLuksKeysParams{
@@ -229,8 +233,13 @@ func (s *Service) StoreLpsPasswords(ctx context.Context, deviceID string, reques
 		if err != nil {
 			return nil, err
 		}
+		// The at-rest AAD binds the row's immutable id, minted before sealing
+		// and reused for the insert below. Sibling rotation rows for one
+		// username each seal under their own id, so a DB attacker cannot swap
+		// ciphertext between them; the username is not a unique discriminator.
+		rowID := ulid.Make().String()
 		ciphertext, encryptErr := s.atRest.EncryptWithContext(string(plaintext),
-			pmcrypto.SecretAADForRow(deviceID, request.ActionId, "lps", rotation.Username))
+			pmcrypto.SecretAADForRow(deviceID, request.ActionId, "lps", rowID))
 		clear(plaintext)
 		if encryptErr != nil {
 			return nil, fmt.Errorf("encrypt LPS password at rest: %w", encryptErr)
@@ -244,7 +253,7 @@ func (s *Service) StoreLpsPasswords(ctx context.Context, deviceID string, reques
 			return nil, ErrInvalidInput
 		}
 		prepared = append(prepared, preparedRotation{
-			id: ulid.Make().String(), username: rotation.Username, ciphertext: ciphertext,
+			id: rowID, username: rotation.Username, ciphertext: ciphertext,
 			rotatedAt: rotatedAt.UTC().Truncate(time.Microsecond), reason: reason,
 		})
 	}

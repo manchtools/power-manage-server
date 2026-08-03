@@ -100,6 +100,37 @@ func TestLinker_JITStoresNormalizedEmail(t *testing.T) {
 	assert.Equal(t, "first.last@company.com", user.Email, "the JIT write must store the normalized email")
 }
 
+// TestLinker_PaddedEmailDerivesUsernameFromNormalizedForm proves the JIT write
+// derives the Linux username from the SAME normalized email it stores. A valid
+// address with surrounding whitespace ("  Padded.User@Corp.com  ") folds to
+// "padded.user@corp.com"; deriving the username from the raw claim instead would
+// leak the leading whitespace into it (sanitized to leading underscores),
+// producing a username inconsistent with the stored canonical email.
+func TestLinker_PaddedEmailDerivesUsernameFromNormalizedForm(t *testing.T) {
+	ctx := context.Background()
+	st, raw := newLinkerStore(t)
+	at := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	linker := newTestLinker(t, at)
+
+	provider := seedProvider(t, raw, true, false)
+	claims := &UserClaims{Subject: "ext-padded-1", Email: "  Padded.User@Corp.com  ", Name: "Padded User"}
+
+	var result *LinkResult
+	_, err := st.WithAudit(ctx, linkerOp(), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		var e error
+		result, e = linker.LinkOrCreate(ctx, tx, rec, provider, claims)
+		return e
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	user, err := st.GetUserByEmail(ctx, "padded.user@corp.com")
+	require.NoError(t, err, "the padded email must be stored and found in normalized form")
+	assert.Equal(t, "padded.user@corp.com", user.Email)
+	assert.Equal(t, DeriveLinuxUsername("padded.user@corp.com", ""), user.LinuxUsername,
+		"the Linux username must derive from the normalized email, not the padded raw claim")
+}
+
 // TestLinker_AutoLinkFindsNormalizedUser proves the cross-provider auto-link
 // guard resolves an existing (unbound) subject even when the asserted email
 // differs only in case, because the lookup normalizes first.
@@ -128,4 +159,45 @@ func TestLinker_AutoLinkFindsNormalizedUser(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, existingID, result.UserID, "auto-link must bind the existing normalized subject")
 	assert.False(t, result.IsNew, "auto-link must not provision a duplicate subject")
+}
+
+// TestLinker_WhitespaceEmailIsRefused proves a whitespace-only email claim is
+// treated as no email: it is neither auto-linked nor JIT-provisioned, even with
+// both provider modes enabled. The raw claim is non-empty ("   "), so a gate on
+// claims.Email alone would provision a subject whose normalized email is empty —
+// unfindable by a normalized GetUserByEmail lookup yet still blocking re-insert
+// on the active-unique COLLATE NOCASE index.
+func TestLinker_WhitespaceEmailIsRefused(t *testing.T) {
+	ctx := context.Background()
+	st, raw := newLinkerStore(t)
+	at := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	linker := newTestLinker(t, at)
+
+	// Both auto-create and auto-link enabled: neither may act on an empty email.
+	provider := seedProvider(t, raw, true, true)
+	claims := &UserClaims{Subject: "ext-blank-1", Email: "   ", Name: "Blank"}
+
+	_, err := st.WithAudit(ctx, linkerOp(), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		_, e := linker.LinkOrCreate(ctx, tx, rec, provider, claims)
+		return e
+	})
+	require.Error(t, err, "a whitespace-only email must not provision or link a subject")
+	// An empty canonical email is treated as no email: neither auto-link nor
+	// auto-create acts, so the login resolves to the same unauthenticated
+	// no-matching-account answer as any other unresolvable identity.
+	assert.ErrorIs(t, err, ErrNoMatchingAccount)
+
+	// No subject with an empty email may exist. The refusal aborts the audited
+	// transaction, so this also confirms createUser never ran.
+	var count int
+	require.NoError(t, raw.QueryRow(ctx,
+		`SELECT count(*) FROM users WHERE email = ''`).Scan(&count))
+	assert.Zero(t, count, "no empty-email subject may be created")
+
+	// Auto-link must not have acted either: no identity link may have been
+	// created on an empty address.
+	var links int
+	require.NoError(t, raw.QueryRow(ctx,
+		`SELECT count(*) FROM identity_links`).Scan(&links))
+	assert.Zero(t, links, "no identity link may be created on an empty email")
 }

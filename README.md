@@ -26,7 +26,7 @@ search semantics. PostgreSQL is gone and must not return.
 - The named protobuf RPCs remain the product contract except for the 14
   Gateway-only removals listed in the target.
 - Agents initiate one direct outbound mTLS stream to control.
-<!-- docref: begin src=internal/scim/users_write.go#Handler.provisionSubject:3b57e30f,internal/idp/linker.go#Linker.createUser:0b0b13c3,internal/identity/users.go#Handlers.EraseJITUser:6cc8f91a -->
+<!-- docref: begin src=internal/scim/users_write.go#Handler.provisionSubject:3b57e30f,internal/idp/linker.go#Linker.createUser:7858b2ad,internal/identity/users.go#Handlers.EraseJITUser:6cc8f91a -->
 - Human identity uses SCIM lifecycle management or optional per-provider OIDC
   JIT for homelabs. There is no manual user creation; JIT-created subjects have
   an explicit, provenance-gated erasure RPC. Bootstrap-admin is a one-time host

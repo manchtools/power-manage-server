@@ -806,18 +806,22 @@ func TestDeviceHandlers_SecretListsAreMetadataAndRevealsAreIndividuallyAudited(t
 		lpsActionID, int32(pmv1.ActionType_ACTION_TYPE_LPS), f.actorID,
 		luksActionID, int32(pmv1.ActionType_ACTION_TYPE_ENCRYPTION))
 	require.NoError(t, err)
-	// Seal under the same row-discriminated AAD the reveal handlers compute:
-	// the LPS username and the LUKS device_path the rows below are inserted with.
-	password, err := f.encryptor.EncryptWithContext("local-secret",
-		pmcrypto.SecretAADForRow(f.directID, lpsActionID, "lps", "localadmin"))
-	require.NoError(t, err)
-	passphrase, err := f.encryptor.EncryptWithContext("disk-secret",
-		pmcrypto.SecretAADForRow(f.directID, luksActionID, "luks", "/dev/vda"))
-	require.NoError(t, err)
+	// The reveal handlers compute the at-rest AAD from the row's immutable id
+	// (secret.ID), not from the username/device_path shared by every rotation
+	// row. Generate the row ids first, then seal the CURRENT row's ciphertext
+	// under its own id: only the revealed (current) row need open.
 	lpsIDs := make([]string, 5)
 	luksIDs := make([]string, 5)
-	for i := 0; i < 5; i++ {
+	for i := range lpsIDs {
 		lpsIDs[i], luksIDs[i] = newID(), newID()
+	}
+	password, err := f.encryptor.EncryptWithContext("local-secret",
+		pmcrypto.SecretAADForRow(f.directID, lpsActionID, "lps", lpsIDs[0]))
+	require.NoError(t, err)
+	passphrase, err := f.encryptor.EncryptWithContext("disk-secret",
+		pmcrypto.SecretAADForRow(f.directID, luksActionID, "luks", luksIDs[0]))
+	require.NoError(t, err)
+	for i := 0; i < 5; i++ {
 		current := i == 0
 		rotatedAt := f.now.Add(-time.Duration(i) * time.Hour)
 		_, err = f.raw.Exec(context.Background(), `
