@@ -256,6 +256,12 @@ func (h *Handlers) ListDeviceGroupsForDevice(ctx context.Context, req *connect.R
 		}
 		return nil, h.internal(ctx, "read device for groups", err)
 	}
+	// A scope-restricted caller must not learn that a device outside its scope
+	// exists: an out-of-scope device reads as not found, exactly as
+	// device.GetDevice folds it, rather than returning OK with an empty list.
+	if err := h.enforceDeviceReadScope(ctx, "ListDeviceGroupsForDevice", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
 	groups, restricted := auth.DeviceScopeListFilter(ctx, "ListDeviceGroupsForDevice")
 	rows, err := h.store.ListDeviceGroupsForDevice(ctx, req.Msg.DeviceId, store.DeviceGroupListFilter{
 		ScopeRestricted: restricted, ScopeGroupIDs: groups,
@@ -541,6 +547,20 @@ func (h *Handlers) enforceDeviceScope(ctx context.Context, permission, deviceID 
 		return h.internal(ctx, "resolve device scope", err)
 	}
 	return rpcError(ctx, "permission_denied", connect.CodePermissionDenied, "permission denied")
+}
+
+// enforceDeviceReadScope is the read-path counterpart of enforceDeviceScope: an
+// out-of-scope device folds to device_not_found rather than permission_denied,
+// so a scope-restricted caller cannot use this read as an existence oracle.
+func (h *Handlers) enforceDeviceReadScope(ctx context.Context, permission, deviceID string) error {
+	err := auth.EnforceDeviceScopeOnBaseTier(ctx, scopeResolver{h.store}, permission, deviceID)
+	if err == nil {
+		return nil
+	}
+	if connect.CodeOf(err) == connect.CodeInternal {
+		return h.internal(ctx, "resolve device scope", err)
+	}
+	return rpcError(ctx, "device_not_found", connect.CodeNotFound, "device not found")
 }
 
 func (h *Handlers) updated(ctx context.Context, operation string, row store.DeviceGroupView, err error) (*connect.Response[pmv1.UpdateDeviceGroupResponse], error) {

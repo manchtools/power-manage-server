@@ -79,6 +79,13 @@ func (l *Linker) LinkOrCreate(
 ) (*LinkResult, error) {
 	at := l.now().UTC()
 
+	// Normalize the asserted email once. A blank or whitespace-only claim folds
+	// to "" and is then treated as no email by both the auto-link and JIT
+	// branches below: an existing (provider, subject) binding still resolves
+	// without one, but a subject is never provisioned or looked up on an empty
+	// address.
+	email := normalizeEmail(claims.Email)
+
 	link, err := tx.GetIdentityLinkByProviderAndExternalID(ctx, db.GetIdentityLinkByProviderAndExternalIDParams{
 		ProviderID: provider.ID,
 		ExternalID: claims.Subject,
@@ -131,8 +138,8 @@ func (l *Linker) LinkOrCreate(
 		return nil, fmt.Errorf("look up identity link: %w", err)
 	}
 
-	if provider.AutoLinkByEmail && claims.Email != "" {
-		user, err := tx.GetUserByEmail(ctx, claims.Email)
+	if provider.AutoLinkByEmail && email != "" {
+		user, err := tx.GetUserByEmail(ctx, email)
 		switch {
 		case err == nil:
 			// Cross-provider takeover guard. An account that is ALREADY
@@ -164,8 +171,8 @@ func (l *Linker) LinkOrCreate(
 		}
 	}
 
-	if provider.AutoCreateUsers && claims.Email != "" {
-		userID, err := l.createUser(ctx, tx, rec, provider, claims, at)
+	if provider.AutoCreateUsers && email != "" {
+		userID, err := l.createUser(ctx, tx, rec, provider, claims, email, at)
 		if err != nil {
 			return nil, err
 		}
@@ -192,6 +199,7 @@ func (l *Linker) createUser(
 	rec *store.AuditRecorder,
 	provider store.IdentityProviderRow,
 	claims *UserClaims,
+	email string,
 	at time.Time,
 ) (string, error) {
 	userID := ulid.Make().String()
@@ -214,14 +222,14 @@ func (l *Linker) createUser(
 	if linuxUID > 2147483647 {
 		return "", errors.New("assign linux uid: int32 range exhausted")
 	}
-	linuxUsername := DeriveLinuxUsername(claims.Email, claims.PreferredUsername)
+	linuxUsername := DeriveLinuxUsername(email, claims.PreferredUsername)
 	if linuxUsername == "" {
 		linuxUsername = "user_" + strings.ToLower(userID[:8])
 	}
 
 	if _, err := tx.InsertUser(ctx, db.InsertUserParams{
 		ID:                 userID,
-		Email:              claims.Email,
+		Email:              email,
 		DisplayName:        claims.Name,
 		GivenName:          claims.GivenName,
 		FamilyName:         claims.FamilyName,
@@ -444,6 +452,13 @@ func ParseGroupMapping(data []byte) map[string]string {
 	}
 	return m
 }
+
+// normalizeEmail folds an email to the canonical form the SCIM and
+// manual lookup paths store and query by. The active-unique email index
+// is COLLATE NOCASE, so a JIT write that skipped this would be unfindable
+// by a normalized lookup yet still block re-insert. Semantics match the
+// scim and identity packages' own normalizeEmail exactly.
+func normalizeEmail(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
 
 // fingerprint reduces a value to its SHA-256 hex digest, which is what
 // the audit log accepts as class-two evidence. The value itself never

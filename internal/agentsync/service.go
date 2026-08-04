@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -29,6 +30,7 @@ type Config struct {
 	Store      *store.Store
 	Manager    *connection.Manager
 	Deliveries *delivery.Service
+	Now        func() time.Time
 }
 
 // Service implements durable stream synchronization.
@@ -36,6 +38,7 @@ type Service struct {
 	store      *store.Store
 	manager    *connection.Manager
 	deliveries *delivery.Service
+	now        func() time.Time
 }
 
 // New constructs the agent sync service.
@@ -43,7 +46,10 @@ func New(cfg Config) *Service {
 	if cfg.Store == nil || cfg.Manager == nil || cfg.Deliveries == nil {
 		panic("agentsync: store, manager, and delivery state are required")
 	}
-	return &Service{store: cfg.Store, manager: cfg.Manager, deliveries: cfg.Deliveries}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	return &Service{store: cfg.Store, manager: cfg.Manager, deliveries: cfg.Deliveries, now: cfg.Now}
 }
 
 // Sync returns each still-sendable delivery and marks the response against the
@@ -64,8 +70,15 @@ func (s *Service) Sync(ctx context.Context, deviceID string) (*pmv1.SyncState, e
 	if err != nil {
 		return nil, err
 	}
+	now := s.now()
 	deliveries := make([]*pmv1.ManifestDelivery, 0, len(rows))
 	for _, row := range rows {
+		// The listed rows are PENDING or PUSHED with no availability filter, so
+		// a future-scheduled row must be skipped here rather than pushed early.
+		// This is the same availability/epoch guard the dispatcher enforces.
+		if !delivery.Sendable(row, agent.Epoch, now) {
+			continue
+		}
 		manifest := &pmv1.Manifest{}
 		if err := protojson.Unmarshal(row.Manifest, manifest); err != nil {
 			return nil, fmt.Errorf("decode delivery %s manifest: %w", row.DeliveryID, err)

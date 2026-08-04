@@ -20,7 +20,7 @@ type fuzzySearchResult struct {
 // the entity ID and display name, description is the explicit description,
 // and related is the remaining facet document assembled by SQLite.
 func matchFuzzyDocument(query, primary, description, related string) (fuzzyRank, bool, bool) {
-	queryTokens := tokenizeSearchText(query)
+	queryTokens := dedupeQueryTokens(tokenizeSearchText(query))
 	if len(queryTokens) == 0 {
 		return fuzzyRank{}, false, false
 	}
@@ -63,6 +63,28 @@ func matchFuzzyDocument(query, primary, description, related string) (fuzzyRank,
 		fuzzyOnly = fuzzyOnly || bestEdits > 0
 	}
 	return rank, fuzzyOnly, true
+}
+
+// dedupeQueryTokens collapses repeated query tokens, preserving first-seen
+// order. Every query token must match some document token, so a repeat is
+// redundant: it changes neither the match decision nor the relative rank, only
+// the work the bounded matcher does. Collapsing them once bounds a hostile
+// query of one token repeated thousands of times to a single pass per
+// candidate instead of one pass per repeat.
+func dedupeQueryTokens(tokens []string) []string {
+	if len(tokens) < 2 {
+		return tokens
+	}
+	seen := make(map[string]struct{}, len(tokens))
+	unique := tokens[:0]
+	for _, token := range tokens {
+		if _, exists := seen[token]; exists {
+			continue
+		}
+		seen[token] = struct{}{}
+		unique = append(unique, token)
+	}
+	return unique
 }
 
 func tokenizeSearchText(value string) []string {

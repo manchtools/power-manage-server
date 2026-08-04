@@ -45,6 +45,25 @@ func SecretAAD(deviceID, actionID, secretType string) []byte {
 	return []byte(deviceID + "|" + actionID + "|" + secretType)
 }
 
+// SecretAADForRow extends SecretAAD with the per-row discriminator that
+// distinguishes sibling secrets sharing one (deviceID, actionID). The
+// discriminator is the secret row's immutable ULID primary key. LPS and LUKS
+// keep MULTIPLE rotation rows per (deviceID, actionID, username|device_path) —
+// the current row plus its history — so the username or device_path is NOT a
+// unique per-row discriminator: every rotation row for one username shares it,
+// leaving their ciphertexts interchangeable. The globally-unique row id is, so
+// a DB-level attacker cannot relocate a ciphertext onto a sibling row (a later
+// rotation of the same username included) and have it decrypt under that row's
+// context.
+//
+// deviceID, actionID, and the discriminator are all ULIDs and secretType is a
+// fixed literal, so no '|'-separated segment ever contains '|' and the four-
+// segment concatenation is unambiguous. The four-segment form also cannot
+// collide with SecretAAD's three-segment form.
+func SecretAADForRow(deviceID, actionID, secretType, discriminator string) []byte {
+	return []byte(deviceID + "|" + actionID + "|" + secretType + "|" + discriminator)
+}
+
 // RowAAD builds the AAD for a secret owned by a single row: the owning
 // row's ULID plus a fixed purpose literal (see the Purpose* constants).
 // Mirrors SecretAAD's unambiguous '|' concatenation; the two shapes
