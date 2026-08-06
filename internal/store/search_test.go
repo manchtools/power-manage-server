@@ -463,3 +463,38 @@ func requireOneSearchRow(t *testing.T, rows []store.SearchRow) store.SearchRow {
 	require.Len(t, rows, 1)
 	return rows[0]
 }
+
+// The actions LIST is rendered from search documents, not from ListActions, so
+// any field the list shows has to be IN the document. `desired_state` was not,
+// and the web adapter had no honest value to fall back on: it hardcoded
+// PRESENT, so every action in the list read "Install" no matter what it was —
+// including the remove-actions the detail page correctly showed as "Remove".
+//
+// A field the UI renders but the document omits is a fabrication waiting to
+// happen, which is why this asserts the document rather than the rendering.
+func TestSQLiteSearch_ActionDocumentCarriesDesiredState(t *testing.T) {
+	st, raw := setupSQLite(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	installID, removeID := newID(), newID()
+
+	_, err := raw.Exec(ctx, `INSERT INTO actions (id, name, description, action_type, desired_state, params, created_at, updated_at) VALUES
+		($1, 'install-curl', 'present', 100, 0, '{}', $3, $3),
+		($2, 'remove-curl', 'absent', 100, 1, '{}', $3, $3)`, installID, removeID, now)
+	require.NoError(t, err)
+	rebuildSearchFixture(t, st)
+
+	search := func(query string) []store.SearchRow {
+		t.Helper()
+		rows, _, err := st.Search(ctx, store.SearchParams{Scope: "actions", Query: query, Limit: 50})
+		require.NoError(t, err)
+		return rows
+	}
+
+	install := requireOneSearchRow(t, search("install-curl"))
+	assert.Equal(t, "0", install.Fields["desired_state"], "an install action is PRESENT")
+
+	remove := requireOneSearchRow(t, search("remove-curl"))
+	assert.Equal(t, "1", remove.Fields["desired_state"],
+		"a remove action must not be indexed as an install")
+}

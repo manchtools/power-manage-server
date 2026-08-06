@@ -109,6 +109,10 @@ SELECT 'actions', a.id, a.name, COALESCE(a.description, ''),
        a.id || ' ' || CAST(a.action_type AS TEXT), lower(a.name),
 	       json_object(
 	         'type', CAST(a.action_type AS TEXT),
+	         -- The actions list renders this. Omitting it left the web adapter with
+	         -- no honest value and it hardcoded PRESENT, so every remove-action read
+	         -- as "Install" in the list while the detail page said "Remove".
+	         'desired_state', CAST(a.desired_state AS TEXT),
 	         'is_compliance', CASE WHEN EXISTS (SELECT 1 FROM compliance_policy_rules r WHERE r.action_id = a.id) THEN 'true' ELSE 'false' END,
          'assigned', CASE WHEN EXISTS (SELECT 1 FROM assignments x WHERE x.source_type = 'action' AND x.source_id = a.id AND x.is_deleted = false) THEN 'true' ELSE 'false' END,
          'created_at', COALESCE(strftime('%s', a.created_at), '0'),
