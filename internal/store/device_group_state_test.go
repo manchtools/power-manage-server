@@ -158,3 +158,88 @@ func TestDeviceGroupState_DynamicShapeAndBoundsFailClosed(t *testing.T) {
 	_, err = state.UpdateQuery(ctx, deviceGroupOperation(), dynamic.ID, true, "(")
 	assert.True(t, errors.Is(err, devicegroup.ErrInvalidQuery))
 }
+
+// Converting a curated group into a rule-driven one is a supported mode change
+// (target design §5.1): the group keeps its identifier, assignments, schedules
+// and windows, which is the whole reason to convert rather than delete and
+// recreate. The membership it had as a static group is NOT kept — a group that
+// still listed hand-picked devices while claiming to be defined by a rule would
+// report members its own rule does not select, for as long as it took someone
+// to evaluate it.
+//
+// The opposite direction stays as it was: materializing a rule-driven group
+// freezes the membership the rule last produced (see the user-group handler
+// test, "materializing preserves the compiled membership").
+func TestDeviceGroupState_ConvertingCuratedGroupToRuleClearsItsMembers(t *testing.T) {
+	st, _ := setupSQLite(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 6, 9, 0, 0, 0, time.UTC)
+	state := devicegroup.NewState(devicegroup.Config{Store: st, Now: func() time.Time { return now }})
+
+	deviceIDs := []string{newID(), newID()}
+	_, err := st.WithAudit(ctx, deviceGroupOperation(), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		for i, id := range deviceIDs {
+			if _, err := tx.InsertDevice(ctx, generated.InsertDeviceParams{
+				ID: id, Hostname: "curated-" + string(rune('a'+i)),
+				AgentSealingPublicKey: make([]byte, 32), RegisteredAt: &now,
+			}); err != nil {
+				return err
+			}
+			rec.Effect(store.AuditEffect{
+				ResourceType: "device", ResourceID: id, Action: "CREATE", Outcome: store.EffectApplied,
+				ChangedFields: []string{"hostname"},
+			})
+		}
+		return nil
+	})
+	require.NoError(t, err)
+
+	createOp := deviceGroupOperation()
+	group, err := state.Create(ctx, createOp, devicegroup.CreateParams{
+		Name: "hand picked", CreatedBy: createOp.ActorID,
+	})
+	require.NoError(t, err)
+	added, err := state.AddDevices(ctx, deviceGroupOperation(), group.ID, deviceIDs)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), added)
+
+	// A rejected query must not be a half-conversion: the mode, the query and the
+	// membership all still have to be the ones the operator started with.
+	_, err = state.UpdateQuery(ctx, deviceGroupOperation(), group.ID, true, "(")
+	assert.ErrorIs(t, err, devicegroup.ErrInvalidQuery)
+	_, err = state.UpdateQuery(ctx, deviceGroupOperation(), group.ID, true, "")
+	assert.ErrorIs(t, err, devicegroup.ErrInvalidQuery)
+	unchanged, err := st.GetDeviceGroup(ctx, group.ID)
+	require.NoError(t, err)
+	assert.False(t, unchanged.IsDynamic, "a rejected query cannot convert the group")
+	assert.Equal(t, int64(2), unchanged.LiveMemberCount, "a rejected query cannot drop members")
+
+	convertOp := deviceGroupOperation()
+	converted, err := state.UpdateQuery(ctx, convertOp, group.ID, true, `device.labels.env equals prod`)
+	require.NoError(t, err, "a curated group must be convertible to a rule")
+	assert.True(t, converted.IsDynamic)
+	require.NotNil(t, converted.DynamicQuery)
+	assert.Equal(t, `device.labels.env equals prod`, *converted.DynamicQuery)
+	assert.Equal(t, int64(0), converted.LiveMemberCount, "the curated membership does not survive the rule")
+
+	members, err := st.ListDeviceGroupMembers(ctx, group.ID)
+	require.NoError(t, err)
+	assert.Empty(t, members, "membership has exactly one source once the group is a rule")
+
+	// The mode change, the query and the member clearing are one audited operation.
+	recorded, err := st.GetAuditOperation(ctx, convertOp.OperationID)
+	require.NoError(t, err)
+	effects, err := st.ListAuditEffects(ctx, recorded.OperationID)
+	require.NoError(t, err)
+	assert.NotEmpty(t, effects)
+
+	// Manual membership is closed while the rule owns it…
+	_, err = state.AddDevices(ctx, deviceGroupOperation(), group.ID, []string{deviceIDs[0]})
+	assert.ErrorIs(t, err, devicegroup.ErrDynamicGroup)
+
+	// …and the reverse direction still works, so the mode is genuinely a property
+	// the owner controls rather than a one-way door.
+	materialized, err := state.UpdateQuery(ctx, deviceGroupOperation(), group.ID, false, "")
+	require.NoError(t, err)
+	assert.False(t, materialized.IsDynamic)
+}

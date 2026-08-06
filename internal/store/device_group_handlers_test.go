@@ -104,10 +104,25 @@ func TestDeviceGroupHandlers_CRUDMembershipAndAudit(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, windowed.Msg.Group.MaintenanceWindow.Schedule, 1)
 
-	_, err = f.handlers.UpdateDeviceGroupQuery(ctx, connect.NewRequest(&pmv1.UpdateDeviceGroupQueryRequest{
+	// The mode is a property the owner may change in either direction (target
+	// design §5.1). This group still has one hand-picked member; converting it
+	// hands membership to the rule, so that member does not survive the call.
+	converted, err := f.handlers.UpdateDeviceGroupQuery(ctx, connect.NewRequest(&pmv1.UpdateDeviceGroupQueryRequest{
 		Id: id, IsDynamic: true, DynamicQuery: `device.labels.env equals prod`,
 	}))
-	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	require.NoError(t, err, "a curated group is convertible to a rule")
+	assert.True(t, converted.Msg.Group.IsDynamic)
+	assert.Equal(t, `device.labels.env equals prod`, converted.Msg.Group.DynamicQuery)
+	assert.Zero(t, converted.Msg.Group.MemberCount, "the curated membership does not survive the rule")
+	convertedGroup, err := f.handlers.GetDeviceGroup(ctx, connect.NewRequest(&pmv1.GetDeviceGroupRequest{Id: id}))
+	require.NoError(t, err)
+	assert.Empty(t, convertedGroup.Msg.Devices)
+	assert.Empty(t, convertedGroup.Msg.DeviceIds)
+	// An invalid query is still refused, and refusing it changes nothing.
+	_, err = f.handlers.UpdateDeviceGroupQuery(ctx, connect.NewRequest(&pmv1.UpdateDeviceGroupQueryRequest{
+		Id: id, IsDynamic: true, DynamicQuery: "(",
+	}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	dynamic, err := f.handlers.CreateDeviceGroup(ctx, connect.NewRequest(&pmv1.CreateDeviceGroupRequest{
 		Name: "dynamic workstations", IsDynamic: true, DynamicQuery: `device.labels.env equals prod`,
 	}))
