@@ -248,3 +248,79 @@ func TestEvaluateDynamicUserGroup_AllowsRemovingFinalAdminMembership(t *testing.
 	assert.Empty(t, members)
 	assert.Len(t, f.operationsFor(powermanagev1connect.ControlServiceEvaluateDynamicUserGroupProcedure), 1)
 }
+
+// Converting a curated user group into a rule-driven one is supported in both
+// directions (target design §5.1), with one asymmetry that is deliberate:
+// converting TO a rule clears the hand-picked membership, because the rule
+// becomes the single source of it, while materializing back to static keeps
+// what the rule last produced.
+//
+// A SCIM-managed group is not the operator's to convert: its membership belongs
+// to the directory, and the refusal that used to fall out of "static groups
+// cannot be converted" has to be stated on its own now that conversion works.
+func TestUpdateUserGroupQuery_ConvertsCuratedGroupAndRefusesSCIMManaged(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	operator := f.seedActor(grant{Permissions: []string{
+		"CreateStaticUserGroup", "CreateDynamicUserGroup", "UpdateDynamicUserGroupQuery",
+		"AddUserToGroup", "GetUserGroup",
+	}})
+	member := f.seedSubject()
+
+	curated, err := f.client.CreateUserGroup(f.ctx(), authed(&pmv1.CreateUserGroupRequest{
+		Name: "Hand picked",
+	}, operator.Token))
+	require.NoError(t, err)
+	groupID := curated.Msg.Group.Id
+	require.False(t, curated.Msg.Group.IsDynamic)
+
+	_, err = f.client.AddUserToGroup(f.ctx(), authed(&pmv1.AddUserToGroupRequest{
+		GroupId: groupID, UserId: member.ID,
+	}, operator.Token))
+	require.NoError(t, err)
+
+	// An invalid query is refused before anything is written, so a rejected
+	// conversion leaves a curated group exactly as it was.
+	_, err = f.client.UpdateUserGroupQuery(f.ctx(), authed(&pmv1.UpdateUserGroupQueryRequest{
+		Id: groupID, IsDynamic: true, DynamicQuery: "(",
+	}, operator.Token))
+	assert.Equal(t, connect.CodeInvalidArgument, connectCodeOf(t, err))
+	intact, err := f.client.GetUserGroup(f.ctx(), authed(&pmv1.GetUserGroupRequest{Id: groupID}, operator.Token))
+	require.NoError(t, err)
+	assert.False(t, intact.Msg.Group.IsDynamic)
+	require.Len(t, intact.Msg.Members, 1)
+
+	converted, err := f.client.UpdateUserGroupQuery(f.ctx(), authed(&pmv1.UpdateUserGroupQueryRequest{
+		Id: groupID, IsDynamic: true, DynamicQuery: `user.disabled equals "true"`,
+	}, operator.Token))
+	require.NoError(t, err, "a curated group is convertible to a rule")
+	assert.True(t, converted.Msg.Group.IsDynamic)
+	assert.Equal(t, `user.disabled equals "true"`, converted.Msg.Group.DynamicQuery)
+	assert.Zero(t, converted.Msg.Group.MemberCount, "the curated membership does not survive the rule")
+
+	after, err := f.client.GetUserGroup(f.ctx(), authed(&pmv1.GetUserGroupRequest{Id: groupID}, operator.Token))
+	require.NoError(t, err)
+	assert.Empty(t, after.Msg.Members, "membership has one source once the group is a rule")
+
+	// A SCIM-managed group stays the directory's. The web hides its Rule tab, but
+	// this RPC is reachable on its own and must fail closed.
+	managed, err := f.client.CreateUserGroup(f.ctx(), authed(&pmv1.CreateUserGroupRequest{
+		Name: "Directory owned",
+	}, operator.Token))
+	require.NoError(t, err)
+	providerID := f.insertProvider("scim-convert", nil)
+	_, err = f.raw.Exec(f.ctx(),
+		`INSERT INTO scim_group_mapping (id, provider_id, scim_group_id, scim_display_name, user_group_id)
+		 VALUES ($1, $2, 'grp-directory', 'Directory owned', $3)`,
+		newULID(), providerID, managed.Msg.Group.Id)
+	require.NoError(t, err)
+
+	_, err = f.client.UpdateUserGroupQuery(f.ctx(), authed(&pmv1.UpdateUserGroupQueryRequest{
+		Id: managed.Msg.Group.Id, IsDynamic: true, DynamicQuery: `user.disabled equals "true"`,
+	}, operator.Token))
+	assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err),
+		"a SCIM-managed group's membership belongs to its directory")
+	stillManaged, err := f.client.GetUserGroup(f.ctx(), authed(&pmv1.GetUserGroupRequest{Id: managed.Msg.Group.Id}, operator.Token))
+	require.NoError(t, err)
+	assert.False(t, stillManaged.Msg.Group.IsDynamic)
+}

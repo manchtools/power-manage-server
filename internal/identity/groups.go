@@ -521,8 +521,10 @@ func (h *Handlers) ListUserGroupsForUser(ctx context.Context, req *connect.Reque
 	return connect.NewResponse(resp), nil
 }
 
-// UpdateUserGroupQuery changes the query or materializes an existing dynamic
-// group as static. Static groups cannot be converted through this RPC.
+// UpdateUserGroupQuery sets the membership mode and its query in either
+// direction: a curated group becomes rule-driven (which clears the curated
+// members), and a rule-driven group is materialized as static (which keeps the
+// membership the rule produced). SCIM-managed groups are refused.
 func (h *Handlers) UpdateUserGroupQuery(ctx context.Context, req *connect.Request[pmv1.UpdateUserGroupQueryRequest]) (*connect.Response[pmv1.UpdateUserGroupQueryResponse], error) {
 	if err := h.validate(ctx, req.Msg); err != nil {
 		return nil, err
@@ -551,19 +553,42 @@ func (h *Handlers) UpdateUserGroupQuery(ctx context.Context, req *connect.Reques
 			if err != nil {
 				return err
 			}
-			if !current.IsDynamic {
-				return errUserGroupNotDynamic
+			fields := []string{"is_dynamic", "dynamic_query"}
+			if req.Msg.IsDynamic && !current.IsDynamic {
+				// A SCIM-managed group's membership belongs to its directory, so it
+				// is not the operator's to hand to a rule. This used to fall out of
+				// "static groups cannot be converted"; conversion works now, so the
+				// refusal has to be stated.
+				managed, err := tx.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+				if err != nil {
+					return err
+				}
+				if managed {
+					return errUserGroupSCIMManaged
+				}
+				// Converting hands membership to the rule, so the hand-picked rows go
+				// in the SAME transaction that sets the mode — otherwise the group
+				// reports members its own rule does not select until someone
+				// evaluates it. Materializing back to static keeps its rows on
+				// purpose: it freezes the membership the rule produced.
+				if _, err := tx.DeleteUserGroupMembers(ctx, req.Msg.Id); err != nil {
+					return err
+				}
+				fields = append(fields, "members")
 			}
 			if _, err := tx.UpdateUserGroupQuery(ctx, db.UpdateUserGroupQueryParams{
 				ID: req.Msg.Id, IsDynamic: req.Msg.IsDynamic, DynamicQuery: query, UpdatedAt: at,
 			}); err != nil {
 				return err
 			}
-			rec.Effect(userGroupEffect(req.Msg.Id, "UPDATE", "is_dynamic", "dynamic_query"))
+			rec.Effect(userGroupEffect(req.Msg.Id, "UPDATE", fields...))
 			return nil
 		})
 	if err != nil {
 		switch {
+		case errors.Is(err, errUserGroupSCIMManaged):
+			return nil, rpcError(ctx, ErrSCIMManagedResource, connect.CodeFailedPrecondition,
+				"SCIM-managed group membership is owned by its identity provider")
 		case errors.Is(err, errUserGroupNotDynamic):
 			return nil, rpcError(ctx, ErrGroupNotDynamic, connect.CodeFailedPrecondition, "group is not dynamic")
 		case store.IsNotFound(err):
