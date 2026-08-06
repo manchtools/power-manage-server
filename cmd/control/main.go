@@ -138,7 +138,13 @@ func run(cfg *Config, logger *slog.Logger) error {
 		},
 	})
 	defer runtime.Close()
-	publicServer, err := buildPublicServer(cfg, runtime.PublicHandler)
+	// wrapDevAuth is a no-op unless this binary was compiled with the
+	// `devauth` build tag and run with PM_DEV_AUTH=1; only then
+	// does it mount the local development sign-in endpoint (target design
+	// §5.2). Production builds compile the stub, so the wrap returns the
+	// handler unchanged.
+	publicHandler := wrapDevAuth(runtime.PublicHandler, st, jwt, atRest, logger)
+	publicServer, err := buildPublicServer(cfg, publicHandler)
 	if err != nil {
 		return err
 	}
