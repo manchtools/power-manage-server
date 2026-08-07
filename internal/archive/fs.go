@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,9 +13,12 @@ import (
 	"strings"
 )
 
-// sealSuffix names the sidecar holding an artifact's integrity seal
-// (the hex sha256 of the data file). Kept beside the artifact so the
-// archive is self-verifying offline without the live system.
+// sealSuffix names the sidecar holding an artifact's digest (the hex
+// sha256 of the data file). It makes the archive self-DESCRIBING offline
+// — an operator can see what each object claims to be without the live
+// system. It is not evidence: it lives in the same directory under the
+// same permissions as the artifact, so anyone able to rewrite one can
+// rewrite both. Verify deliberately ignores it (see Verify).
 const sealSuffix = ".sha256"
 
 // probePrefix names the writability-probe temp files newFilesystem
@@ -192,10 +196,12 @@ func (f *filesystem) List(ctx context.Context) ([]ArchiveInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("archive: stat %s: %w", name, err)
 		}
-		// An unreadable/missing seal marks THAT entry (SHA256 == "")
+		// An unreadable/missing sidecar marks THAT entry (SHA256 == "")
 		// rather than failing the whole List — during an incident an
-		// operator most needs to see what IS safely archived. Verify is
-		// the authoritative per-artifact integrity check.
+		// operator most needs to see what IS archived. The reported
+		// digest is the artifact's own claim about itself and proves
+		// nothing; Verify against a durable digest is the integrity
+		// check.
 		seal, err := os.ReadFile(filepath.Join(f.dir, name+sealSuffix))
 		if err != nil {
 			out = append(out, ArchiveInfo{Ref: name, Size: info.Size(), SHA256: ""})
@@ -207,27 +213,29 @@ func (f *filesystem) List(ctx context.Context) ([]ArchiveInfo, error) {
 }
 
 // Verify recomputes an artifact's hash from its stored bytes and
-// compares it to its seal — tamper detection independent of the live
-// system. A mismatch, a missing artifact, or a missing seal is
-// an error.
-func Verify(ctx context.Context, store ArchiveStore, ref string) error {
+// compares it with expected — a digest the CALLER must hold from
+// evidence outside the archive: the append-only
+// audit_chain_checkpoints.archive_digest for a retained prefix, or the
+// value Put returned while the bytes streamed through.
+//
+// The colocated sidecar is deliberately not consulted. Reading the
+// expected value out of the same directory as the artifact makes the
+// comparison self-referential: an attacker who rewrites the artifact
+// rewrites the sidecar in the same breath and verification reports
+// success, which is precisely the outcome an audit archive exists to
+// make impossible. Tamper-evidence is only evidence when the two sides
+// of the comparison sit in different trust domains.
+//
+// An expected digest that is absent or unusable is an error, not a
+// skipped check: with nothing durable to compare against there is no
+// verification to report.
+func Verify(ctx context.Context, store ArchiveStore, ref, expected string) error {
 	if store == nil {
 		return errors.New("archive: store is required")
 	}
-	infos, err := store.List(ctx)
-	if err != nil {
-		return err
-	}
-	var expected string
-	for _, info := range infos {
-		if info.Ref == ref {
-			expected = info.SHA256
-			break
-		}
-	}
-	decoded, err := hex.DecodeString(expected)
-	if err != nil || len(decoded) != sha256.Size {
-		return fmt.Errorf("archive: missing or invalid seal for %s", ref)
+	want, err := hex.DecodeString(expected)
+	if err != nil || len(want) != sha256.Size {
+		return fmt.Errorf("archive: no durable SHA-256 digest to verify %s against", ref)
 	}
 	rc, err := store.Get(ctx, ref)
 	if err != nil {
@@ -241,9 +249,11 @@ func Verify(ctx context.Context, store ArchiveStore, ref string) error {
 	if err := rc.Close(); err != nil {
 		return fmt.Errorf("archive: close %s: %w", ref, err)
 	}
-	got := hex.EncodeToString(h.Sum(nil))
-	if got != expected {
-		return fmt.Errorf("archive: integrity seal MISMATCH for %s — the artifact has been tampered with", ref)
+	// Compare decoded bytes so a differently-cased hex digest cannot
+	// read as a mismatch.
+	if !bytes.Equal(h.Sum(nil), want) {
+		return fmt.Errorf(
+			"archive: %s does not match the digest recorded for it — the archived artifact has been replaced or altered", ref)
 	}
 	return nil
 }

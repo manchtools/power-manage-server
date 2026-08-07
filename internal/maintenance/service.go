@@ -148,22 +148,131 @@ func (s *Service) EnsureScheduled(ctx context.Context) error {
 	return nil
 }
 
-// VerifyAudit checks the local chain against the newest externally stored
-// anchor when one exists.
+// VerifyAudit checks the local chain against the durable evidence that is
+// supposed to exist outside it, and fails closed whenever that evidence is
+// gone.
+//
+// "Nothing has ever been anchored" is legitimate — it is what a fresh
+// deployment looks like — and is the only case in which the pass proceeds
+// without an expected anchor. Once an anchor row exists, this database has
+// asserted that a chain position was published somewhere it does not control;
+// if that object is missing, the assertion cannot be checked. Reporting
+// success there would make a chain proven intact indistinguishable from one
+// whose off-host evidence has been destroyed, which is the failure an auditor
+// is relying on this job to catch.
 func (s *Service) VerifyAudit(ctx context.Context, _ jobs.Job) error {
 	opts := store.AuditVerifyOptions{CheckStoredAnchors: true}
-	external, found, err := s.latestExternalAnchor(ctx)
+
+	// Look for the object this database recorded as published, and fall back
+	// to the fixed publication name when it recorded none — an anchor written
+	// just before a crash, before its row landed, is still evidence and the
+	// chain still has to reproduce it.
+	ref, recorded := externalAnchorRef, false
+	published, err := s.store.LatestAuditAnchor(ctx, store.DefaultAuditStream)
+	switch {
+	case err == nil:
+		ref, recorded = published.ExternalRef, true
+	case store.IsNotFound(err):
+		// Nothing has ever been anchored. Nothing can be missing.
+	default:
+		return err
+	}
+
+	external, found, err := s.externalAnchor(ctx, ref)
 	if err != nil {
 		return err
 	}
-	if found {
+	switch {
+	case recorded && !found:
+		return fmt.Errorf(
+			"audit anchor %q is recorded as published at chain position %d but is absent from the archive: "+
+				"the off-host anchor has been lost or removed and the chain can no longer be verified against it",
+			ref, published.ChainSeq)
+	case recorded && found && contradicts(external, published):
+		return fmt.Errorf(
+			"archived audit anchor %q (stream %q, chain position %d) contradicts the anchor recorded for it "+
+				"(stream %q, chain position %d): the off-host anchor has been rolled back or rewritten",
+			ref, external.Stream, external.ChainSeq, published.Stream, published.ChainSeq)
+	case found:
 		opts.ExpectedAnchor = &store.AuditAnchor{
 			AnchorID: external.Ref, Stream: external.Stream,
 			ChainSeq: external.ChainSeq, RowHash: external.RowHash,
 		}
 	}
+
+	if err := s.requireArchivedPrefixes(ctx); err != nil {
+		return err
+	}
 	_, err = s.store.VerifyAuditChain(ctx, opts)
 	return err
+}
+
+// contradicts reports whether an archived anchor disagrees with the anchor row
+// recorded for it.
+//
+// Running AHEAD is not a contradiction: publishing writes the object first and
+// records the row second, so a crash in between leaves a newer object that the
+// next anchor pass adopts, and the chain still has to reproduce it. Running
+// behind, or carrying a different hash at the same position, means the object
+// was rolled back or rewritten.
+func contradicts(external externalAnchor, published store.AuditAnchor) bool {
+	return external.Stream != published.Stream ||
+		external.ChainSeq < published.ChainSeq ||
+		(external.ChainSeq == published.ChainSeq && !bytes.Equal(external.RowHash, published.RowHash))
+}
+
+// requireArchivedPrefixes fails closed when a retention checkpoint names an
+// archived prefix the archive no longer holds. Those live rows were deleted on
+// the strength of that object, so its absence is destroyed evidence and not a
+// bookkeeping discrepancy.
+//
+// Presence only. Re-hashing every retained prefix costs the whole archive on
+// every pass; that check belongs to the retention job, which pays it once a
+// day and only in order to earn the right to delete more.
+func (s *Service) requireArchivedPrefixes(ctx context.Context) error {
+	checkpoints, err := s.store.ListAuditCheckpoints(ctx, store.DefaultAuditStream)
+	if err != nil {
+		return err
+	}
+	if len(checkpoints) == 0 {
+		return nil
+	}
+	infos, err := s.archive.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list audit archive: %w", err)
+	}
+	present := make(map[string]struct{}, len(infos))
+	for _, info := range infos {
+		present[info.Ref] = struct{}{}
+	}
+	for _, checkpoint := range checkpoints {
+		if _, ok := present[checkpoint.ArchiveRef]; !ok {
+			return fmt.Errorf(
+				"archived audit prefix %q for checkpoint %s (boundary %d) is absent from the archive: "+
+					"the audit rows it covers were deleted on the strength of that object",
+				checkpoint.ArchiveRef, checkpoint.CheckpointID, checkpoint.BoundarySeq)
+		}
+	}
+	return nil
+}
+
+// verifyArchivedPrefixes re-hashes every retained prefix and compares it with
+// the digest its checkpoint recorded. That digest is the durable copy: the
+// checkpoint table is append-only and lives in the database, not on the
+// archive mount, so it is the one value an attacker who owns the mount cannot
+// bring into agreement with a substituted artifact.
+func (s *Service) verifyArchivedPrefixes(ctx context.Context) error {
+	checkpoints, err := s.store.ListAuditCheckpoints(ctx, store.DefaultAuditStream)
+	if err != nil {
+		return err
+	}
+	for _, checkpoint := range checkpoints {
+		if err := archive.Verify(ctx, s.archive, checkpoint.ArchiveRef, checkpoint.ArchiveDigest); err != nil {
+			return fmt.Errorf("verify archived audit prefix for checkpoint %s (boundary %d): %w",
+				checkpoint.CheckpointID, checkpoint.BoundarySeq, err)
+		}
+	}
+	return nil
 }
 
 // AnchorAudit verifies the current chain, writes its tip to the configured
@@ -176,7 +285,7 @@ func (s *Service) AnchorAudit(ctx context.Context, _ jobs.Job) error {
 	if err != nil || tip.Height == 0 {
 		return err
 	}
-	external, found, err := s.latestExternalAnchor(ctx)
+	external, found, err := s.externalAnchor(ctx, externalAnchorRef)
 	if err != nil {
 		return err
 	}
@@ -201,10 +310,13 @@ func (s *Service) AnchorAudit(ctx context.Context, _ jobs.Job) error {
 		return fmt.Errorf("marshal audit anchor: %w", err)
 	}
 	payload = append(payload, '\n')
-	if _, err := s.archive.Put(ctx, ref, bytes.NewReader(payload)); err != nil {
+	info, err := s.archive.Put(ctx, ref, bytes.NewReader(payload))
+	if err != nil {
 		return fmt.Errorf("publish audit anchor: %w", err)
 	}
-	if err := archive.Verify(ctx, s.archive, ref); err != nil {
+	// Read the object back against the digest computed from the bytes that
+	// went out, which is held here in memory and never on the archive mount.
+	if err := archive.Verify(ctx, s.archive, ref, info.SHA256); err != nil {
 		return fmt.Errorf("verify published audit anchor: %w", err)
 	}
 	_, err = s.store.RecordPublishedAuditAnchor(ctx, tip, ref)
@@ -215,6 +327,14 @@ func (s *Service) AnchorAudit(ctx context.Context, _ jobs.Job) error {
 // older than policy, verifies the archived object, and only then prunes it.
 func (s *Service) RetainAudit(ctx context.Context, _ jobs.Job) error {
 	if err := s.AnchorAudit(ctx, jobs.Job{}); err != nil {
+		return err
+	}
+	// Earn the right to delete more evidence: every prefix already archived
+	// must still hash to the digest its checkpoint recorded. Retention is the
+	// one job that destroys live audit rows, so it is where the full re-hash
+	// of the archive is worth its cost — and refusing here leaves every
+	// remaining row in the database.
+	if err := s.verifyArchivedPrefixes(ctx); err != nil {
 		return err
 	}
 	boundary, err := s.store.FindAuditRetentionBoundary(ctx, store.DefaultAuditStream, s.now().UTC().Add(-s.retention))
@@ -253,7 +373,10 @@ func (s *Service) RetainAudit(ctx context.Context, _ jobs.Job) error {
 	if write.summary.Rows == 0 || len(write.summary.BoundaryHash) != sha256.Size {
 		return errors.New("audit archive wrote no usable boundary")
 	}
-	if err := archive.Verify(ctx, s.archive, ref); err != nil {
+	// info.SHA256 was computed from the bytes as they streamed out and is the
+	// value PruneAuditPrefix is about to record durably, so verifying against
+	// it proves the archive holds what the checkpoint will claim it holds.
+	if err := archive.Verify(ctx, s.archive, ref, info.SHA256); err != nil {
 		return fmt.Errorf("verify audit archive: %w", err)
 	}
 	_, err = s.store.PruneAuditPrefix(ctx, store.AuditRetentionRequest{
@@ -359,14 +482,25 @@ type externalAnchor struct {
 	RowHash  []byte
 }
 
-func (s *Service) latestExternalAnchor(ctx context.Context) (externalAnchor, bool, error) {
+// externalAnchor reads the anchor object stored under ref, reporting whether
+// the archive holds it at all.
+//
+// It performs no digest check against the archive's own sidecar: that would
+// compare the object with a claim written beside it, which proves nothing.
+// The anchor's authority comes from its content being reproduced by the local
+// chain (AuditVerifyOptions.ExpectedAnchor) and, for a position this database
+// has already recorded, from agreeing with that append-only row.
+func (s *Service) externalAnchor(ctx context.Context, ref string) (externalAnchor, bool, error) {
+	if ref == "" {
+		return externalAnchor{}, false, errors.New("external audit anchor reference is empty")
+	}
 	infos, err := s.archive.List(ctx)
 	if err != nil {
 		return externalAnchor{}, false, fmt.Errorf("list external audit anchors: %w", err)
 	}
 	var latest *archive.ArchiveInfo
 	for _, info := range infos {
-		if info.Ref == externalAnchorRef {
+		if info.Ref == ref {
 			copy := info
 			latest = &copy
 			break
@@ -377,10 +511,6 @@ func (s *Service) latestExternalAnchor(ctx context.Context) (externalAnchor, boo
 	}
 	if latest.Size <= 0 || latest.Size > maxAnchorBytes {
 		return externalAnchor{}, false, errors.New("external audit anchor has an invalid size")
-	}
-	ref := latest.Ref
-	if err := archive.Verify(ctx, s.archive, ref); err != nil {
-		return externalAnchor{}, false, fmt.Errorf("verify external audit anchor: %w", err)
 	}
 	rc, err := s.archive.Get(ctx, ref)
 	if err != nil {
