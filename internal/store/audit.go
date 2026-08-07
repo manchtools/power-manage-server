@@ -73,6 +73,13 @@ var (
 	// ErrAuditEffectRequired means a continuation appended no effect,
 	// so it would have recorded nothing.
 	ErrAuditEffectRequired = errors.New("audit effect required")
+	// ErrAuditEffectInvalid means an effect carried a reference that is
+	// not a row id. The schema enforces the same shape, but only at
+	// INSERT time — by then the effect and the operation are inside one
+	// transaction, so the whole audited call rolls back and the caller
+	// sees a database error rather than the bad reference. Refusing in
+	// Go makes the offending call site fail where it can be read.
+	ErrAuditEffectInvalid = errors.New("audit effect is invalid")
 	// ErrAuditChainBroken means verification found a row whose hash,
 	// linkage or position does not follow from its predecessor.
 	ErrAuditChainBroken = errors.New("audit chain broken")
@@ -264,6 +271,9 @@ func (s *Store) WithAudit(
 		prev = hash
 
 		for i, e := range rec.effects {
+			if err := e.validate(); err != nil {
+				return fmt.Errorf("audit: effect %d: %w", i, err)
+			}
 			seq++
 			effectID := ulid.Make().String()
 			ec := e.canonical(op.Stream, op.OperationID, effectID, seq, int64(i), at)
@@ -304,6 +314,13 @@ func (s *Store) WithAudit(
 // mutation. Sensitive reads and rejected authentication attempts use
 // it; they are audited operations that change nothing.
 func (s *Store) RecordOperation(ctx context.Context, op AuditOperation, effects ...AuditEffect) (AuditRecord, error) {
+	// Every effect is known here, so a malformed one is refused before the
+	// transaction opens — the same standing rule op.validate() follows.
+	for i, e := range effects {
+		if err := e.validate(); err != nil {
+			return AuditRecord{}, fmt.Errorf("audit: effect %d: %w", i, err)
+		}
+	}
 	return s.WithAudit(ctx, op, func(_ context.Context, _ *Tx, rec *AuditRecorder) error {
 		for _, e := range effects {
 			rec.Effect(e)
@@ -370,6 +387,9 @@ func (s *Store) WithAuditEffects(
 		at := s.auditNow()
 		prev, seq := head.HeadHash, head.Height
 		for i, e := range rec.effects {
+			if err := e.validate(); err != nil {
+				return fmt.Errorf("audit: effect %d: %w", i, err)
+			}
 			seq++
 			effectID := ulid.Make().String()
 			pos := nextEffectSeq + int64(i)
@@ -426,6 +446,32 @@ func (op AuditOperation) validate() error {
 		return fmt.Errorf("%w: authorization outcome is unset", ErrAuditOperationRequired)
 	case op.Result == "":
 		return fmt.Errorf("%w: result is unset", ErrAuditOperationRequired)
+	}
+	return nil
+}
+
+// validate rejects an effect whose reference columns are not row ids.
+//
+// before_ref and after_ref name ANOTHER ROW; they are the one part of an
+// effect the schema constrains to a ULID, and they are therefore the one
+// part a caller can quietly misuse as a free-text field. When that happens
+// the INSERT aborts inside the audited transaction and takes the operation
+// row with it, so the call site's only symptom is an error it usually logs
+// and swallows — the audit record simply never exists. A discriminator
+// belongs in the operation's result code or in the effect's action.
+func (e AuditEffect) validate() error {
+	for _, ref := range []struct {
+		column string
+		value  *string
+	}{{"before_ref", e.BeforeRef}, {"after_ref", e.AfterRef}} {
+		if ref.value == nil {
+			continue
+		}
+		if _, err := ulid.ParseStrict(*ref.value); err != nil {
+			// The value itself stays out of the message: it is the caller's
+			// data, and this error reaches ordinary error logs.
+			return fmt.Errorf("%w: %s must be a ULID naming another row", ErrAuditEffectInvalid, ref.column)
+		}
 	}
 	return nil
 }

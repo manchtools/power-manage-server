@@ -22,6 +22,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/delivery"
+	"github.com/manchtools/power-manage/server/internal/execution"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -264,7 +265,11 @@ func (h *Handler) Stream(ctx context.Context, stream *connect.BidiStream[pmv1.Ag
 			if err := h.handleAgentMessage(ctx, agent, received.message); err != nil {
 				h.logger.Warn("apply agent frame", "device_id", deviceID,
 					"frame", fmt.Sprintf("%T", received.message.Payload), "error", err)
-				return connect.NewError(connect.CodeFailedPrecondition, errors.New("agent frame was not accepted"))
+				if frameNotAuthorized(err) {
+					return connect.NewError(connect.CodePermissionDenied,
+						errors.New("agent frame claimed a resource it does not own"))
+				}
+				continue
 			}
 		}
 	}
@@ -279,11 +284,14 @@ func (h *Handler) recordFrameDrop(ctx context.Context, deviceID string, message 
 	op.AuthorizationOutcome = store.AuthorizationDenied
 	op.AuthorizationDetail = "device_frame_budget"
 	op.Result = store.ResultRejected
-	op.ResultCode = "RATE_LIMITED"
-	classRef := string(class)
+	// The dropped frame's class rides the result code. It is not a row
+	// reference, so it must not go in an effect's after_ref: that column
+	// only accepts a ULID and the rejected INSERT rolls the operation row
+	// back with it, leaving an abusive device no durable trace at all.
+	op.ResultCode = "RATE_LIMITED." + string(class)
 	_, err := h.store.RecordOperation(ctx, op, store.AuditEffect{
 		ResourceType: "device", ResourceID: deviceID, Action: "FRAME_RATE_LIMIT",
-		Outcome: store.EffectRejected, AfterRef: &classRef,
+		Outcome: store.EffectRejected,
 	})
 	if err != nil {
 		h.logger.Error("record agent frame rate limit", "device_id", deviceID, "class", class, "error", err)
@@ -403,13 +411,51 @@ func (h *Handler) sendResponse(agent *connection.Agent, messageID string, respon
 	return agent.Send(message)
 }
 
+// errForeignTerminalSession is the terminal path's cross-device claim. It is
+// a sentinel rather than an inline error so frameNotAuthorized can recognise
+// it without matching on message text.
+var errForeignTerminalSession = errors.New("terminal session belongs to another device")
+
+// frameNotAuthorized reports whether a per-frame application error is the
+// device claiming a resource that is not its own. Only those end the
+// connection.
+//
+// Everything else — malformed input, a stale transition, an already-applied
+// replay — is dropped and the stream continues. The agent's outbox is
+// durable: a frame control refuses is re-sent on every reconnect, so ending
+// the connection turns one bad frame into a permanent reconnect loop and
+// discards every other frame the device was about to report. Defaulting to
+// "keep the stream" is what makes a new sink's rejection safe by
+// construction; a new cross-actor sentinel must be added here, and
+// TestFrameAuthorizationClassificationCoversEveryCrossActorSentinel fails
+// until it is.
+func frameNotAuthorized(err error) bool {
+	switch {
+	case errors.Is(err, errForeignTerminalSession),
+		errors.Is(err, execution.ErrWrongDevice),
+		errors.Is(err, execution.ErrWrongDelivery),
+		errors.Is(err, execution.ErrWrongAction),
+		errors.Is(err, delivery.ErrWrongDevice),
+		errors.Is(err, delivery.ErrWrongManifest):
+		return true
+	}
+	var connectErr *connect.Error
+	if errors.As(err, &connectErr) {
+		switch connectErr.Code() {
+		case connect.CodeUnauthenticated, connect.CodePermissionDenied:
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Handler) routeTerminal(deviceID, sessionID string, message *pmv1.AgentMessage) error {
 	session := h.terminalSessions.Get(sessionID)
 	if session == nil {
 		return nil
 	}
 	if session.DeviceID != deviceID {
-		return errors.New("terminal session belongs to another device")
+		return errForeignTerminalSession
 	}
 	h.terminalSessions.RouteAgentMessage(sessionID, message)
 	return nil
@@ -457,10 +503,15 @@ func (h *Handler) recordSecurityAlert(ctx context.Context, deviceID string, aler
 	if alert == nil || alert.Type == pmv1.SecurityAlertType_SECURITY_ALERT_TYPE_UNSPECIFIED {
 		return errors.New("invalid security alert")
 	}
-	alertType := alert.Type.String()
-	_, err := h.store.RecordOperation(ctx, agentOperation(deviceID, "SecurityAlert"), store.AuditEffect{
+	op := agentOperation(deviceID, "SecurityAlert")
+	// The alert type is the record's whole content. It rides the result
+	// code because that column takes 64 characters of the shape an enum
+	// name has; the effect's action column stops at 32 and the longest
+	// alert name is 47, and a reference column takes a ULID or nothing.
+	op.ResultCode = alert.Type.String()
+	_, err := h.store.RecordOperation(ctx, op, store.AuditEffect{
 		ResourceType: "device", ResourceID: deviceID, Action: "SECURITY_ALERT",
-		Outcome: store.EffectApplied, AfterRef: &alertType,
+		Outcome: store.EffectApplied,
 	})
 	return err
 }
