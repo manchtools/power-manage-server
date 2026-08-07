@@ -62,10 +62,18 @@ WHERE delivery_id = sqlc.arg(delivery_id)
 -- The sweep only considers live connections. Offline rows stay durable and a
 -- reconnect queues them directly; excluding them here prevents a large offline
 -- backlog from monopolising every bounded sweep page.
+--
+-- Placeholder order is load-bearing. sqlc expands sqlc.slice into bare
+-- placeholders at run time and SQLite numbers a bare placeholder one above the
+-- highest index assigned so far, so a numbered argument written after the slice
+-- is overrun the moment the slice carries a second element. Every argument
+-- therefore takes its number before the slice: page_size is bound by the guard
+-- below, where a non-positive page asks for nothing, and only reused by LIMIT.
 SELECT * FROM deliveries
-WHERE device_id IN (sqlc.slice(device_ids))
+WHERE available_at <= sqlc.arg(available_at)
+  AND sqlc.arg(page_size) > 0
   AND state IN ('PENDING', 'PUSHED')
-  AND available_at <= sqlc.arg(available_at)
+  AND device_id IN (sqlc.slice(device_ids))
 ORDER BY available_at
 LIMIT sqlc.arg(page_size);
 
