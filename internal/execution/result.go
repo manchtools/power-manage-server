@@ -165,7 +165,11 @@ func (s *Service) ApplyActionResult(ctx context.Context, deviceID string, result
 		}
 		rec.Effect(executionEffect(row.ID, "RESULT",
 			"status", "error", "output", "detection_output", "changed", "compliant", "completed_at", "duration_ms"))
-		return nil
+		return recordComplianceFinding(ctx, tx, rec, complianceFinding{
+			deviceID: deviceID, actionID: row.ActionID, status: status,
+			compliant: result.Compliant, detectionOutput: detectionOutput,
+			checkedAt: completedAt,
+		})
 	})
 	if err == nil {
 		return nil

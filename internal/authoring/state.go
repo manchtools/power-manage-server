@@ -255,11 +255,16 @@ func (s *Service) DeleteAction(ctx context.Context, op store.AuditOperation, id 
 		if _, err := tx.DeleteCompliancePolicyRulesForAction(ctx, id); err != nil {
 			return fmt.Errorf("authoring: delete compliance policy rules: %w", err)
 		}
-		if _, err := tx.DeleteCompliancePolicyEvaluationsForAction(ctx, id); err != nil {
+		evaluationDevices, err := tx.DeleteCompliancePolicyEvaluationsForAction(ctx, id)
+		if err != nil {
 			return fmt.Errorf("authoring: delete compliance policy evaluations: %w", err)
 		}
-		if _, err := tx.DeleteComplianceResultsForAction(ctx, id); err != nil {
+		resultDevices, err := tx.DeleteComplianceResultsForAction(ctx, id)
+		if err != nil {
 			return fmt.Errorf("authoring: delete compliance results: %w", err)
+		}
+		if err := store.RefreshDeviceCompliance(ctx, tx, rec, evaluationDevices, resultDevices); err != nil {
+			return err
 		}
 		if _, err := tx.SoftDeleteAuthoringAction(ctx, db.SoftDeleteAuthoringActionParams{
 			ID: id, UpdatedAt: &now, AllowSystem: allowSystem,
