@@ -16,7 +16,23 @@ docker compose version >/dev/null 2>&1 || fail "the Docker Compose plugin is req
 [[ -n "${CONTROL_DOMAIN:-}" ]] || fail "set CONTROL_DOMAIN"
 [[ -n "${AGENT_DOMAIN:-}" ]] || fail "set AGENT_DOMAIN"
 [[ -n "${ACME_EMAIL:-}" ]] || fail "set ACME_EMAIL"
-[[ ! -e "$INSTALL_DIR" ]] || fail "$INSTALL_DIR already exists; update it with deploy.sh instead"
+
+# setup.sh checks the audit archive's filesystem before it generates any key
+# material, so an install that stopped there leaves the directory tree and
+# nothing in it. Refusing that tree would strand the operator with a half-made
+# installation they cannot finish here. Refuse once generated material exists,
+# which is what "already installed" means and is the state deploy.sh is for.
+#
+# Discovering the material rather than naming it keeps this attached to
+# setup.sh: anything it writes into these three directories blocks a re-run,
+# and nothing here ever deletes or rewrites what it finds. data/ is
+# deliberately not consulted — the archive storage the operator was told to
+# provide lives there, and so does the Traefik ACME file setup.sh touches
+# before the archive check.
+existing_material="$(find "$INSTALL_DIR/certs" "$INSTALL_DIR/secrets" "$INSTALL_DIR/config" \
+    -mindepth 1 -print -quit 2>/dev/null || true)"
+[[ -z "$existing_material" ]] \
+    || fail "$INSTALL_DIR is already installed ($existing_material exists); update it with deploy.sh instead"
 
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf "$temporary_directory"' EXIT

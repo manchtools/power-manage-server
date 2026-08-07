@@ -70,6 +70,14 @@ jobs, and background writers.
 Audit streams are hash-chained and periodically anchored off-host. Retention
 archives and verifies a prefix before deletion.
 
+<!-- docref: begin src=cmd/control/config.go#validateArchiveIsolation:ae89185b,cmd/control/devauth_stub.go#archiveIsolationRelaxed:8de98d35 -->
+Off-host is enforced, not advised. Control compares the filesystem holding the
+archive path with the one holding the database and refuses to start when they
+match. No configuration variable relaxes it; the only build that tolerates a
+shared filesystem is the same one that mints administrator sessions without an
+identity provider.
+<!-- docref: end -->
+
 ### Dispatch
 
 Control commits a complete delivery before send. The agent durably records
@@ -84,7 +92,12 @@ silent replay of non-idempotent effects.
 - Restrict the PROXY-protocol listener to the isolated Traefik network.
 - Protect CA, JWT, sealing, database, and at-rest encryption keys with strict
   filesystem or deployment-secret permissions.
-<!-- docref: begin src=deploy/backup.sh#@sqlite-backup:99bc90ed,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
+<!-- docref: begin src=cmd/control/config.go#validateArchiveIsolation:ae89185b,cmd/control/devauth_stub.go#archiveIsolationRelaxed:8de98d35,deploy/backup.sh#@sqlite-backup:99bc90ed,cmd/control/backup_status.go#runBackupStatus:41ed4e6c -->
+- Give `POWER_MANAGE_BACKUP_PATH` its own filesystem, separate from the one
+  holding the database: it carries the audit chain's tamper-evidence, and
+  control refuses to start when the two share a mount. `deploy/setup.sh` makes
+  the same check before it renders a configuration, so a deployment installed
+  from this tree either has that storage or does not install.
 - Run `deploy/backup.sh` from a host timer and replicate the
   `POWER_MANAGE_BACKUP_PATH` directory off-host: it contains verified bounded
   SQLite backups, audit anchors, and archived prefixes. Back up artifacts too,

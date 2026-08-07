@@ -45,6 +45,52 @@ require_pair() {
     return 1
 }
 
+# docref: begin archive-isolation
+# filesystem_of reports the kernel device identifier of the filesystem holding
+# a path. `-L` dereferences, matching control's own os.Stat, so an operator may
+# either mount storage at the path or point a symlink at it; without it a
+# symlink would report the deploy tree's filesystem and this check would reject
+# a correct deployment.
+filesystem_of() {
+    stat -L -c '%d' "$1"
+}
+
+# The audit archive must not sit on the filesystem holding the database it is
+# evidence for. Control compares the same two device identifiers at startup and
+# refuses to boot when they match; there is no variable that relaxes it, so an
+# installer that rendered a colliding pair would simply ship a deployment that
+# never starts.
+#
+# Checking the host directories decides the container's verdict: compose.yml
+# bind-mounts these two into control, and a bind mount reports the device of the
+# filesystem it came from.
+ensure_archive_isolation() {
+    local database="$DATA_DIR/control" archive="$DATA_DIR/backups"
+    [[ "$(filesystem_of "$database")" == "$(filesystem_of "$archive")" ]] || return 0
+    fail "$(printf '%s\n' \
+        "the audit archive would share a filesystem with the database, and control refuses to start that way:" \
+        "" \
+        "    database  $database" \
+        "    archive   $archive" \
+        "" \
+        "The archive holds the anchors and archived chain prefixes that prove the audit log was not" \
+        "rewritten, so it must not be destroyed or altered by whatever reaches the database: one bad" \
+        "root, one failed disk, or one ransomware pass must not take the record and its proof together." \
+        "" \
+        "Give it separate storage - a second disk, an NFS or NAS export, or any remote-backed volume -" \
+        "and either mount that storage at" \
+        "" \
+        "    $archive" \
+        "" \
+        "or point that path at it:" \
+        "" \
+        "    rmdir $archive && ln -s /path/on/that/storage $archive" \
+        "" \
+        "then run this script again. This cannot be skipped: control applies the same check to" \
+        "POWER_MANAGE_BACKUP_PATH at startup and no configuration variable turns it off.")"
+}
+# docref: end archive-isolation
+
 validate_key_pair() {
     local certificate="$1" key="$2" description="$3"
     openssl x509 -in "$certificate" -noout >/dev/null
@@ -190,6 +236,11 @@ main() {
     chmod 600 "$SCRIPT_DIR/.env"
     touch "$DATA_DIR/traefik/acme.json"
     chmod 600 "$DATA_DIR/traefik/acme.json"
+
+    # Before any key material is generated, so a deployment that cannot start
+    # leaves nothing behind but the empty directory tree the operator has to
+    # mount their archive storage onto.
+    ensure_archive_isolation
 
     ensure_ca
     ensure_certificates
