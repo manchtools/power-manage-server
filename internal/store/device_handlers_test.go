@@ -927,7 +927,19 @@ func TestDeviceHandlers_CreateLuksTokenIsOwnerOnlyHashedAndAudited(t *testing.T)
 	_, err = ulid.ParseStrict(issued.Msg.Token)
 	require.NoError(t, err)
 	assert.Contains(t, issued.Msg.Uri, issued.Msg.Token)
-	assert.Contains(t, issued.Msg.CliCommand, issued.Msg.Token)
+	// F2: the advertised command must NOT carry the token on argv —
+	// /proc/<pid>/cmdline is world-readable and the client reads the passphrase
+	// before it dials, so an argv token is exposed for the whole typing window
+	// while being the sole authorization for a root daemon that writes LUKS
+	// keyslots. It must not advertise sudo either: the sudoers rule was removed
+	// precisely so this client is unprivileged, and an operator copying the
+	// string back would reinstate the escalation.
+	assert.NotContains(t, issued.Msg.CliCommand, issued.Msg.Token,
+		"CliCommand must not put the one-time LUKS token on argv")
+	assert.NotContains(t, issued.Msg.CliCommand, "sudo",
+		"the LUKS passphrase client is unprivileged; advertising sudo reinstates the removed escalation")
+	assert.Contains(t, issued.Msg.CliCommand, "luks set-passphrase",
+		"CliCommand must still name the command the operator runs")
 	hash := sha256.Sum256([]byte(issued.Msg.Token))
 	var storedHash string
 	var minLength, complexity int32
