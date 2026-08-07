@@ -45,6 +45,11 @@ func newEnvironmentFixture(t *testing.T) environmentFixture {
 	backupPath := filepath.Join(directory, "backups")
 	require.NoError(t, os.Mkdir(artifactPath, 0o700))
 	require.NoError(t, os.Mkdir(backupPath, 0o700))
+	// A configuration that loads successfully now needs the audit archive on
+	// its own mount, which a test cannot create without root — so the fixture
+	// models one. Cases that are about the separation itself put the real
+	// probe back with useRealFilesystemProbe.
+	modelSeparateFilesystems(t, backupPath)
 
 	return environmentFixture{
 		sessionKey: sessionKey,
@@ -83,6 +88,31 @@ func setEnvironment(t *testing.T, values map[string]string) {
 	previous := configEnviron
 	configEnviron = func() []string { return entries }
 	t.Cleanup(func() { configEnviron = previous })
+}
+
+// modelSeparateFilesystems makes archivePath report a filesystem of its own
+// while every other path keeps its real identifier, so a stat failure still
+// surfaces instead of being masked by the model.
+func modelSeparateFilesystems(t *testing.T, archivePath string) {
+	t.Helper()
+	real := filesystemIDOf
+	filesystemIDOf = func(path string) (uint64, error) {
+		id, err := real(path)
+		if err != nil || path != archivePath {
+			return id, err
+		}
+		return id + 1, nil
+	}
+	t.Cleanup(func() { filesystemIDOf = real })
+}
+
+// useRealFilesystemProbe undoes the fixture's model for cases that must be
+// judged against the kernel's answer.
+func useRealFilesystemProbe(t *testing.T) {
+	t.Helper()
+	modelled := filesystemIDOf
+	filesystemIDOf = filesystemDeviceID
+	t.Cleanup(func() { filesystemIDOf = modelled })
 }
 
 func TestLoadConfigResolvesEveryOptionFromTheEnvironment(t *testing.T) {
@@ -424,6 +454,59 @@ func TestParseCommandAcceptsSubcommandsAndRejectsEverythingElse(t *testing.T) {
 		assert.EqualError(t, err, message, "%v must be rejected", args)
 		assert.Empty(t, command)
 	}
+}
+
+// TestLoadConfigRefusesAnArchiveOnTheDatabaseFilesystem holds the enforced
+// half of "the audit chain's head is anchored off-host": an archive sharing a
+// mount with the database it is evidence for is not off-host, and whoever can
+// rewrite one can rewrite both. This case uses the REAL filesystem probe —
+// two directories under one temp dir genuinely are one mount — so it fails if
+// the check is removed, weakened, or made to depend only on the test seam.
+func TestLoadConfigRefusesAnArchiveOnTheDatabaseFilesystem(t *testing.T) {
+	fixture := newEnvironmentFixture(t)
+	useRealFilesystemProbe(t)
+	setEnvironment(t, fixture.values)
+
+	cfg, err := loadConfig()
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.ErrorContains(t, err, fixture.values["POWER_MANAGE_BACKUP_PATH"])
+	assert.ErrorContains(t, err, filepath.Dir(fixture.values["POWER_MANAGE_DATABASE_PATH"]))
+	assert.ErrorContains(t, err, "same filesystem")
+	assert.ErrorContains(t, err, "separate mount",
+		"the operator must be told what to do, not only that something is wrong")
+}
+
+// TestLoadConfigAcceptsAnArchiveOnADistinctFilesystem is the positive control:
+// the refusal above must be about the shared mount and nothing else.
+func TestLoadConfigAcceptsAnArchiveOnADistinctFilesystem(t *testing.T) {
+	fixture := newEnvironmentFixture(t)
+	setEnvironment(t, fixture.values)
+
+	cfg, err := loadConfig()
+	require.NoError(t, err)
+	assert.Equal(t, fixture.values["POWER_MANAGE_BACKUP_PATH"], cfg.BackupPath)
+}
+
+// TestFilesystemDeviceIDIdentifiesOneMount pins what that decision rests on.
+// A probe that failed open — reporting distinct identifiers for one mount, or
+// swallowing a stat error — would make the refusal above unreachable in
+// production while the seam-driven cases stayed green.
+func TestFilesystemDeviceIDIdentifiesOneMount(t *testing.T) {
+	directory := t.TempDir()
+	first := filepath.Join(directory, "first")
+	second := filepath.Join(directory, "second")
+	require.NoError(t, os.Mkdir(first, 0o700))
+	require.NoError(t, os.Mkdir(second, 0o700))
+
+	firstID, err := filesystemDeviceID(first)
+	require.NoError(t, err)
+	secondID, err := filesystemDeviceID(second)
+	require.NoError(t, err)
+	assert.Equal(t, firstID, secondID, "two directories in one temp dir share a filesystem")
+
+	_, err = filesystemDeviceID(filepath.Join(directory, "absent"))
+	assert.Error(t, err, "an unstattable path must fail closed rather than read as a distinct mount")
 }
 
 func TestValidateConfigRequiresWritableDataDirectories(t *testing.T) {

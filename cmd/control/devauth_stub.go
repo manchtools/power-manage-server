@@ -18,3 +18,11 @@ import (
 func wrapDevAuth(next http.Handler, _ *store.Store, _ *auth.JWTManager, _ *pmcrypto.Encryptor, _ *slog.Logger) http.Handler {
 	return next
 }
+
+// archiveIsolationRelaxed is false in every production build: the audit
+// archive must be on its own filesystem, and a shipped binary offers no way
+// to say otherwise. There is deliberately no configuration variable for it —
+// an option to skip a verification is the thing an attacker looks for first,
+// and the workstation case is served by the same build tag that already gates
+// the development sign-in.
+func archiveIsolationRelaxed() bool { return false }

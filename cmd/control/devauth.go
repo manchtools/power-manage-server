@@ -50,6 +50,19 @@ type devSessionResponse struct {
 	DisplayName  string `json:"displayName"`
 }
 
+// archiveIsolationRelaxed downgrades the audit archive's separate-filesystem
+// requirement to a warning on a development workstation, where the database
+// and the archive are two directories on one disk and mounting a second
+// filesystem needs root.
+//
+// It rides the two gates this file already establishes rather than adding a
+// third: a release binary compiles the !devauth stub, which returns false and
+// has no way to be told otherwise, and a devauth binary still enforces the
+// requirement unless PM_DEV_AUTH=1 is set. A build in which this can return
+// true is a build that also mints administrator sessions without an identity
+// provider, so it can never be mistaken for a deployable one.
+func archiveIsolationRelaxed() bool { return os.Getenv(devAuthEnv) == "1" }
+
 // wrapDevAuth mounts POST /dev/session in front of next when this devauth
 // build is run with PM_DEV_AUTH=1. Without the flag it returns
 // next unchanged, so the route does not exist. Production builds never

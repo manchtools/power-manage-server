@@ -63,6 +63,41 @@ func TestDevAuthDisabledWithoutEnv(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code, "/dev/session must not exist without PM_DEV_AUTH=1")
 }
 
+// TestArchiveIsolationRelaxationFollowsTheDevAuthFlag holds the escape hatch's
+// only reason to exist: it rides the same two gates as the sign-in bypass and
+// adds no third way to turn a verification off. A devauth binary run without
+// PM_DEV_AUTH=1 still demands the audit archive's own filesystem, and the
+// !devauth stub cannot relax it at all.
+func TestArchiveIsolationRelaxationFollowsTheDevAuthFlag(t *testing.T) {
+	t.Setenv(devAuthEnv, "")
+	assert.False(t, archiveIsolationRelaxed(), "the build tag alone must not relax the requirement")
+
+	t.Setenv(devAuthEnv, "yes")
+	assert.False(t, archiveIsolationRelaxed(), "only the exact flag value relaxes it")
+
+	t.Setenv(devAuthEnv, "1")
+	assert.True(t, archiveIsolationRelaxed(), "a workstation with one disk must still be able to run control")
+}
+
+// TestLoadConfigToleratesOneDiskInADevAuthBuild drives the relaxation through
+// the real loader with the real filesystem probe, so the branch is exercised
+// where it is actually reached rather than only where it is declared.
+func TestLoadConfigToleratesOneDiskInADevAuthBuild(t *testing.T) {
+	fixture := newEnvironmentFixture(t)
+	useRealFilesystemProbe(t)
+	setEnvironment(t, fixture.values)
+
+	t.Setenv(devAuthEnv, "")
+	cfg, err := loadConfig()
+	require.Error(t, err, "a devauth build without the flag still enforces the separation")
+	require.Nil(t, cfg)
+
+	t.Setenv(devAuthEnv, "1")
+	cfg, err = loadConfig()
+	require.NoError(t, err)
+	assert.Equal(t, fixture.values["POWER_MANAGE_BACKUP_PATH"], cfg.BackupPath)
+}
+
 // AC (c) + (d): with the flag set, POST /dev/session idempotently provisions
 // the fixed admin and returns an access token that authenticates AS an
 // administrator (carries the reconciled admin permission set).
