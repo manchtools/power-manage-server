@@ -81,7 +81,7 @@ func refreshSearchDocument(ctx context.Context, tx *sql.Tx, scope, id string) er
 	if _, err := tx.ExecContext(ctx, `DELETE FROM search_documents WHERE scope = ? AND entity_id = ?`, scope, id); err != nil {
 		return fmt.Errorf("refresh %s search document: delete: %w", scope, err)
 	}
-	if _, err := tx.ExecContext(ctx, statement, id, id); err != nil {
+	if _, err := tx.ExecContext(ctx, statement, id); err != nil {
 		return fmt.Errorf("refresh %s search document: insert: %w", scope, err)
 	}
 	return nil
@@ -91,19 +91,70 @@ func rebuildSearchDocuments(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM search_documents`); err != nil {
 		return fmt.Errorf("rebuild search documents: clear: %w", err)
 	}
-	for _, scope := range []string{
-		"actions", "action_sets", "definitions", "compliance_policies", "devices",
-		"device_groups", "users", "user_groups", "executions", "audit_events",
-	} {
-		if _, err := tx.ExecContext(ctx, searchDocumentStatements[scope], "", ""); err != nil {
-			return fmt.Errorf("rebuild %s search documents: %w", scope, err)
+	for _, spec := range searchDocumentSpecs {
+		if _, err := tx.ExecContext(ctx, searchDocumentRebuildStatements[spec.scope]); err != nil {
+			return fmt.Errorf("rebuild %s search documents: %w", spec.scope, err)
 		}
 	}
 	return nil
 }
 
-var searchDocumentStatements = map[string]string{
-	"actions": `
+// searchDocumentSpec states one scope's projection exactly once. The
+// single-entity and full-rebuild statements are derived from the same body, so
+// a refresh and a rebuild cannot drift into differently shaped documents.
+//
+// The split exists because one dual-purpose predicate cannot serve both. A
+// refresh runs inside the process-wide writer lock on every audited mutation,
+// and a predicate that disables itself on an empty bind is not sargable:
+// SQLite drives the outermost loop with a scan and applies the id as a residual
+// filter, so the executions refresh walked every execution row of every device,
+// a cost that grows without bound because executions are never pruned.
+type searchDocumentSpec struct {
+	scope string
+	// body is the INSERT ... SELECT ... FROM ... prefix, with no WHERE clause.
+	body string
+	// key is the single-entity predicate. It must be a bare equality on the
+	// source table's primary key and it is emitted first, because that is the
+	// form measured to make SQLite seek rather than scan. search_plan_test.go
+	// asserts the resulting plan against the real schema.
+	key string
+	// filter is the rebuild-time predicate, empty when the scope has none.
+	filter string
+}
+
+func (spec searchDocumentSpec) singleEntityStatement() string {
+	if spec.filter == "" {
+		return spec.body + "\nWHERE " + spec.key
+	}
+	return spec.body + "\nWHERE " + spec.key + " AND " + spec.filter
+}
+
+func (spec searchDocumentSpec) rebuildStatement() string {
+	if spec.filter == "" {
+		return spec.body
+	}
+	return spec.body + "\nWHERE " + spec.filter
+}
+
+var searchDocumentStatements, searchDocumentRebuildStatements = buildSearchDocumentStatements()
+
+func buildSearchDocumentStatements() (single, rebuild map[string]string) {
+	single = make(map[string]string, len(searchDocumentSpecs))
+	rebuild = make(map[string]string, len(searchDocumentSpecs))
+	for _, spec := range searchDocumentSpecs {
+		single[spec.scope] = spec.singleEntityStatement()
+		rebuild[spec.scope] = spec.rebuildStatement()
+	}
+	return single, rebuild
+}
+
+// One registration point per scope: rebuildSearchDocuments walks this slice in
+// order, and both statement maps are derived from it, so no scope can be
+// refreshable without also being rebuildable.
+var searchDocumentSpecs = []searchDocumentSpec{{
+	scope: "actions",
+	key:   "a.id = ?",
+	body: `
 INSERT INTO search_documents (scope, entity_id, primary_text, description, related_text, sort_text, fields)
 SELECT 'actions', a.id, a.name, COALESCE(a.description, ''),
        a.id || ' ' || CAST(a.action_type AS TEXT), lower(a.name),
@@ -117,9 +168,12 @@ SELECT 'actions', a.id, a.name, COALESCE(a.description, ''),
          'assigned', CASE WHEN EXISTS (SELECT 1 FROM assignments x WHERE x.source_type = 'action' AND x.source_id = a.id AND x.is_deleted = false) THEN 'true' ELSE 'false' END,
          'created_at', COALESCE(strftime('%s', a.created_at), '0'),
          'updated_at', COALESCE(strftime('%s', a.updated_at), '0'))
-FROM actions a WHERE a.is_deleted = false AND (? = '' OR a.id = ?)`,
-
-	"action_sets": `
+FROM actions a`,
+	filter: "a.is_deleted = false",
+}, {
+	scope: "action_sets",
+	key:   "s.id = ?",
+	body: `
 INSERT INTO search_documents (scope, entity_id, primary_text, description, related_text, sort_text, member_count, fields)
 SELECT 'action_sets', s.id, s.name, s.description,
        COALESCE((SELECT group_concat(a.name, ' ') FROM action_set_members m JOIN actions a ON a.id = m.action_id WHERE m.set_id = s.id AND a.is_deleted = false), ''),
@@ -131,9 +185,12 @@ SELECT 'action_sets', s.id, s.name, s.description,
          'action_names', COALESCE((SELECT group_concat(a.name, ', ') FROM action_set_members m JOIN actions a ON a.id = m.action_id WHERE m.set_id = s.id AND a.is_deleted = false), ''),
          'created_at', COALESCE(strftime('%s', s.created_at), '0'),
          'updated_at', COALESCE(strftime('%s', s.updated_at), '0'))
-FROM action_sets s WHERE s.is_deleted = false AND (? = '' OR s.id = ?)`,
-
-	"definitions": `
+FROM action_sets s`,
+	filter: "s.is_deleted = false",
+}, {
+	scope: "definitions",
+	key:   "d.id = ?",
+	body: `
 INSERT INTO search_documents (scope, entity_id, primary_text, description, related_text, sort_text, member_count, fields)
 SELECT 'definitions', d.id, d.name, d.description,
        COALESCE((SELECT group_concat(
@@ -147,9 +204,12 @@ SELECT 'definitions', d.id, d.name, d.description,
          'set_names', COALESCE((SELECT group_concat(s.name, ', ') FROM definition_members m JOIN action_sets s ON s.id = m.action_set_id WHERE m.definition_id = d.id AND s.is_deleted = false), ''),
          'created_at', COALESCE(strftime('%s', d.created_at), '0'),
          'updated_at', COALESCE(strftime('%s', d.updated_at), '0'))
-FROM definitions d WHERE d.is_deleted = false AND (? = '' OR d.id = ?)`,
-
-	"compliance_policies": `
+FROM definitions d`,
+	filter: "d.is_deleted = false",
+}, {
+	scope: "compliance_policies",
+	key:   "p.id = ?",
+	body: `
 INSERT INTO search_documents (scope, entity_id, primary_text, description, related_text, sort_text, member_count, fields)
 SELECT 'compliance_policies', p.id, p.name, p.description,
 	       COALESCE((SELECT group_concat(a.name || ' ' || COALESCE(a.description, ''), ' ') FROM compliance_policy_rules r JOIN actions a ON a.id = r.action_id WHERE r.policy_id = p.id), ''),
@@ -160,9 +220,12 @@ SELECT 'compliance_policies', p.id, p.name, p.description,
          'assigned', CASE WHEN EXISTS (SELECT 1 FROM assignments x WHERE x.source_type = 'compliance_policy' AND x.source_id = p.id AND x.is_deleted = false) THEN 'true' ELSE 'false' END,
 	         'action_names', COALESCE((SELECT group_concat(a.name, ', ') FROM compliance_policy_rules r JOIN actions a ON a.id = r.action_id WHERE r.policy_id = p.id), ''),
          'created_at', COALESCE(strftime('%s', p.created_at), '0'))
-FROM compliance_policies p WHERE p.is_deleted = false AND (? = '' OR p.id = ?)`,
-
-	"devices": `
+FROM compliance_policies p`,
+	filter: "p.is_deleted = false",
+}, {
+	scope: "devices",
+	key:   "d.id = ?",
+	body: `
 INSERT INTO search_documents (scope, entity_id, primary_text, description, related_text, sort_text, fields)
 SELECT 'devices', d.id, d.hostname, '',
 	       d.id || ' ' || d.agent_version || ' ' ||
@@ -182,9 +245,12 @@ SELECT 'devices', d.id, d.hostname, '',
          'labels', COALESCE((SELECT group_concat(key || '=' || value, ',') FROM device_labels l WHERE l.device_id = d.id), ''),
          'registered_at', COALESCE(strftime('%s', d.registered_at), '0'),
          'last_seen_at', COALESCE(strftime('%s', d.last_seen_at), '0'))
-FROM devices d WHERE d.is_deleted = false AND (? = '' OR d.id = ?)`,
-
-	"device_groups": `
+FROM devices d`,
+	filter: "d.is_deleted = false",
+}, {
+	scope: "device_groups",
+	key:   "g.id = ?",
+	body: `
 INSERT INTO search_documents (scope, entity_id, primary_text, description, related_text, sort_text, member_count, fields)
 SELECT 'device_groups', g.id, g.name, g.description, g.id, lower(g.name),
        (SELECT count(*) FROM device_group_members m WHERE m.group_id = g.id),
@@ -192,9 +258,12 @@ SELECT 'device_groups', g.id, g.name, g.description, g.id, lower(g.name),
          'is_dynamic', CASE WHEN g.is_dynamic THEN 'true' ELSE 'false' END,
          'member_count', CAST((SELECT count(*) FROM device_group_members m WHERE m.group_id = g.id) AS TEXT),
          'created_at', COALESCE(strftime('%s', g.created_at), '0'))
-FROM device_groups g WHERE g.is_deleted = false AND (? = '' OR g.id = ?)`,
-
-	"users": `
+FROM device_groups g`,
+	filter: "g.is_deleted = false",
+}, {
+	scope: "users",
+	key:   "u.id = ?",
+	body: `
 INSERT INTO search_documents (scope, entity_id, primary_text, description, related_text, sort_text, fields)
 SELECT 'users', u.id, CASE WHEN u.display_name <> '' THEN u.display_name ELSE u.email END, u.email,
        u.id || ' ' || u.given_name || ' ' || u.family_name || ' ' || u.preferred_username || ' ' || u.linux_username || ' ' ||
@@ -210,9 +279,12 @@ SELECT 'users', u.id, CASE WHEN u.display_name <> '' THEN u.display_name ELSE u.
            UNION SELECT r.name FROM user_group_members gm JOIN user_groups g ON g.id = gm.group_id AND g.is_deleted = false JOIN user_group_roles gr ON gr.group_id = gm.group_id JOIN roles r ON r.id = gr.role_id WHERE gm.user_id = u.id AND r.is_deleted = false)), ''),
          'created_at', COALESCE(strftime('%s', u.created_at), '0'),
          'last_login_at', COALESCE(strftime('%s', u.last_login_at), '0'))
-FROM users u WHERE u.is_deleted = false AND (? = '' OR u.id = ?)`,
-
-	"user_groups": `
+FROM users u`,
+	filter: "u.is_deleted = false",
+}, {
+	scope: "user_groups",
+	key:   "g.id = ?",
+	body: `
 INSERT INTO search_documents (scope, entity_id, primary_text, description, related_text, sort_text, member_count, fields)
 SELECT 'user_groups', g.id, g.name, g.description, g.id, lower(g.name),
        (SELECT count(*) FROM user_group_members m WHERE m.group_id = g.id),
@@ -220,9 +292,12 @@ SELECT 'user_groups', g.id, g.name, g.description, g.id, lower(g.name),
          'is_dynamic', CASE WHEN g.is_dynamic THEN 'true' ELSE 'false' END,
          'member_count', CAST((SELECT count(*) FROM user_group_members m WHERE m.group_id = g.id) AS TEXT),
          'created_at', COALESCE(strftime('%s', g.created_at), '0'))
-FROM user_groups g WHERE g.is_deleted = false AND (? = '' OR g.id = ?)`,
-
-	"executions": `
+FROM user_groups g`,
+	filter: "g.is_deleted = false",
+}, {
+	scope: "executions",
+	key:   "e.id = ?",
+	body: `
 INSERT INTO search_documents (scope, entity_id, primary_text, description, related_text, sort_text, fields)
 SELECT 'executions', e.id, COALESCE(d.hostname, e.device_id), COALESCE(a.name, ''),
 	   e.id || ' ' || e.device_id || ' ' || COALESCE(e.action_id, '') || ' ' || COALESCE(a.name, '') || ' ' || COALESCE(d.hostname, ''),
@@ -239,10 +314,12 @@ SELECT 'executions', e.id, COALESCE(d.hostname, e.device_id), COALESCE(a.name, '
          'completed_at', COALESCE(strftime('%s', e.completed_at), '0'))
 FROM executions e
 JOIN devices d ON d.id = e.device_id
-LEFT JOIN actions a ON a.id = e.action_id
-WHERE d.is_deleted = false AND (? = '' OR e.id = ?)`,
-
-	"audit_events": `
+LEFT JOIN actions a ON a.id = e.action_id`,
+	filter: "d.is_deleted = false",
+}, {
+	scope: "audit_events",
+	key:   "o.operation_id = ?",
+	body: `
 INSERT INTO search_documents (scope, entity_id, primary_text, description, related_text, sort_text, fields)
 SELECT 'audit_events', o.operation_id, o.request_descriptor, o.authorization_detail,
        o.origin || ' ' || o.operation_class || ' ' || o.actor_type || ' ' || o.result || ' ' ||
@@ -254,5 +331,5 @@ SELECT 'audit_events', o.operation_id, o.request_descriptor, o.authorization_det
          'stream_id', COALESCE((SELECT e.resource_id FROM audit_effects e WHERE e.operation_id = o.operation_id ORDER BY e.effect_seq LIMIT 1), o.operation_id),
          'actor_type', o.actor_type, 'actor_id', o.actor_id,
          'occurred_at', COALESCE(strftime('%s', o.occurred_at), '0'))
-FROM audit_operations o WHERE (? = '' OR o.operation_id = ?)`,
-}
+FROM audit_operations o`,
+}}
