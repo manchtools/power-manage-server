@@ -48,7 +48,7 @@ func (h *Handlers) prepareEncryptionParams(actionID string, input *pmv1.Encrypti
 		}
 		prepared.PresharedKey = stringPointer(stored.GetPresharedKey())
 	} else {
-		if prepared.GetPresharedKey() == "" {
+		if prepared.GetPresharedKey() == "" || pmcrypto.IsEncryptedValue(prepared.GetPresharedKey()) {
 			return nil, ErrInvalidInput
 		}
 		ciphertext, err := h.atRest.EncryptWithContext(prepared.GetPresharedKey(),
@@ -100,7 +100,7 @@ func (h *Handlers) prepareOptionalSecret(actionID string, supplied, stored *stri
 		}
 		return stringPointer(*stored), nil
 	}
-	if *supplied == "" {
+	if *supplied == "" || pmcrypto.IsEncryptedValue(*supplied) {
 		return nil, ErrInvalidInput
 	}
 	ciphertext, err := h.atRest.EncryptWithContext(*supplied, pmcrypto.RowAAD(actionID, purpose))

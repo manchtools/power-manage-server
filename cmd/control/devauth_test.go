@@ -109,7 +109,9 @@ func TestDevAuthMintsAdminSession(t *testing.T) {
 
 	post := func() devSessionResponse {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, devSessionPath, nil))
+		req := httptest.NewRequest(http.MethodPost, devSessionPath, nil)
+		req.RemoteAddr = "127.0.0.1:1234"
+		h.ServeHTTP(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 		var resp devSessionResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
@@ -121,6 +123,9 @@ func TestDevAuthMintsAdminSession(t *testing.T) {
 	require.NotEmpty(t, first.RefreshToken)
 	assert.Equal(t, devAdminEmail, first.Email)
 	require.NotEmpty(t, first.UserID)
+	issued, err := st.CountAuditEventRows(context.Background(), store.AuditEventFilter{EventType: "DEV_ISSUE"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), issued)
 
 	// The minted access token validates and carries administrator authority.
 	claims, err := jwtMgr.ValidateToken(first.AccessToken, auth.TokenTypeAccess)
@@ -136,6 +141,9 @@ func TestDevAuthMintsAdminSession(t *testing.T) {
 	// Second login is idempotent: the same subject, not a duplicate.
 	second := post()
 	assert.Equal(t, first.UserID, second.UserID)
+	issued, err = st.CountAuditEventRows(context.Background(), store.AuditEventFilter{EventType: "DEV_ISSUE"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), issued, "every minted session needs its own audit evidence")
 
 	users, err := st.ListUsers(context.Background(), "", 100)
 	require.NoError(t, err)
@@ -149,4 +157,37 @@ func TestDevAuthMintsAdminSession(t *testing.T) {
 	}
 	sort.Strings(emails)
 	assert.Equal(t, 1, adminCount, "dev admin must be provisioned exactly once, saw %v", emails)
+}
+
+func TestDevAuthOnlyAcceptsLocalRequestsFromKnownDevOrigins(t *testing.T) {
+	t.Setenv(devAuthEnv, "1")
+	st, jwtMgr, kek := devTestDeps(t)
+	h := wrapDevAuth(base404(), st, jwtMgr, kek, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	for name, test := range map[string]struct {
+		remote string
+		origin string
+		want   int
+	}{
+		"remote caller":    {"203.0.113.10:1234", "", http.StatusForbidden},
+		"unknown origin":   {"127.0.0.1:1234", "https://evil.example", http.StatusForbidden},
+		"localhost origin": {"127.0.0.1:1234", "https://localhost:5173", http.StatusNoContent},
+		"local no origin":  {"[::1]:1234", "", http.StatusNoContent},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodOptions, devSessionPath, nil)
+			req.RemoteAddr = test.remote
+			if test.origin != "" {
+				req.Header.Set("Origin", test.origin)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			assert.Equal(t, test.want, rec.Code)
+			if test.want == http.StatusNoContent && test.origin != "" {
+				assert.Equal(t, test.origin, rec.Header().Get("Access-Control-Allow-Origin"))
+			} else {
+				assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+			}
+		})
+	}
 }

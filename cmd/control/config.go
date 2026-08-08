@@ -384,7 +384,7 @@ func validateDatabasePath(path string) error {
 // evidence the moment one actor can write to the database and the archive at
 // once: the same root, the same disk failure, or the same ransomware pass
 // takes the record and its proof together. Documentation states that the
-// chain's head is anchored off-host, and an operator has to be able to say
+// chain's head is anchored separately, and an operator has to be able to say
 // that to an auditor, so it is a boot condition rather than a recommendation.
 //
 // Comparison is by filesystem, which is what a mount boundary actually is.
@@ -393,12 +393,16 @@ func validateDatabasePath(path string) error {
 // credentials, immutable object storage — is the operator's to provide, and
 // this refuses the one case the process can prove is wrong on its own.
 func validateArchiveIsolation(databasePath, archivePath string) error {
-	// The database file need not exist yet, so its filesystem is its
-	// directory's.
-	databaseDirectory := filepath.Dir(databasePath)
-	databaseFilesystem, err := filesystemIDOf(databaseDirectory)
+	databaseProbe := databasePath
+	if _, err := os.Stat(databasePath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("database_path %q: %w", databasePath, err)
+		}
+		databaseProbe = filepath.Dir(databasePath)
+	}
+	databaseFilesystem, err := filesystemIDOf(databaseProbe)
 	if err != nil {
-		return fmt.Errorf("database_path %q: %w", databaseDirectory, err)
+		return fmt.Errorf("database_path %q: %w", databaseProbe, err)
 	}
 	archiveFilesystem, err := filesystemIDOf(archivePath)
 	if err != nil {
@@ -408,11 +412,11 @@ func validateArchiveIsolation(databasePath, archivePath string) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"backup_path %q is on the same filesystem as the database at %q: the audit archive holds the off-host "+
+		"backup_path %q is on the same filesystem as the database at %q: the audit archive holds separately stored "+
 			"evidence for that database and must be a separate mount, ideally remote storage under different "+
 			"credentials, so that losing or tampering with one cannot silently take the other with it; mount a "+
 			"distinct filesystem and point POWER_MANAGE_BACKUP_PATH at it",
-		archivePath, databaseDirectory)
+		archivePath, databaseProbe)
 }
 
 func validateWritableDirectory(name, path string) error {

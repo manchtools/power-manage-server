@@ -553,18 +553,36 @@ func (h *Handlers) UpdateUserGroupQuery(ctx context.Context, req *connect.Reques
 			if err != nil {
 				return err
 			}
+			managed, err := tx.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+			if err != nil {
+				return err
+			}
+			if managed {
+				return errUserGroupSCIMManaged
+			}
 			fields := []string{"is_dynamic", "dynamic_query"}
 			if req.Msg.IsDynamic && !current.IsDynamic {
-				// A SCIM-managed group's membership belongs to its directory, so it
-				// is not the operator's to hand to a rule. This used to fall out of
-				// "static groups cannot be converted"; conversion works now, so the
-				// refusal has to be stated.
-				managed, err := tx.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+				members, err := tx.ListUserGroupMembers(ctx, req.Msg.Id)
 				if err != nil {
 					return err
 				}
-				if managed {
-					return errUserGroupSCIMManaged
+				userIDs := make([]string, len(members))
+				for i, member := range members {
+					userIDs[i] = member.UserID
+				}
+				if len(userIDs) > 0 {
+					affected, err := tx.BumpUserSessionsByIDs(ctx, db.BumpUserSessionsByIDsParams{
+						UpdatedAt: &at, UserIds: userIDs,
+					})
+					if err != nil {
+						return err
+					}
+					effect := userGroupEffect(req.Msg.Id, "INVALIDATE_MEMBER_SESSIONS", "session_version")
+					effect.AfterCount = &affected
+					rec.Effect(effect)
+					for _, userID := range userIDs {
+						rec.RefreshSearch("user", userID)
+					}
 				}
 				// Converting hands membership to the rule, so the hand-picked rows go
 				// in the SAME transaction that sets the mode — otherwise the group

@@ -290,6 +290,22 @@ test_backend_name_missing_fails() {
     ! run_setup "$directory" >/dev/null 2>&1
 }
 
+test_ca_rotation_preserves_old_and_active_trust() {
+    local directory="$1"
+    new_fixture "$directory" manage.example.test agents.example.test
+    run_setup "$directory" >/dev/null
+    cp "$directory/certs/ca.crt" "$directory/old-ca.crt"
+    rm -f "$directory/certs/ca.crt" "$directory/certs/ca.key" \
+        "$directory/certs/control.crt" "$directory/certs/control.key"
+
+    run_setup "$directory" >/dev/null
+
+    openssl verify -CAfile "$directory/certs/ca-trust-bundle.crt" \
+        "$directory/old-ca.crt" >/dev/null
+    openssl verify -CAfile "$directory/certs/ca-trust-bundle.crt" \
+        "$directory/certs/ca.crt" >/dev/null
+}
+
 # The archive storage every fixture is given lives here, on a filesystem that
 # is not the one holding the fixtures themselves.
 ARCHIVE_ROOT="$(mktemp -d /dev/shm/pm-setup-test-XXXXXX)"
@@ -299,7 +315,8 @@ fixture_three="$(mktemp -d)"
 fixture_four="$(mktemp -d)"
 fixture_five="$(mktemp -d)"
 fixture_six="$(mktemp -d)"
-trap 'rm -rf "$ARCHIVE_ROOT" "$fixture_one" "$fixture_two" "$fixture_three" "$fixture_four" "$fixture_five" "$fixture_six"' EXIT
+fixture_seven="$(mktemp -d)"
+trap 'rm -rf "$ARCHIVE_ROOT" "$fixture_one" "$fixture_two" "$fixture_three" "$fixture_four" "$fixture_five" "$fixture_six" "$fixture_seven"' EXIT
 
 test_secure_idempotent_setup "$fixture_one"
 printf 'PASS secure and idempotent setup\n'
@@ -313,3 +330,5 @@ test_shared_filesystem_archive_fails "$fixture_five"
 printf 'PASS shared-filesystem audit archive rejected\n'
 test_backend_name_missing_fails "$fixture_six"
 printf 'PASS internal backend name required\n'
+test_ca_rotation_preserves_old_and_active_trust "$fixture_seven"
+printf 'PASS CA rotation trust bundle preserved\n'

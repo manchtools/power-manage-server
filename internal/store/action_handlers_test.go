@@ -141,6 +141,24 @@ func TestActionHandlers_ActionCredentialsAreWriteOnlyAndEncryptedAtRest(t *testi
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	alreadyEncrypted := "enc:v1:caller-supplied-envelope"
+	_, err = f.handlers.CreateAction(ctx, connect.NewRequest(&pmv1.CreateActionRequest{
+		Name: "double wrapped disk key", Type: pmv1.ActionType_ACTION_TYPE_ENCRYPTION,
+		DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT,
+		Params: &pmv1.CreateActionRequest_Encryption{Encryption: &pmv1.EncryptionAuthoringParams{
+			PresharedKey: &alreadyEncrypted,
+		}},
+	}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"a client cannot smuggle an envelope through the plaintext authoring boundary")
+	_, err = f.handlers.CreateAction(ctx, connect.NewRequest(&pmv1.CreateActionRequest{
+		Name: "double wrapped WiFi key", Type: pmv1.ActionType_ACTION_TYPE_WIFI,
+		DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT,
+		Params: &pmv1.CreateActionRequest_Wifi{Wifi: &pmv1.WifiAuthoringParams{
+			Ssid: "office", AuthType: pmv1.WifiAuthType_WIFI_AUTH_TYPE_PSK, Psk: &alreadyEncrypted,
+		}},
+	}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	diskKey := "correct horse battery staple"
 	created, err := f.handlers.CreateAction(ctx, connect.NewRequest(&pmv1.CreateActionRequest{

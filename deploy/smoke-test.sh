@@ -92,6 +92,7 @@ provision_archive_storage() {
     }
     ARCHIVE_DIR="$(mktemp -d /dev/shm/pm-smoke-archive-XXXXXX)"
     mkdir -p "$WORK_DIR/data"
+    rm -rf -- "$WORK_DIR/data/backups"
     ln -s "$ARCHIVE_DIR" "$WORK_DIR/data/backups"
 }
 

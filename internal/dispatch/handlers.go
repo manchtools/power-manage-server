@@ -359,6 +359,9 @@ func (h *Handlers) DispatchToGroup(ctx context.Context, req *connect.Request[pmv
 	if !auth.AuthorizeContext(ctx, "DispatchToGroup", req.Msg.GroupId) {
 		return nil, rpcError(ctx, errPermissionDenied, connect.CodePermissionDenied, "permission denied")
 	}
+	if req.Msg.ActionSource == nil {
+		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "an action source is required")
+	}
 	if _, err := h.store.GetDeviceGroup(ctx, req.Msg.GroupId); err != nil {
 		if store.IsNotFound(err) {
 			return nil, notFound(ctx, errDeviceGroupMissing, "device group not found")

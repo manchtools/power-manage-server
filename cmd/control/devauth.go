@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -76,10 +77,15 @@ func wrapDevAuth(next http.Handler, st *store.Store, jwtMgr *auth.JWTManager, ke
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(devSessionPath, func(w http.ResponseWriter, r *http.Request) {
-		// The web calls this cross-origin (dev UI on :5173 → control on
-		// :8081), so honour the preflight and echo the caller's origin.
-		// Dev-only: this permissiveness never ships to a real deployment.
+		if !devRequestIsLocal(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if origin := r.Header.Get("Origin"); origin != "" {
+			if !devOriginAllowed(origin) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -106,6 +112,20 @@ func wrapDevAuth(next http.Handler, st *store.Store, jwtMgr *auth.JWTManager, ke
 	})
 	mux.Handle("/", next)
 	return mux
+}
+
+func devRequestIsLocal(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	return err == nil && net.ParseIP(host).IsLoopback()
+}
+
+func devOriginAllowed(origin string) bool {
+	switch origin {
+	case "https://localhost:5173", "https://127.0.0.1:5173", "https://[::1]:5173", "https://pm.localhost:5173":
+		return true
+	default:
+		return false
+	}
 }
 
 // devMintAdminSession idempotently provisions the fixed admin and returns
@@ -146,6 +166,12 @@ func devMintAdminSession(ctx context.Context, st *store.Store, jwtMgr *auth.JWTM
 	if err != nil {
 		return nil, err
 	}
+	if _, err := st.RecordOperation(ctx, devAuditOperation(), store.AuditEffect{
+		ResourceType: "session", ResourceID: userID,
+		Action: "DEV_ISSUE", Outcome: store.EffectApplied,
+	}); err != nil {
+		return nil, err
+	}
 	return &devSessionResponse{
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
@@ -172,14 +198,7 @@ func devEnsureAdmin(ctx context.Context, st *store.Store, kek *pmcrypto.Encrypto
 	}
 
 	userID := ulid.Make().String()
-	op := store.AuditOperation{
-		Class:                store.ClassBackgroundWriter,
-		ActorType:            auth.AnonymousActorType,
-		Origin:               auth.ControlRPCOrigin,
-		RequestDescriptor:    devSessionPath,
-		AuthorizationOutcome: store.AuthorizationNotApplicable,
-		Result:               store.ResultSuccess,
-	}
+	op := devAuditOperation()
 	_, err := st.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
 		wrapped, err := pmcrypto.GenerateWrappedDEK(kek, userID)
 		if err != nil {
@@ -233,16 +252,21 @@ func devEnsureAdmin(ctx context.Context, st *store.Store, kek *pmcrypto.Encrypto
 			Action:       "GRANT",
 			Outcome:      store.EffectApplied,
 		})
-		rec.Effect(store.AuditEffect{
-			ResourceType: "session",
-			ResourceID:   userID,
-			Action:       "DEV_ISSUE",
-			Outcome:      store.EffectApplied,
-		})
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
 	return userID, nil
+}
+
+func devAuditOperation() store.AuditOperation {
+	return store.AuditOperation{
+		Class:                store.ClassBackgroundWriter,
+		ActorType:            auth.AnonymousActorType,
+		Origin:               auth.ControlRPCOrigin,
+		RequestDescriptor:    devSessionPath,
+		AuthorizationOutcome: store.AuthorizationNotApplicable,
+		Result:               store.ResultSuccess,
+	}
 }

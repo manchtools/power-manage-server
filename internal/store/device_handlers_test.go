@@ -887,7 +887,7 @@ func TestDeviceHandlers_CreateLuksTokenIsOwnerOnlyHashedAndAudited(t *testing.T)
 	_, err := f.raw.Exec(context.Background(), `
 		INSERT INTO actions (id, name, action_type, params, created_by)
 		VALUES ($1, 'Encryption', $2,
-			'{"userPassphraseMinLength":24,"userPassphraseComplexity":"LPS_PASSWORD_COMPLEXITY_COMPLEX"}', $3)`,
+			'{"presharedKey":"enc:v1:stored","userPassphraseMinLength":24,"userPassphraseComplexity":"LPS_PASSWORD_COMPLEXITY_COMPLEX"}', $3)`,
 		actionID, int32(pmv1.ActionType_ACTION_TYPE_ENCRYPTION), f.actorID)
 	require.NoError(t, err)
 	ctx := f.actor("CreateLuksToken")

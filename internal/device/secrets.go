@@ -11,11 +11,11 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -260,8 +260,8 @@ func (h *Handlers) CreateLuksToken(ctx context.Context, req *connect.Request[pmv
 		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument,
 			"action is not an encryption action")
 	}
-	var params pmv1.EncryptionParams
-	if err := protojson.Unmarshal(action.Params, &params); err != nil {
+	var params pmv1.EncryptionAuthoringParams
+	if err := actionparams.UnmarshalActionParams(action.Params, &params); err != nil {
 		return nil, h.internal(ctx, "decode encryption action params", err)
 	}
 	minLength := params.UserPassphraseMinLength

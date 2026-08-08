@@ -278,6 +278,9 @@ func TestUpdateUserGroupQuery_ConvertsCuratedGroupAndRefusesSCIMManaged(t *testi
 		GroupId: groupID, UserId: member.ID,
 	}, operator.Token))
 	require.NoError(t, err)
+	var versionBeforeConversion int32
+	require.NoError(t, f.raw.QueryRow(f.ctx(),
+		`SELECT session_version FROM users WHERE id = $1`, member.ID).Scan(&versionBeforeConversion))
 
 	// An invalid query is refused before anything is written, so a rejected
 	// conversion leaves a curated group exactly as it was.
@@ -297,10 +300,22 @@ func TestUpdateUserGroupQuery_ConvertsCuratedGroupAndRefusesSCIMManaged(t *testi
 	assert.True(t, converted.Msg.Group.IsDynamic)
 	assert.Equal(t, `user.disabled equals "true"`, converted.Msg.Group.DynamicQuery)
 	assert.Zero(t, converted.Msg.Group.MemberCount, "the curated membership does not survive the rule")
+	var versionAfterConversion int32
+	require.NoError(t, f.raw.QueryRow(f.ctx(),
+		`SELECT session_version FROM users WHERE id = $1`, member.ID).Scan(&versionAfterConversion))
+	assert.Equal(t, versionBeforeConversion+1, versionAfterConversion,
+		"removing a membership invalidates authority already baked into sessions")
 
 	after, err := f.client.GetUserGroup(f.ctx(), authed(&pmv1.GetUserGroupRequest{Id: groupID}, operator.Token))
 	require.NoError(t, err)
 	assert.Empty(t, after.Msg.Members, "membership has one source once the group is a rule")
+	operations := f.operationsFor(powermanagev1connect.ControlServiceUpdateUserGroupQueryProcedure)
+	require.Len(t, operations, 1)
+	effects := f.effectsOf(operations[0].OperationID)
+	assert.Contains(t, f.effectWithAction(effects, "UPDATE").ChangedFields, "members")
+	invalidation := f.effectWithAction(effects, "INVALIDATE_MEMBER_SESSIONS")
+	require.NotNil(t, invalidation.AfterCount)
+	assert.Equal(t, int64(1), *invalidation.AfterCount)
 
 	// A SCIM-managed group stays the directory's. The web hides its Rule tab, but
 	// this RPC is reachable on its own and must fail closed.
@@ -314,6 +329,11 @@ func TestUpdateUserGroupQuery_ConvertsCuratedGroupAndRefusesSCIMManaged(t *testi
 		 VALUES ($1, $2, 'grp-directory', 'Directory owned', $3)`,
 		newULID(), providerID, managed.Msg.Group.Id)
 	require.NoError(t, err)
+	_, err = f.client.UpdateUserGroupQuery(f.ctx(), authed(&pmv1.UpdateUserGroupQueryRequest{
+		Id: managed.Msg.Group.Id, IsDynamic: false,
+	}, operator.Token))
+	assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err),
+		"SCIM ownership rejects every query update, including a same-mode request")
 
 	_, err = f.client.UpdateUserGroupQuery(f.ctx(), authed(&pmv1.UpdateUserGroupQueryRequest{
 		Id: managed.Msg.Group.Id, IsDynamic: true, DynamicQuery: `user.disabled equals "true"`,

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -488,6 +489,30 @@ func TestLoadConfigAcceptsAnArchiveOnADistinctFilesystem(t *testing.T) {
 	cfg, err := loadConfig()
 	require.NoError(t, err)
 	assert.Equal(t, fixture.values["POWER_MANAGE_BACKUP_PATH"], cfg.BackupPath)
+}
+
+func TestArchiveIsolationProbesAnExistingDatabaseFile(t *testing.T) {
+	directory := t.TempDir()
+	database := filepath.Join(directory, "control.db")
+	archive := filepath.Join(directory, "archive")
+	require.NoError(t, os.WriteFile(database, []byte("sqlite"), 0o600))
+	require.NoError(t, os.Mkdir(archive, 0o700))
+
+	real := filesystemIDOf
+	filesystemIDOf = func(path string) (uint64, error) {
+		switch path {
+		case database:
+			return 1, nil
+		case archive, directory:
+			return 2, nil
+		default:
+			return 0, fmt.Errorf("unexpected probe %q", path)
+		}
+	}
+	t.Cleanup(func() { filesystemIDOf = real })
+
+	require.NoError(t, validateArchiveIsolation(database, archive),
+		"a bind-mounted database file can be isolated even when its parent is not")
 }
 
 // TestFilesystemDeviceIDIdentifiesOneMount pins what that decision rests on.

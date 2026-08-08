@@ -448,6 +448,14 @@ func TestDispatchHandlers_RefuseUnauthorizedAndMissingTargetsWithoutWork(t *test
 			},
 		}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	emptyGroup := newID()
+	_, err = f.raw.Exec(context.Background(), `
+		INSERT INTO device_groups (id, name, created_at) VALUES ($1, 'empty', $2)`, emptyGroup, f.now)
+	require.NoError(t, err)
+	_, err = f.handlers.DispatchToGroup(f.actor("DispatchToGroup"),
+		connect.NewRequest(&pmv1.DispatchToGroupRequest{GroupId: emptyGroup}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"an empty group must not make a missing action source look successful")
 	assert.Empty(t, f.waker.ids)
 }
 

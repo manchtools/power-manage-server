@@ -18,12 +18,12 @@ configuration.
 
 ### Storage for the audit archive
 
-<!-- docref: begin src=deploy/setup.sh#@archive-isolation:b4ebb270,cmd/control/config.go#validateArchiveIsolation:ae89185b,cmd/control/devauth_stub.go#archiveIsolationRelaxed:8de98d35 -->
+<!-- docref: begin src=deploy/setup.sh#@archive-isolation:b4ebb270,cmd/control/config.go#validateArchiveIsolation:b9894a73,cmd/control/devauth_stub.go#archiveIsolationRelaxed:8de98d35 -->
 `data/backups` must be on a different filesystem from the SQLite database under
 `data/control`. Mount a second disk, an NFS or NAS export, or any
 remote-backed volume there:
 
-```
+```bash
 mkdir -p data && ln -s /srv/power-manage-archive data/backups
 ```
 
@@ -50,7 +50,7 @@ into `config/control.env`, and that file is where ordinary settings such as the
 log level or the retention windows are edited. `setup.sh` re-renders it on
 every run, including through `./deploy.sh`, so re-apply local edits afterwards.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:6418f71a -->
+<!-- docref: begin src=deploy/setup.sh#@generated-material:6bc71f80 -->
 `setup.sh` creates the internal Ed25519 CA, the control certificate, the
 encryption, session and sealing keys, and `config/control.env` with a 90-day
 audit-retention policy and the SQLite `POWER_MANAGE_DATABASE_PATH`. It first
