@@ -51,6 +51,36 @@ func generateTestCA(t *testing.T) (certPEM, keyPEM []byte) {
 	return certPEM, keyPEM
 }
 
+func generateSuccessorCA(t *testing.T, parentCertPEM, parentKeyPEM []byte) (certPEM, keyPEM []byte) {
+	t.Helper()
+	parentBlock, _ := pem.Decode(parentCertPEM)
+	require.NotNil(t, parentBlock)
+	parent, err := x509.ParseCertificate(parentBlock.Bytes)
+	require.NoError(t, err)
+	keyBlock, _ := pem.Decode(parentKeyPEM)
+	require.NotNil(t, keyBlock)
+	parsedKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	require.NoError(t, err)
+	parentKey, ok := parsedKey.(ed25519.PrivateKey)
+	require.True(t, ok)
+
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "Successor CA", Organization: []string{"Test"}},
+		NotBefore:    time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true, IsCA: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, parent, public, parentKey)
+	require.NoError(t, err)
+	encodedKey, err := x509.MarshalPKCS8PrivateKey(private)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encodedKey})
+}
+
 // generateCSR creates a CSR PEM for a given device ID.
 func generateCSR(t *testing.T, deviceID string) (csrPEM []byte, key ed25519.PrivateKey) {
 	t.Helper()
@@ -524,32 +554,32 @@ func TestDeviceIDFromPEM_InvalidPEM(t *testing.T) {
 }
 
 func TestSetTrustBundle(t *testing.T) {
-	certPEM1, keyPEM1 := generateTestCA(t)
-	c1, err := ca.NewFromPEM(certPEM1, keyPEM1, 24*time.Hour)
+	oldCertPEM, oldKeyPEM := generateTestCA(t)
+	oldCA, err := ca.NewFromPEM(oldCertPEM, oldKeyPEM, 24*time.Hour)
+	require.NoError(t, err)
+	successorCertPEM, successorKeyPEM := generateSuccessorCA(t, oldCertPEM, oldKeyPEM)
+	activeCA, err := ca.NewFromPEM(successorCertPEM, successorKeyPEM, 24*time.Hour)
 	require.NoError(t, err)
 
-	certPEM2, keyPEM2 := generateTestCA(t)
-	c2, err := ca.NewFromPEM(certPEM2, keyPEM2, 24*time.Hour)
-	require.NoError(t, err)
-
-	// Issue cert with CA2
 	csrPEM, _ := generateCSR(t, "device-001")
-	issued, err := c2.IssueCertificateFromCSR("device-001", csrPEM)
+	oldLeaf, err := oldCA.IssueCertificateFromCSR("device-001", csrPEM)
 	require.NoError(t, err)
-
-	// CA1 cannot verify CA2-issued cert
-	_, err = c1.VerifyCertificate(issued.CertPEM)
+	_, err = activeCA.VerifyCertificate(oldLeaf.CertPEM)
 	assert.Error(t, err)
 
-	// Add CA2 cert to CA1's trust bundle
-	bundle := append(certPEM1, certPEM2...)
-	err = c1.SetTrustBundle(bundle)
+	bundle := append(append([]byte(nil), oldCertPEM...), successorCertPEM...)
+	err = activeCA.SetTrustBundle(bundle)
 	require.NoError(t, err)
 
-	// Now CA1 can verify CA2-issued cert
-	deviceID, err := c1.VerifyCertificate(issued.CertPEM)
+	deviceID, err := activeCA.VerifyCertificate(oldLeaf.CertPEM)
 	require.NoError(t, err)
 	assert.Equal(t, "device-001", deviceID)
+
+	successorLeaf, err := activeCA.IssueCertificateFromCSR("device-002", csrPEM)
+	require.NoError(t, err)
+	deviceID, err = activeCA.VerifyCertificate(successorLeaf.CertPEM)
+	require.NoError(t, err)
+	assert.Equal(t, "device-002", deviceID)
 }
 
 func TestSetTrustBundle_InvalidPEM(t *testing.T) {
@@ -559,6 +589,10 @@ func TestSetTrustBundle_InvalidPEM(t *testing.T) {
 
 	err = c.SetTrustBundle([]byte("not a certificate"))
 	assert.Error(t, err)
+
+	otherCert, _ := generateTestCA(t)
+	err = c.SetTrustBundle(otherCert)
+	assert.ErrorContains(t, err, "active CA")
 }
 
 func TestTrustPool(t *testing.T) {

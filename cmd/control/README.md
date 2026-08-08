@@ -27,7 +27,7 @@ Control must fail readiness when the schema is not current, required keys or CA
 material are unusable, artifact paths are not writable, or the agent listener
 cannot enforce revocation.
 
-<!-- docref: begin src=cmd/control/main.go#parseCommand:9ba09808,cmd/control/config.go#configEnvironment:30e9356f,cmd/control/config.go#readEnvironment:88fc4d61,cmd/control/config.go#parseList:02da4e62 -->
+<!-- docref: begin src=cmd/control/main.go#parseCommand:9ba09808,cmd/control/config.go#configEnvironment:f192d94c,cmd/control/config.go#readEnvironment:88fc4d61,cmd/control/config.go#parseList:02da4e62 -->
 Configuration is entirely environmental: every option is its own documented
 `POWER_MANAGE_`-prefixed variable. There is no configuration file and no
 `-config` flag, and the only accepted arguments are the `bootstrap-admin` and
@@ -38,6 +38,13 @@ variable and its type selects the parser — and startup fails closed on any
 process by name instead of silently leaving its option at the default. List
 options are comma-separated and reject an empty entry; malformed booleans and
 durations name their variable and fail startup.
+<!-- docref: end -->
+
+<!-- docref: begin src=cmd/control/main.go#run:065ded94,internal/ca/ca.go#CA.SetTrustBundle:3b932aea -->
+`POWER_MANAGE_CA_TRUST_BUNDLE_FILE` optionally names the startup-only PEM trust
+bundle used for agent-client certificate verification. It must contain the
+active CA from `POWER_MANAGE_CA_CERT_FILE`; changing either file requires a
+control restart.
 <!-- docref: end -->
 
 <!-- docref: begin src=cmd/control/config.go#loadSecret:b9678c7e,cmd/control/config.go#readSecretFile:60ffa83b,cmd/control/config.go#loadEd25519PrivateKey:3cc11345 -->

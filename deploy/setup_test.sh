@@ -28,6 +28,7 @@ CONTROL_ENV_VARIABLES=(
     POWER_MANAGE_WEBHOOK_URL
     POWER_MANAGE_CA_CERT_FILE
     POWER_MANAGE_CA_KEY_FILE
+    POWER_MANAGE_CA_TRUST_BUNDLE_FILE
     POWER_MANAGE_AGENT_TLS_CERT_FILE
     POWER_MANAGE_AGENT_TLS_KEY_FILE
     POWER_MANAGE_PUBLIC_TLS_CERT_FILE
@@ -201,6 +202,7 @@ test_secure_idempotent_setup() {
     assert_env_line "$config" 'POWER_MANAGE_WEBHOOK_URL='
     assert_env_line "$config" 'POWER_MANAGE_CA_CERT_FILE=/run/certs/ca.crt'
     assert_env_line "$config" 'POWER_MANAGE_CA_KEY_FILE=/run/certs/ca.key'
+    assert_env_line "$config" 'POWER_MANAGE_CA_TRUST_BUNDLE_FILE=/run/certs/ca-trust-bundle.crt'
     assert_env_line "$config" 'POWER_MANAGE_AGENT_TLS_CERT_FILE=/run/certs/control.crt'
     assert_env_line "$config" 'POWER_MANAGE_AGENT_TLS_KEY_FILE=/run/certs/control.key'
     assert_env_line "$config" 'POWER_MANAGE_PUBLIC_TLS_CERT_FILE=/run/certs/control.crt'
@@ -208,6 +210,7 @@ test_secure_idempotent_setup() {
     assert_env_line "$config" 'POWER_MANAGE_ENCRYPTION_KEY_FILE=/run/secrets/encryption.key'
     assert_env_line "$config" 'POWER_MANAGE_SESSION_SIGNING_KEY_FILE=/run/secrets/session-signing.pem'
     assert_env_line "$config" 'POWER_MANAGE_SEALING_KEY_FILE=/run/secrets/sealing.key'
+    cmp -s "$directory/certs/ca.crt" "$directory/certs/ca-trust-bundle.crt"
     assert_archive_isolated "$config" "$directory"
 
     if grep -R -iEq 'valkey|asynq|indexer|password_auth|postgres|database_url' "$directory/config"; then

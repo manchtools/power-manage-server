@@ -152,6 +152,9 @@ certificate_covers_host() {
 }
 
 ensure_certificates() {
+    if [[ ! -f "$CERTS_DIR/ca-trust-bundle.crt" ]]; then
+        cp "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca-trust-bundle.crt"
+    fi
     ensure_certificate control "/CN=$AGENT_DOMAIN/O=Power Manage" \
         "subjectAltName=DNS:$AGENT_DOMAIN,DNS:control,DNS:localhost\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature"
     certificate_covers_host "$CERTS_DIR/control.crt" "$AGENT_DOMAIN" \
@@ -202,6 +205,7 @@ POWER_MANAGE_BACKUP_MAX_LAG=26h
 POWER_MANAGE_WEBHOOK_URL=
 POWER_MANAGE_CA_CERT_FILE=/run/certs/ca.crt
 POWER_MANAGE_CA_KEY_FILE=/run/certs/ca.key
+POWER_MANAGE_CA_TRUST_BUNDLE_FILE=/run/certs/ca-trust-bundle.crt
 POWER_MANAGE_AGENT_TLS_CERT_FILE=/run/certs/control.crt
 POWER_MANAGE_AGENT_TLS_KEY_FILE=/run/certs/control.key
 POWER_MANAGE_PUBLIC_TLS_CERT_FILE=/run/certs/control.crt

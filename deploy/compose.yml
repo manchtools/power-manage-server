@@ -14,7 +14,7 @@ services:
     volumes:
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro,z
       - ./traefik/dynamic:/etc/traefik/dynamic:ro,z
-      - ./certs/ca.crt:/run/certs/ca.crt:ro,z
+      - ./certs/ca-trust-bundle.crt:/run/certs/ca-trust-bundle.crt:ro,z
       - ./data/traefik:/letsencrypt:z
     networks:
       internal:
@@ -30,6 +30,7 @@ services:
     volumes:
       - ./certs/ca.crt:/run/certs/ca.crt:ro,z
       - ./certs/ca.key:/run/certs/ca.key:ro,z
+      - ./certs/ca-trust-bundle.crt:/run/certs/ca-trust-bundle.crt:ro,z
       - ./certs/control.crt:/run/certs/control.crt:ro,z
       - ./certs/control.key:/run/certs/control.key:ro,z
       - ./secrets/encryption.key:/run/secrets/encryption.key:ro,z

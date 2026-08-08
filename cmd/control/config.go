@@ -66,6 +66,7 @@ type configEnvironment struct {
 	WebhookURL            string        `env:"POWER_MANAGE_WEBHOOK_URL"`
 	CACertFile            string        `env:"POWER_MANAGE_CA_CERT_FILE"`
 	CAKeyFile             string        `env:"POWER_MANAGE_CA_KEY_FILE"`
+	CATrustBundleFile     string        `env:"POWER_MANAGE_CA_TRUST_BUNDLE_FILE"`
 	AgentTLSCertFile      string        `env:"POWER_MANAGE_AGENT_TLS_CERT_FILE"`
 	AgentTLSKeyFile       string        `env:"POWER_MANAGE_AGENT_TLS_KEY_FILE"`
 	PublicTLSCertFile     string        `env:"POWER_MANAGE_PUBLIC_TLS_CERT_FILE"`
@@ -100,6 +101,7 @@ type Config struct {
 	WebhookURL          string
 	CACertFile          string
 	CAKeyFile           string
+	CATrustBundleFile   string
 	AgentTLSCertFile    string
 	AgentTLSKeyFile     string
 	PublicTLSCertFile   string
@@ -154,6 +156,7 @@ func loadConfig() (*Config, error) {
 		WebhookURL:        document.WebhookURL,
 		CACertFile:        document.CACertFile,
 		CAKeyFile:         document.CAKeyFile,
+		CATrustBundleFile: document.CATrustBundleFile,
 		AgentTLSCertFile:  document.AgentTLSCertFile,
 		AgentTLSKeyFile:   document.AgentTLSKeyFile,
 		PublicTLSCertFile: document.PublicTLSCertFile,

@@ -1,6 +1,6 @@
 # Power Manage server quickstart
 
-<!-- docref: begin src=deploy/compose.yml#@deployment-services:a9ac8ed8 -->
+<!-- docref: begin src=deploy/compose.yml#@deployment-services:1f0b2637 -->
 The stack has exactly two services: Traefik and one control process with an
 embedded SQLite database. Compose gives control no arguments and passes it the
 rendered `config/control.env` as the container's environment file. The
@@ -50,7 +50,7 @@ into `config/control.env`, and that file is where ordinary settings such as the
 log level or the retention windows are edited. `setup.sh` re-renders it on
 every run, including through `./deploy.sh`, so re-apply local edits afterwards.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:2e53db95 -->
+<!-- docref: begin src=deploy/setup.sh#@generated-material:6418f71a -->
 `setup.sh` creates the internal Ed25519 CA, the control certificate, the
 encryption, session and sealing keys, and `config/control.env` with a 90-day
 audit-retention policy and the SQLite `POWER_MANAGE_DATABASE_PATH`. It first
@@ -69,7 +69,7 @@ protocol v2 on an isolated network; control itself authenticates the device
 certificate and checks revocation.
 <!-- docref: end -->
 
-<!-- docref: begin src=deploy/traefik/dynamic/routes.yml#@public-backend-tls:965c0116,deploy/traefik/traefik.yml#@safe-access-log:e383937a -->
+<!-- docref: begin src=deploy/traefik/dynamic/routes.yml#@public-backend-tls:873710ea,deploy/traefik/traefik.yml#@safe-access-log:e383937a -->
 Traefik also authenticates control's internal TLS certificate against the
 deployment CA, so browser/API traffic stays encrypted after public TLS
 termination. Its JSON access log omits the URI-bearing `RequestPath` and

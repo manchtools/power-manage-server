@@ -86,6 +86,15 @@ func run(cfg *Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("load certificate authority: %w", err)
 	}
+	if cfg.CATrustBundleFile != "" {
+		bundle, err := os.ReadFile(cfg.CATrustBundleFile)
+		if err != nil {
+			return fmt.Errorf("read CA trust bundle: %w", err)
+		}
+		if err := certificateAuthority.SetTrustBundle(bundle); err != nil {
+			return fmt.Errorf("load CA trust bundle: %w", err)
+		}
+	}
 	jwt, err := auth.NewJWTManager(auth.JWTConfig{PrivateKey: cfg.SessionSigningKey})
 	if err != nil {
 		return fmt.Errorf("load session signer: %w", err)

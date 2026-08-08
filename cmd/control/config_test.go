@@ -122,6 +122,7 @@ func TestLoadConfigResolvesEveryOptionFromTheEnvironment(t *testing.T) {
 	fixture.values["POWER_MANAGE_CORS_ALLOW_ALL"] = "true"
 	fixture.values["POWER_MANAGE_HEARTBEAT_INTERVAL"] = "45s"
 	fixture.values["POWER_MANAGE_LOG_LEVEL"] = "debug"
+	fixture.values["POWER_MANAGE_CA_TRUST_BUNDLE_FILE"] = "/certs/ca-bundle.crt"
 	setEnvironment(t, fixture.values)
 
 	cfg, err := loadConfig()
@@ -136,6 +137,7 @@ func TestLoadConfigResolvesEveryOptionFromTheEnvironment(t *testing.T) {
 	assert.Equal(t, fixture.values["POWER_MANAGE_DATABASE_PATH"], cfg.DatabasePath)
 	assert.Equal(t, "/certs/ca.crt", cfg.CACertFile)
 	assert.Equal(t, "/certs/ca.key", cfg.CAKeyFile)
+	assert.Equal(t, "/certs/ca-bundle.crt", cfg.CATrustBundleFile)
 	assert.Equal(t, "/certs/control.crt", cfg.AgentTLSCertFile)
 	assert.Equal(t, "/certs/control.key", cfg.AgentTLSKeyFile)
 
