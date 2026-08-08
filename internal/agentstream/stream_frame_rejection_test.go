@@ -18,7 +18,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
@@ -156,7 +155,10 @@ func newStreamFixture(t *testing.T) *streamFixture {
 	mux.Handle(procedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		connectHandler.ServeHTTP(w, r.WithContext(WithDeviceID(r.Context(), f.own.deviceID)))
 	}))
-	server := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
+	server := httptest.NewUnstartedServer(mux)
+	server.Config.Protocols = new(http.Protocols)
+	server.Config.Protocols.SetUnencryptedHTTP2(true)
+	server.Start()
 	t.Cleanup(server.Close)
 
 	httpClient := &http.Client{Transport: &http2.Transport{
