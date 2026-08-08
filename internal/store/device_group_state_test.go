@@ -232,6 +232,14 @@ func TestDeviceGroupState_ConvertingCuratedGroupToRuleClearsItsMembers(t *testin
 	effects, err := st.ListAuditEffects(ctx, recorded.OperationID)
 	require.NoError(t, err)
 	assert.NotEmpty(t, effects)
+	var changedFields []string
+	for _, effect := range effects {
+		if effect.ResourceType == "device_group" && effect.Action == "UPDATE" {
+			changedFields = effect.ChangedFields
+			break
+		}
+	}
+	assert.Contains(t, changedFields, "members", "the conversion audit must record the membership deletion")
 
 	// Manual membership is closed while the rule owns it…
 	_, err = state.AddDevices(ctx, deviceGroupOperation(), group.ID, []string{deviceIDs[0]})
