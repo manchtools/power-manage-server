@@ -566,46 +566,16 @@ func TestDeviceHandlers_GetDeviceLogResultReadsDirectState(t *testing.T) {
 }
 
 func TestDeviceHandlers_GetDeviceComplianceReadsDirectState(t *testing.T) {
-	f := newDeviceHandlerFixture(t)
-	policyID, graceActionID, failedActionID := newID(), newID(), newID()
+	f := newComplianceIngestFixture(t)
 	firstFailed := f.now.Add(-2 * time.Hour)
-	_, err := f.raw.Exec(context.Background(), `
-		UPDATE devices
-		SET compliance_status = 2, compliance_checked_at = $2,
-			compliance_total = 2, compliance_passing = 0
-		WHERE id = $1`, f.groupID, f.now)
-	require.NoError(t, err)
-	_, err = f.raw.Exec(context.Background(), `
-		INSERT INTO actions (id, name, action_type, params, created_by)
-		VALUES
-			($1, 'grace check', 1, '{}', $3),
-			($2, 'failed check', 1, '{}', $3)`, graceActionID, failedActionID, f.actorID)
-	require.NoError(t, err)
-	_, err = f.raw.Exec(context.Background(), `
-		INSERT INTO compliance_policies (id, name, created_by)
-		VALUES ($1, 'baseline', $2)`, policyID, f.actorID)
-	require.NoError(t, err)
-	_, err = f.raw.Exec(context.Background(), `
-		INSERT INTO compliance_policy_rules (policy_id, action_id, grace_period_hours)
-		VALUES ($1, $2, 4), ($1, $3, 0)`, policyID, graceActionID, failedActionID)
-	require.NoError(t, err)
-	_, err = f.raw.Exec(context.Background(), `
-		INSERT INTO compliance_results
-			(device_id, action_id, compliant, detection_output, checked_at)
-		VALUES
-			($1, $2, FALSE, '{"exitCode":1,"stdout":"grace drift"}', $4),
-			($1, $3, FALSE, '{"exitCode":2,"stderr":"failed drift"}', $4)`,
-		f.groupID, graceActionID, failedActionID, f.now)
-	require.NoError(t, err)
-	_, err = f.raw.Exec(context.Background(), `
-		INSERT INTO compliance_policy_evaluation
-			(device_id, policy_id, action_id, compliant, first_failed_at, status, checked_at)
-		VALUES
-			($1, $2, $3, FALSE, $5, 3, $6),
-			($1, $2, $4, FALSE, $5, 2, $6)`,
-		f.groupID, policyID, graceActionID, failedActionID, firstFailed, f.now)
-	require.NoError(t, err)
-	ctx := f.actor("GetDeviceCompliance", "GetDeviceCompliancePolicyStatus")
+	graceActionID := f.complianceAction(t, "grace check")
+	failedActionID := f.complianceAction(t, "failed check")
+	policyID := f.policy(t, "baseline", map[string]int32{graceActionID: 4, failedActionID: 0})
+	f.report(t, f.groupID, graceActionID, pmv1.ExecutionStatus_EXECUTION_STATUS_FAILED, false,
+		&pmv1.CommandOutput{ExitCode: 1, Stdout: "grace drift"}, firstFailed)
+	f.report(t, f.groupID, failedActionID, pmv1.ExecutionStatus_EXECUTION_STATUS_FAILED, false,
+		&pmv1.CommandOutput{ExitCode: 2, Stderr: "failed drift"}, firstFailed)
+	ctx := f.ctx
 
 	complianceResponse, err := f.handlers.GetDeviceCompliance(ctx,
 		connect.NewRequest(&pmv1.GetDeviceComplianceRequest{DeviceId: f.groupID}))
@@ -634,9 +604,11 @@ func TestDeviceHandlers_GetDeviceComplianceReadsDirectState(t *testing.T) {
 			assert.True(t, rule.GraceExpiresAt.AsTime().Equal(firstFailed.Add(4*time.Hour)))
 		}
 	}
-	assertSensitiveDeviceRead(t, f, powermanagev1connect.ControlServiceGetDeviceComplianceProcedure,
+	assertSensitiveDeviceRead(t, f.deviceHandlerFixture,
+		powermanagev1connect.ControlServiceGetDeviceComplianceProcedure,
 		"device_compliance", f.groupID)
-	assertSensitiveDeviceRead(t, f, powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
+	assertSensitiveDeviceRead(t, f.deviceHandlerFixture,
+		powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
 		"device_compliance_policy_status", f.groupID)
 
 	_, err = f.raw.Exec(context.Background(), `
@@ -915,7 +887,7 @@ func TestDeviceHandlers_CreateLuksTokenIsOwnerOnlyHashedAndAudited(t *testing.T)
 	_, err := f.raw.Exec(context.Background(), `
 		INSERT INTO actions (id, name, action_type, params, created_by)
 		VALUES ($1, 'Encryption', $2,
-			'{"userPassphraseMinLength":24,"userPassphraseComplexity":"LPS_PASSWORD_COMPLEXITY_COMPLEX"}', $3)`,
+			'{"presharedKey":"enc:v1:stored","userPassphraseMinLength":24,"userPassphraseComplexity":"LPS_PASSWORD_COMPLEXITY_COMPLEX"}', $3)`,
 		actionID, int32(pmv1.ActionType_ACTION_TYPE_ENCRYPTION), f.actorID)
 	require.NoError(t, err)
 	ctx := f.actor("CreateLuksToken")
@@ -927,7 +899,19 @@ func TestDeviceHandlers_CreateLuksTokenIsOwnerOnlyHashedAndAudited(t *testing.T)
 	_, err = ulid.ParseStrict(issued.Msg.Token)
 	require.NoError(t, err)
 	assert.Contains(t, issued.Msg.Uri, issued.Msg.Token)
-	assert.Contains(t, issued.Msg.CliCommand, issued.Msg.Token)
+	// F2: the advertised command must NOT carry the token on argv —
+	// /proc/<pid>/cmdline is world-readable and the client reads the passphrase
+	// before it dials, so an argv token is exposed for the whole typing window
+	// while being the sole authorization for a root daemon that writes LUKS
+	// keyslots. It must not advertise sudo either: the sudoers rule was removed
+	// precisely so this client is unprivileged, and an operator copying the
+	// string back would reinstate the escalation.
+	assert.NotContains(t, issued.Msg.CliCommand, issued.Msg.Token,
+		"CliCommand must not put the one-time LUKS token on argv")
+	assert.NotContains(t, issued.Msg.CliCommand, "sudo",
+		"the LUKS passphrase client is unprivileged; advertising sudo reinstates the removed escalation")
+	assert.Contains(t, issued.Msg.CliCommand, "luks set-passphrase",
+		"CliCommand must still name the command the operator runs")
 	hash := sha256.Sum256([]byte(issued.Msg.Token))
 	var storedHash string
 	var minLength, complexity int32

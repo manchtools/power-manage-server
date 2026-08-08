@@ -4,7 +4,7 @@ http:
     control-tls:
       serverName: control
       rootCAs:
-        - /run/certs/ca.crt
+        - /run/certs/ca-trust-bundle.crt
       minVersion: VersionTLS13
       maxVersion: VersionTLS13
   routers:

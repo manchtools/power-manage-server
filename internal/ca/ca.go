@@ -265,8 +265,29 @@ func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass,
 // either CA are accepted during the transition period.
 func (ca *CA) SetTrustBundle(pemData []byte) error {
 	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pemData) {
-		return fmt.Errorf("failed to parse any certificates from trust bundle")
+	foundActive := false
+	rest := bytes.TrimSpace(pemData)
+	for len(rest) > 0 {
+		block, remaining := pem.Decode(rest)
+		if block == nil || block.Type != "CERTIFICATE" {
+			return fmt.Errorf("CA trust bundle contains invalid PEM data")
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return fmt.Errorf("parse CA trust bundle certificate: %w", err)
+		}
+		if !cert.IsCA || cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+			return fmt.Errorf("CA trust bundle contains a certificate that cannot sign certificates")
+		}
+		pool.AddCert(cert)
+		foundActive = foundActive || bytes.Equal(cert.Raw, ca.cert.Raw)
+		rest = bytes.TrimSpace(remaining)
+	}
+	if len(pemData) == 0 {
+		return fmt.Errorf("CA trust bundle is empty")
+	}
+	if !foundActive {
+		return fmt.Errorf("CA trust bundle does not contain the active CA certificate")
 	}
 	ca.trustPool = pool
 	return nil

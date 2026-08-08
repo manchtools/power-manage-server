@@ -66,7 +66,7 @@ func TestDeploymentIsTheTwoServiceTarget(t *testing.T) {
 	for _, required := range []string{
 		"passthrough: true", "proxyProtocol:", "version: 2", "172.30.0.3:8082",
 		"https://control:8081", "serversTransport: control-tls", "serverName: control",
-		"rootCAs:", "/run/certs/ca.crt", "minVersion: VersionTLS13", "maxVersion: VersionTLS13",
+		"rootCAs:", "/run/certs/ca-trust-bundle.crt", "minVersion: VersionTLS13", "maxVersion: VersionTLS13",
 	} {
 		if !strings.Contains(routes, required) {
 			t.Errorf("static route configuration is missing %q", required)

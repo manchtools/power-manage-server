@@ -2,14 +2,20 @@ package store_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/manchtools/power-manage/server/internal/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	sdkcrypto "github.com/manchtools/power-manage-sdk/crypto"
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
+	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/dispatch"
 	"github.com/manchtools/power-manage/server/internal/manifest"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type manifestFixture struct {
@@ -186,4 +192,71 @@ func TestManifestCompiler_RejectsMalformedStoredParams(t *testing.T) {
 	require.NoError(t, err)
 	_, err = f.compiler.Action(context.Background(), f.action2)
 	require.Error(t, err)
+}
+
+func TestManifestCompiler_SealsActionCredentialBeforeDeliveryPersistence(t *testing.T) {
+	st, raw := setupSQLite(t)
+	ctx := context.Background()
+	deviceID := seedDevice(t, raw)
+	agentKey, err := sdkcrypto.GenerateX25519()
+	require.NoError(t, err)
+	_, err = raw.Exec(ctx, `UPDATE devices SET agent_sealing_public_key = $2 WHERE id = $1`,
+		deviceID, agentKey.PublicKey().Bytes())
+	require.NoError(t, err)
+
+	atRest, err := pmcrypto.NewEncryptor("0303030303030303030303030303030303030303030303030303030303030303")
+	require.NoError(t, err)
+	actionID := newID()
+	const plaintext = "initial-volume-secret"
+	ciphertext, err := atRest.EncryptWithContext(plaintext,
+		pmcrypto.RowAAD(actionID, pmcrypto.PurposeActionEncryptionPresharedKey))
+	require.NoError(t, err)
+	stored, err := actionparams.MarshalActionParams(&pmv1.EncryptionAuthoringParams{
+		PresharedKey: &ciphertext, RotationIntervalDays: 30, MinWords: 5,
+	})
+	require.NoError(t, err)
+	_, err = raw.Exec(ctx, `
+		INSERT INTO actions
+			(id, name, action_type, desired_state, params, timeout_seconds, schedule, created_at)
+		VALUES ($1, 'encrypted disk', $2, $3, $4, 300, '{}', CURRENT_TIMESTAMP)`,
+		actionID, int32(pmv1.ActionType_ACTION_TYPE_ENCRYPTION),
+		int32(pmv1.DesiredState_DESIRED_STATE_PRESENT), stored)
+	require.NoError(t, err)
+
+	compiled, err := manifest.New(st, atRest).ActionForDevice(ctx, deviceID, actionID)
+	require.NoError(t, err)
+	sealed := compiled.Occurrences[0].Action.GetEncryption().PresharedKey
+	require.NotNil(t, sealed)
+	aad, info, err := sdkcrypto.FieldSealContext(sdkcrypto.DirectionControlToAgent,
+		"powermanage.v1.EncryptionParams", "preshared_key", deviceID, actionID)
+	require.NoError(t, err)
+	opened, err := sdkcrypto.OpenWithPrivateKey(agentKey, sealed.Ciphertext, aad, info)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, string(opened))
+	clear(opened)
+
+	waker := &committedWaker{store: st}
+	service := dispatch.New(dispatch.Config{Store: st, Waker: waker})
+	op := mutationOp()
+	op.RequestDescriptor = "/powermanage.v1.ControlService/DispatchAction"
+	result, err := service.Submit(ctx, dispatch.SubmitParams{
+		Operation: op, DeviceID: deviceID,
+		Manifests: []dispatch.ManifestInput{{Manifest: compiled, PersistActionIDs: true}},
+	})
+	require.NoError(t, err)
+
+	delivery, err := st.GetDelivery(ctx, result.DeliveryIDs[0])
+	require.NoError(t, err)
+	var executionParams string
+	require.NoError(t, raw.QueryRow(ctx, `SELECT params FROM executions WHERE id = $1`,
+		result.Executions[0].ID).Scan(&executionParams))
+	for name, value := range map[string]string{
+		"delivery manifest": string(delivery.Manifest), "execution params": executionParams,
+	} {
+		assert.False(t, strings.Contains(value, plaintext), name)
+		assert.False(t, strings.Contains(value, ciphertext), name)
+	}
+	var persisted pmv1.EncryptionParams
+	require.NoError(t, protojson.Unmarshal([]byte(executionParams), &persisted))
+	assert.Equal(t, sealed.Ciphertext, persisted.GetPresharedKey().GetCiphertext())
 }

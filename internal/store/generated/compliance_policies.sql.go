@@ -193,11 +193,14 @@ func (q *Queries) DeleteCompliancePolicyEvaluations(ctx context.Context, policyI
 }
 
 const deleteCompliancePolicyEvaluationsForAction = `-- name: DeleteCompliancePolicyEvaluationsForAction :many
+
 DELETE FROM compliance_policy_evaluation
 WHERE action_id = ?
-RETURNING policy_id
+RETURNING device_id
 `
 
+// Compliance evidence deletes return the devices whose summary was derived from
+// the rows they remove, so the caller can recompute it in the same transaction.
 func (q *Queries) DeleteCompliancePolicyEvaluationsForAction(ctx context.Context, actionID string) ([]string, error) {
 	rows, err := q.db.QueryContext(ctx, deleteCompliancePolicyEvaluationsForAction, actionID)
 	if err != nil {
@@ -206,11 +209,45 @@ func (q *Queries) DeleteCompliancePolicyEvaluationsForAction(ctx context.Context
 	defer rows.Close()
 	items := []string{}
 	for rows.Next() {
-		var policy_id string
-		if err := rows.Scan(&policy_id); err != nil {
+		var device_id string
+		if err := rows.Scan(&device_id); err != nil {
 			return nil, err
 		}
-		items = append(items, policy_id)
+		items = append(items, device_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const deleteCompliancePolicyEvaluationsForRule = `-- name: DeleteCompliancePolicyEvaluationsForRule :many
+DELETE FROM compliance_policy_evaluation
+WHERE policy_id = ?1 AND action_id = ?2
+RETURNING device_id
+`
+
+type DeleteCompliancePolicyEvaluationsForRuleParams struct {
+	PolicyID string `json:"policy_id"`
+	ActionID string `json:"action_id"`
+}
+
+func (q *Queries) DeleteCompliancePolicyEvaluationsForRule(ctx context.Context, arg DeleteCompliancePolicyEvaluationsForRuleParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, deleteCompliancePolicyEvaluationsForRule, arg.PolicyID, arg.ActionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var device_id string
+		if err := rows.Scan(&device_id); err != nil {
+			return nil, err
+		}
+		items = append(items, device_id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

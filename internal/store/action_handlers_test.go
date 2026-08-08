@@ -16,8 +16,10 @@ import (
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/authoring"
+	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -35,8 +37,10 @@ func newActionHandlerFixture(t *testing.T) *actionHandlerFixture {
 	st, raw := setupSQLite(t)
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	f := &actionHandlerFixture{t: t, store: st, raw: raw, now: now, actorID: newID()}
+	atRest, err := pmcrypto.NewEncryptor("0202020202020202020202020202020202020202020202020202020202020202")
+	require.NoError(t, err)
 	f.handlers = authoring.NewHandlers(authoring.HandlersConfig{
-		Store: st, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Store: st, AtRest: atRest, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now: func() time.Time { return now },
 	})
 	return f
@@ -126,6 +130,105 @@ func TestActionHandlers_CRUDIsDirectAuditedState(t *testing.T) {
 		require.NoError(t, err, procedure)
 		assert.NotEmpty(t, effects, procedure)
 	}
+}
+
+func TestActionHandlers_ActionCredentialsAreWriteOnlyAndEncryptedAtRest(t *testing.T) {
+	f := newActionHandlerFixture(t)
+	ctx := f.actor("CreateAction", "GetAction", "UpdateActionParams")
+	_, err := f.handlers.CreateAction(ctx, connect.NewRequest(&pmv1.CreateActionRequest{
+		Name: "missing key", Type: pmv1.ActionType_ACTION_TYPE_ENCRYPTION,
+		DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	alreadyEncrypted := "enc:v1:caller-supplied-envelope"
+	_, err = f.handlers.CreateAction(ctx, connect.NewRequest(&pmv1.CreateActionRequest{
+		Name: "double wrapped disk key", Type: pmv1.ActionType_ACTION_TYPE_ENCRYPTION,
+		DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT,
+		Params: &pmv1.CreateActionRequest_Encryption{Encryption: &pmv1.EncryptionAuthoringParams{
+			PresharedKey: &alreadyEncrypted,
+		}},
+	}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"a client cannot smuggle an envelope through the plaintext authoring boundary")
+	_, err = f.handlers.CreateAction(ctx, connect.NewRequest(&pmv1.CreateActionRequest{
+		Name: "double wrapped WiFi key", Type: pmv1.ActionType_ACTION_TYPE_WIFI,
+		DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT,
+		Params: &pmv1.CreateActionRequest_Wifi{Wifi: &pmv1.WifiAuthoringParams{
+			Ssid: "office", AuthType: pmv1.WifiAuthType_WIFI_AUTH_TYPE_PSK, Psk: &alreadyEncrypted,
+		}},
+	}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	diskKey := "correct horse battery staple"
+	created, err := f.handlers.CreateAction(ctx, connect.NewRequest(&pmv1.CreateActionRequest{
+		Name: "disk ownership", Type: pmv1.ActionType_ACTION_TYPE_ENCRYPTION,
+		DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT,
+		Params: &pmv1.CreateActionRequest_Encryption{Encryption: &pmv1.EncryptionAuthoringParams{
+			PresharedKey: &diskKey, RotationIntervalDays: 30, MinWords: 5,
+		}},
+	}))
+	require.NoError(t, err)
+	require.True(t, created.Msg.Action.GetEncryption().PresharedKeyConfigured)
+
+	var before string
+	require.NoError(t, f.raw.QueryRow(context.Background(),
+		`SELECT params FROM actions WHERE id = $1`, created.Msg.Action.Id).Scan(&before))
+	assert.NotContains(t, before, diskKey)
+	assert.Contains(t, before, "enc:v1:")
+	beforeParams := &pmv1.EncryptionAuthoringParams{}
+	require.NoError(t, actionparams.UnmarshalActionParams([]byte(before), beforeParams))
+
+	updated, err := f.handlers.UpdateActionParams(ctx, connect.NewRequest(&pmv1.UpdateActionParamsRequest{
+		Id: created.Msg.Action.Id, DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT,
+		Params: &pmv1.UpdateActionParamsRequest_Encryption{Encryption: &pmv1.EncryptionAuthoringParams{
+			RotationIntervalDays: 60, MinWords: 6,
+		}},
+	}))
+	require.NoError(t, err)
+	assert.True(t, updated.Msg.Action.GetEncryption().PresharedKeyConfigured)
+	var after string
+	require.NoError(t, f.raw.QueryRow(context.Background(),
+		`SELECT params FROM actions WHERE id = $1`, created.Msg.Action.Id).Scan(&after))
+	assert.Contains(t, after, "enc:v1:")
+	afterParams := &pmv1.EncryptionAuthoringParams{}
+	require.NoError(t, actionparams.UnmarshalActionParams([]byte(after), afterParams))
+	assert.Equal(t, beforeParams.GetPresharedKey(), afterParams.GetPresharedKey(),
+		"omitting the write-only input must preserve the existing ciphertext")
+
+	wifiPSK := "wireless-secret"
+	wifi, err := f.handlers.CreateAction(ctx, connect.NewRequest(&pmv1.CreateActionRequest{
+		Name: "office WiFi", Type: pmv1.ActionType_ACTION_TYPE_WIFI,
+		DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT,
+		Params: &pmv1.CreateActionRequest_Wifi{Wifi: &pmv1.WifiAuthoringParams{
+			Ssid: "office", AuthType: pmv1.WifiAuthType_WIFI_AUTH_TYPE_PSK,
+			Psk: &wifiPSK, AutoConnect: true,
+		}},
+	}))
+	require.NoError(t, err)
+	assert.True(t, wifi.Msg.Action.GetWifi().PskConfigured)
+	assert.False(t, wifi.Msg.Action.GetWifi().ClientKeyConfigured)
+
+	clientKey := "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----"
+	updatedWifi, err := f.handlers.UpdateActionParams(ctx, connect.NewRequest(&pmv1.UpdateActionParamsRequest{
+		Id: wifi.Msg.Action.Id, DesiredState: pmv1.DesiredState_DESIRED_STATE_PRESENT,
+		Params: &pmv1.UpdateActionParamsRequest_Wifi{Wifi: &pmv1.WifiAuthoringParams{
+			Ssid: "office", AuthType: pmv1.WifiAuthType_WIFI_AUTH_TYPE_EAP_TLS,
+			ClientKey: &clientKey, Identity: "device@example.test", AutoConnect: true,
+		}},
+	}))
+	require.NoError(t, err)
+	assert.False(t, updatedWifi.Msg.Action.GetWifi().PskConfigured)
+	assert.True(t, updatedWifi.Msg.Action.GetWifi().ClientKeyConfigured)
+	var wifiStored string
+	require.NoError(t, f.raw.QueryRow(context.Background(),
+		`SELECT params FROM actions WHERE id = $1`, updatedWifi.Msg.Action.Id).Scan(&wifiStored))
+	assert.NotContains(t, wifiStored, wifiPSK)
+	assert.NotContains(t, wifiStored, clientKey)
+	storedWifi := &pmv1.WifiAuthoringParams{}
+	require.NoError(t, actionparams.UnmarshalActionParams([]byte(wifiStored), storedWifi))
+	assert.Nil(t, storedWifi.Psk, "switching auth mode clears the now-irrelevant secret")
+	assert.True(t, pmcrypto.IsEncryptedValue(storedWifi.GetClientKey()))
 }
 
 func TestActionHandlers_KeysetFiltersAndObjectScope(t *testing.T) {

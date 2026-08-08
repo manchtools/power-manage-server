@@ -128,27 +128,32 @@ func (s *State) UpdateQuery(ctx context.Context, op store.AuditOperation, id str
 	if err != nil {
 		return store.DeviceGroupView{}, err
 	}
-	current, err := s.store.GetDeviceGroup(ctx, id)
-	if err != nil {
+	if _, err := s.store.GetDeviceGroup(ctx, id); err != nil {
 		return store.DeviceGroupView{}, translateNotFound(err)
-	}
-	if !current.IsDynamic {
-		return store.DeviceGroupView{}, ErrStaticGroup
 	}
 	_, err = s.store.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
 		current, err := tx.GetDeviceGroup(ctx, id)
 		if err != nil {
 			return err
 		}
-		if !current.IsDynamic {
-			return ErrStaticGroup
+		fields := []string{"is_dynamic", "dynamic_query"}
+		// Converting a curated group hands membership to the rule, so the rows it
+		// was hand-picked from go in the SAME transaction that sets the mode.
+		// Left behind, they would make the group report members its own rule does
+		// not select until somebody evaluated it. The reverse direction keeps its
+		// rows on purpose: materializing freezes the membership the rule produced.
+		if dynamic && !current.IsDynamic {
+			if _, err := tx.DeleteDeviceGroupMembers(ctx, id); err != nil {
+				return err
+			}
+			fields = append(fields, "members")
 		}
 		if _, err := tx.UpdateDeviceGroupQuery(ctx, db.UpdateDeviceGroupQueryParams{
 			ID: id, IsDynamic: dynamic, DynamicQuery: query,
 		}); err != nil {
 			return err
 		}
-		rec.Effect(groupEffect(id, "UPDATE", "is_dynamic", "dynamic_query"))
+		rec.Effect(groupEffect(id, "UPDATE", fields...))
 		return nil
 	})
 	return s.readAfter(ctx, id, err)

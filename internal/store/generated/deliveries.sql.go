@@ -98,25 +98,35 @@ func (q *Queries) InsertDelivery(ctx context.Context, arg InsertDeliveryParams) 
 
 const listDueDeliveriesForDevices = `-- name: ListDueDeliveriesForDevices :many
 SELECT delivery_id, device_id, manifest_id, manifest, state, operation_id, push_epoch, attempt_count, created_at, available_at, expires_at, pushed_at, acked_receipt_at, terminal_at, result_code FROM deliveries
-WHERE device_id IN (/*SLICE:device_ids*/?)
+WHERE available_at <= ?1
+  AND ?2 > 0
   AND state IN ('PENDING', 'PUSHED')
-  AND available_at <= ?2
+  AND device_id IN (/*SLICE:device_ids*/?)
 ORDER BY available_at
-LIMIT ?3
+LIMIT ?2
 `
 
 type ListDueDeliveriesForDevicesParams struct {
-	DeviceIds   []string  `json:"device_ids"`
 	AvailableAt time.Time `json:"available_at"`
 	PageSize    int64     `json:"page_size"`
+	DeviceIds   []string  `json:"device_ids"`
 }
 
 // The sweep only considers live connections. Offline rows stay durable and a
 // reconnect queues them directly; excluding them here prevents a large offline
 // backlog from monopolising every bounded sweep page.
+//
+// Placeholder order is load-bearing. sqlc expands sqlc.slice into bare
+// placeholders at run time and SQLite numbers a bare placeholder one above the
+// highest index assigned so far, so a numbered argument written after the slice
+// is overrun the moment the slice carries a second element. Every argument
+// therefore takes its number before the slice: page_size is bound by the guard
+// below, where a non-positive page asks for nothing, and only reused by LIMIT.
 func (q *Queries) ListDueDeliveriesForDevices(ctx context.Context, arg ListDueDeliveriesForDevicesParams) ([]Delivery, error) {
 	query := listDueDeliveriesForDevices
 	var queryParams []interface{}
+	queryParams = append(queryParams, arg.AvailableAt)
+	queryParams = append(queryParams, arg.PageSize)
 	if len(arg.DeviceIds) > 0 {
 		for _, v := range arg.DeviceIds {
 			queryParams = append(queryParams, v)
@@ -125,8 +135,6 @@ func (q *Queries) ListDueDeliveriesForDevices(ctx context.Context, arg ListDueDe
 	} else {
 		query = strings.Replace(query, "/*SLICE:device_ids*/?", "NULL", 1)
 	}
-	queryParams = append(queryParams, arg.AvailableAt)
-	queryParams = append(queryParams, arg.PageSize)
 	rows, err := q.db.QueryContext(ctx, query, queryParams...)
 	if err != nil {
 		return nil, err

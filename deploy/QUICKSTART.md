@@ -1,6 +1,6 @@
 # Power Manage server quickstart
 
-<!-- docref: begin src=deploy/compose.yml#@deployment-services:a9ac8ed8 -->
+<!-- docref: begin src=deploy/compose.yml#@deployment-services:1f0b2637 -->
 The stack has exactly two services: Traefik and one control process with an
 embedded SQLite database. Compose gives control no arguments and passes it the
 rendered `config/control.env` as the container's environment file. The
@@ -11,9 +11,38 @@ authoritative system design is
 ## Prepare
 
 Copy `.env.example` to `.env`, set the three required public values
-(`CONTROL_DOMAIN`, `AGENT_DOMAIN`, and `ACME_EMAIL`), then run `./setup.sh`.
-`.env` carries only those values and `IMAGE_TAG`; it is Compose's own
-environment file, not control's configuration.
+(`CONTROL_DOMAIN`, `AGENT_DOMAIN`, and `ACME_EMAIL`), then give the audit
+archive its own storage and run `./setup.sh`. `.env` carries only those values
+and `IMAGE_TAG`; it is Compose's own environment file, not control's
+configuration.
+
+### Storage for the audit archive
+
+<!-- docref: begin src=deploy/setup.sh#@archive-isolation:b4ebb270,cmd/control/config.go#validateArchiveIsolation:b9894a73,cmd/control/devauth_stub.go#archiveIsolationRelaxed:8de98d35 -->
+`data/backups` must be on a different filesystem from the SQLite database under
+`data/control`. Mount a second disk, an NFS or NAS export, or any
+remote-backed volume there:
+
+```bash
+mkdir -p data && ln -s /srv/power-manage-archive data/backups
+```
+
+A symlink works as well as a mount point: Compose bind-mounts whatever the path
+resolves to, so control sees that storage rather than the deploy tree's
+filesystem. If a previous run already created the empty directory, `rmdir
+data/backups` before linking.
+
+This is a requirement, not a recommendation. The archive holds the anchors and
+archived chain prefixes that prove the audit log was not rewritten, so control
+compares the two filesystems at startup and refuses to run when they match —
+there is no configuration variable that turns the check off. `setup.sh` applies
+the same comparison first, naming both paths, so a deployment that cannot boot
+is never rendered in the first place.
+<!-- docref: end -->
+
+`install.sh` runs `setup.sh` for you and therefore stops at the same point.
+Provide the archive storage under the install directory it created, then run
+`./setup.sh && ./deploy.sh` there.
 
 Control is configured entirely by `POWER_MANAGE_`-prefixed environment
 variables and reads no configuration file. `setup.sh` renders every one of them
@@ -21,14 +50,16 @@ into `config/control.env`, and that file is where ordinary settings such as the
 log level or the retention windows are edited. `setup.sh` re-renders it on
 every run, including through `./deploy.sh`, so re-apply local edits afterwards.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:e174bfa7 -->
+<!-- docref: begin src=deploy/setup.sh#@generated-material:6bc71f80 -->
 `setup.sh` creates the internal Ed25519 CA, the control certificate, the
 encryption, session and sealing keys, and `config/control.env` with a 90-day
-audit-retention policy and the SQLite `POWER_MANAGE_DATABASE_PATH`. Existing
-complete keypairs are retained, which permits a pre-provisioned CA. Partial or
-unusable material fails closed. Generated secret files and `config/control.env`
-are mode 0600, verified before the script reports success, and no secret value
-is ever printed.
+audit-retention policy and the SQLite `POWER_MANAGE_DATABASE_PATH`. It first
+refuses, before generating any key material, when `data/backups` shares a
+filesystem with `data/control`, because control refuses to start on such a
+configuration. Existing complete keypairs are retained, which permits a
+pre-provisioned CA. Partial or unusable material fails closed. Generated secret
+files and `config/control.env` are mode 0600, verified before the script
+reports success, and no secret value is ever printed.
 <!-- docref: end -->
 
 <!-- docref: begin src=deploy/traefik/dynamic/routes.yml#@agent-route:2b16b515,cmd/control/httpserver.go#serveAgent:0543d07f,cmd/control/httpserver.go#buildAgentServer:ccd04d34,internal/agentstream/identity.go#MTLSMiddleware:f1b23680 -->
@@ -38,7 +69,7 @@ protocol v2 on an isolated network; control itself authenticates the device
 certificate and checks revocation.
 <!-- docref: end -->
 
-<!-- docref: begin src=deploy/traefik/dynamic/routes.yml#@public-backend-tls:965c0116,deploy/traefik/traefik.yml#@safe-access-log:e383937a -->
+<!-- docref: begin src=deploy/traefik/dynamic/routes.yml#@public-backend-tls:873710ea,deploy/traefik/traefik.yml#@safe-access-log:e383937a -->
 Traefik also authenticates control's internal TLS certificate against the
 deployment CA, so browser/API traffic stays encrypted after public TLS
 termination. Its JSON access log omits the URI-bearing `RequestPath` and
@@ -68,16 +99,21 @@ administrator.
 Use `./deploy.sh` for an update, `docker compose logs -f control` for logs, and
 `docker compose down` to stop the stack.
 
-Artifacts and backups live under `data/artifacts` and `data/backups`. The
-SQLite database lives under `data/control`; ACME state lives under
-`data/traefik`.
+Artifacts live under `data/artifacts`, and the audit archive and SQLite backups
+under `data/backups` — the separate storage prepared above. The SQLite database
+lives under `data/control`; ACME state lives under `data/traefik`. Never
+consolidate `data/backups` back onto the database's filesystem: control will
+refuse to start after the next restart.
 
-<!-- docref: begin src=internal/maintenance/service.go#Service.RetainAudit:c0aefcae,cmd/control/config.go#Config.AuditRetention:0e4ab606 -->
+<!-- docref: begin src=internal/maintenance/service.go#Service.RetainAudit:8584f810,cmd/control/config.go#Config.AuditRetention:0e4ab606 -->
 Control writes integrity-sealed audit anchors and archive-before-delete chain
-prefixes to `POWER_MANAGE_BACKUP_PATH`; `POWER_MANAGE_AUDIT_RETENTION` defaults
-to 90 days. Mount or
-replicate that path off-host, and back up the database, artifacts, `certs`, and
-`secrets` as one deployment unit.
+prefixes to `POWER_MANAGE_BACKUP_PATH`, and re-verifies every archived prefix
+against its recorded checkpoint digest before retention deletes anything more;
+`POWER_MANAGE_AUDIT_RETENTION` defaults to 90 days. That path must be a
+filesystem of its own, which control enforces at startup; replicating it
+off-host is the stronger form of the same property and remains yours to
+arrange. Back up the database, artifacts, `certs`, and `secrets` as one
+deployment unit.
 <!-- docref: end -->
 
 <!-- docref: begin src=cmd/control/config.go#Config.WebhookURL:341af9cf,internal/maintenance/service.go#Service.InspectSecurity:223fcf91,internal/maintenance/service.go#Service.InspectBackup:d8c2e6fd -->

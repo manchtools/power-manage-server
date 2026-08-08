@@ -276,8 +276,17 @@ func TestMaintenance_ExternalAnchorAndArchiveBeforeDeleteRunEndToEnd(t *testing.
 	require.NotEmpty(t, anchorRef)
 	assert.Equal(t, 1, anchorCount, "only the newest external head anchor is retained")
 	require.NotEmpty(t, prefixRef)
-	require.NoError(t, archive.Verify(ctx, archives, anchorRef))
-	require.NoError(t, archive.Verify(ctx, archives, prefixRef))
+
+	// The archived prefix is verified against the digest the checkpoint
+	// recorded, not against the sidecar sitting beside it on the same mount.
+	checkpoints, err := st.ListAuditCheckpoints(ctx, store.DefaultAuditStream)
+	require.NoError(t, err)
+	require.Len(t, checkpoints, 1)
+	require.Equal(t, prefixRef, checkpoints[0].ArchiveRef)
+	require.NoError(t, archive.Verify(ctx, archives, prefixRef, checkpoints[0].ArchiveDigest))
+
+	// The anchor object has no recorded digest; its content is authenticated
+	// by the chain reproducing it, which is what VerifyAudit checks.
 	require.NoError(t, service.VerifyAudit(ctx, jobs.Job{}),
 		"the external anchor must authenticate the now-archived boundary through its checkpoint")
 }

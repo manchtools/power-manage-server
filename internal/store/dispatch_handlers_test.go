@@ -18,6 +18,7 @@ import (
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/dispatch"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
@@ -87,8 +88,10 @@ func newDispatchHandlerFixture(t *testing.T) *dispatchHandlerFixture {
 			($1, $2, 0, $4), ($1, $3, 1, $4)`, f.definition, f.set1, f.set2, now)
 	require.NoError(t, err)
 	f.waker = &committedWaker{store: st}
+	atRest, err := pmcrypto.NewEncryptor("0202020202020202020202020202020202020202020202020202020202020202")
+	require.NoError(t, err)
 	f.handlers = dispatch.NewHandlers(dispatch.HandlersConfig{
-		Store: st, Waker: f.waker,
+		Store: st, AtRest: atRest, Waker: f.waker,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:    func() time.Time { return now },
 	})
@@ -445,6 +448,14 @@ func TestDispatchHandlers_RefuseUnauthorizedAndMissingTargetsWithoutWork(t *test
 			},
 		}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	emptyGroup := newID()
+	_, err = f.raw.Exec(context.Background(), `
+		INSERT INTO device_groups (id, name, created_at) VALUES ($1, 'empty', $2)`, emptyGroup, f.now)
+	require.NoError(t, err)
+	_, err = f.handlers.DispatchToGroup(f.actor("DispatchToGroup"),
+		connect.NewRequest(&pmv1.DispatchToGroupRequest{GroupId: emptyGroup}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"an empty group must not make a missing action source look successful")
 	assert.Empty(t, f.waker.ids)
 }
 

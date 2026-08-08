@@ -32,10 +32,16 @@ type Config struct {
 	FilesystemPath string // required when Backend == BackendFilesystem
 }
 
-// ArchiveInfo describes one stored artifact. SHA256 is the integrity
-// seal computed while the bytes stream in. Retention records that digest in
-// the immutable audit checkpoint, so the archived object remains identifiable
-// after its live prefix has been deleted.
+// ArchiveInfo describes one stored artifact.
+//
+// From Put, SHA256 is computed while the bytes stream in, and retention
+// records that digest in the immutable audit checkpoint so the archived object
+// remains identifiable after its live prefix has been deleted.
+//
+// From List, SHA256 is whatever the archive says about itself, read back from
+// storage the artifact shares. It identifies an object; it does not
+// authenticate one. Verify takes the digest to compare against as an argument
+// for that reason.
 type ArchiveInfo struct {
 	Ref    string
 	Size   int64

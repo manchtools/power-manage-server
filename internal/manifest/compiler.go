@@ -4,14 +4,17 @@ package manifest
 
 import (
 	"context"
+	"crypto/ecdh"
 	"errors"
 	"fmt"
 
 	"github.com/oklog/ulid/v2"
 
+	sdkcrypto "github.com/manchtools/power-manage-sdk/crypto"
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"google.golang.org/protobuf/proto"
 )
@@ -29,19 +32,34 @@ var validator = sdkvalidate.NewValidator()
 
 // Compiler turns an Action, ActionSet or Definition into complete manifests.
 type Compiler struct {
-	store *store.Store
+	store  *store.Store
+	atRest *pmcrypto.Encryptor
 }
 
 // New constructs a compiler. A missing store is a boot-time wiring error.
-func New(st *store.Store) *Compiler {
+func New(st *store.Store, atRest ...*pmcrypto.Encryptor) *Compiler {
 	if st == nil {
 		panic("manifest: store is required")
 	}
-	return &Compiler{store: st}
+	compiler := &Compiler{store: st}
+	if len(atRest) > 0 {
+		compiler.atRest = atRest[0]
+	}
+	return compiler
 }
 
 // Action creates the singleton manifest for one authored Action.
 func (c *Compiler) Action(ctx context.Context, id string) (*pmv1.Manifest, error) {
+	return c.action(ctx, "", id)
+}
+
+// ActionForDevice creates an agent-ready manifest whose classified fields are
+// sealed to deviceID before the caller can persist it.
+func (c *Compiler) ActionForDevice(ctx context.Context, deviceID, id string) (*pmv1.Manifest, error) {
+	return c.action(ctx, deviceID, id)
+}
+
+func (c *Compiler) action(ctx context.Context, deviceID, id string) (*pmv1.Manifest, error) {
 	if !validInput(ctx, id) {
 		return nil, ErrInvalidInput
 	}
@@ -49,7 +67,7 @@ func (c *Compiler) Action(ctx context.Context, id string) (*pmv1.Manifest, error
 	if err != nil {
 		return nil, err
 	}
-	action, err := compileAction(row)
+	action, err := c.compileAction(ctx, row, deviceID)
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +86,14 @@ func (c *Compiler) Action(ctx context.Context, id string) (*pmv1.Manifest, error
 
 // ActionSet flattens one set into a manifest in authored member order.
 func (c *Compiler) ActionSet(ctx context.Context, id string) (*pmv1.Manifest, error) {
+	return c.actionSet(ctx, "", id)
+}
+
+func (c *Compiler) ActionSetForDevice(ctx context.Context, deviceID, id string) (*pmv1.Manifest, error) {
+	return c.actionSet(ctx, deviceID, id)
+}
+
+func (c *Compiler) actionSet(ctx context.Context, deviceID, id string) (*pmv1.Manifest, error) {
 	if !validInput(ctx, id) {
 		return nil, ErrInvalidInput
 	}
@@ -79,12 +105,20 @@ func (c *Compiler) ActionSet(ctx context.Context, id string) (*pmv1.Manifest, er
 	if err != nil {
 		return nil, err
 	}
-	return compileSet(set, rows, &pmv1.ManifestProvenance{ActionSetId: id}, nil)
+	return c.compileSet(ctx, deviceID, set, rows, &pmv1.ManifestProvenance{ActionSetId: id}, nil)
 }
 
 // Definition creates one manifest per contained ActionSet. The Definition
 // schedule overrides each emitted manifest without rewriting its ActionSet.
 func (c *Compiler) Definition(ctx context.Context, id string) ([]*pmv1.Manifest, error) {
+	return c.definition(ctx, "", id)
+}
+
+func (c *Compiler) DefinitionForDevice(ctx context.Context, deviceID, id string) ([]*pmv1.Manifest, error) {
+	return c.definition(ctx, deviceID, id)
+}
+
+func (c *Compiler) definition(ctx context.Context, deviceID, id string) ([]*pmv1.Manifest, error) {
 	if !validInput(ctx, id) {
 		return nil, ErrInvalidInput
 	}
@@ -110,7 +144,7 @@ func (c *Compiler) Definition(ctx context.Context, id string) ([]*pmv1.Manifest,
 
 	manifests := make([]*pmv1.Manifest, 0, len(sets))
 	for _, set := range sets {
-		compiled, err := compileSet(set, actionsBySet[set.ID], &pmv1.ManifestProvenance{
+		compiled, err := c.compileSet(ctx, deviceID, set, actionsBySet[set.ID], &pmv1.ManifestProvenance{
 			DefinitionId: id,
 			ActionSetId:  set.ID,
 		}, definition.Schedule)
@@ -179,7 +213,7 @@ func FreshCopy(compiled *pmv1.Manifest) (*pmv1.Manifest, error) {
 	return finish(cloned)
 }
 
-func compileSet(set store.ActionSetRow, rows []store.ActionRow, provenance *pmv1.ManifestProvenance, scheduleOverride []byte) (*pmv1.Manifest, error) {
+func (c *Compiler) compileSet(ctx context.Context, deviceID string, set store.ActionSetRow, rows []store.ActionRow, provenance *pmv1.ManifestProvenance, scheduleOverride []byte) (*pmv1.Manifest, error) {
 	if len(rows) == 0 {
 		return nil, ErrEmptyManifest
 	}
@@ -203,7 +237,7 @@ func compileSet(set store.ActionSetRow, rows []store.ActionRow, provenance *pmv1
 		Occurrences:      make([]*pmv1.ManifestOccurrence, 0, len(rows)),
 	}
 	for _, row := range rows {
-		action, err := compileAction(row)
+		action, err := c.compileAction(ctx, row, deviceID)
 		if err != nil {
 			return nil, err
 		}
@@ -212,7 +246,7 @@ func compileSet(set store.ActionSetRow, rows []store.ActionRow, provenance *pmv1
 	return finish(manifest)
 }
 
-func compileAction(row store.ActionRow) (*pmv1.Action, error) {
+func (c *Compiler) compileAction(ctx context.Context, row store.ActionRow, deviceID string) (*pmv1.Action, error) {
 	schedule, err := actionparams.ParseSchedule(row.Schedule)
 	if err != nil {
 		return nil, fmt.Errorf("manifest: action %s schedule: %w", row.ID, err)
@@ -224,13 +258,104 @@ func compileAction(row store.ActionRow) (*pmv1.Action, error) {
 		TimeoutSeconds: row.TimeoutSeconds,
 		Schedule:       schedule,
 	}
-	if err := actionparams.PopulateAction(action, row.ActionType, row.Params); err != nil {
-		return nil, fmt.Errorf("manifest: action %s params: %w", row.ID, err)
+	switch action.Type {
+	case pmv1.ActionType_ACTION_TYPE_ENCRYPTION:
+		params, err := c.encryptionParams(ctx, deviceID, row)
+		if err != nil {
+			return nil, fmt.Errorf("manifest: action %s params: %w", row.ID, err)
+		}
+		action.Params = &pmv1.Action_Encryption{Encryption: params}
+	case pmv1.ActionType_ACTION_TYPE_WIFI:
+		params, err := c.wifiParams(ctx, deviceID, row)
+		if err != nil {
+			return nil, fmt.Errorf("manifest: action %s params: %w", row.ID, err)
+		}
+		action.Params = &pmv1.Action_Wifi{Wifi: params}
+	default:
+		if err := actionparams.PopulateAction(action, row.ActionType, row.Params); err != nil {
+			return nil, fmt.Errorf("manifest: action %s params: %w", row.ID, err)
+		}
 	}
 	if detail, ok := sdkvalidate.Struct(validator, action); !ok {
 		return nil, fmt.Errorf("manifest: action %s invalid: %s", row.ID, detail)
 	}
 	return action, nil
+}
+
+func (c *Compiler) encryptionParams(ctx context.Context, deviceID string, row store.ActionRow) (*pmv1.EncryptionParams, error) {
+	stored := &pmv1.EncryptionAuthoringParams{}
+	if err := actionparams.UnmarshalActionParams(row.Params, stored); err != nil {
+		return nil, err
+	}
+	sealed, err := c.sealActionField(ctx, deviceID, row.ID, "powermanage.v1.EncryptionParams",
+		"preshared_key", stored.GetPresharedKey(), pmcrypto.PurposeActionEncryptionPresharedKey)
+	if err != nil {
+		return nil, err
+	}
+	return &pmv1.EncryptionParams{
+		PresharedKey: sealed, RotationIntervalDays: stored.RotationIntervalDays,
+		MinWords: stored.MinWords, DeviceBoundKeyType: stored.DeviceBoundKeyType,
+		UserPassphraseMinLength:  stored.UserPassphraseMinLength,
+		UserPassphraseComplexity: stored.UserPassphraseComplexity,
+	}, nil
+}
+
+func (c *Compiler) wifiParams(ctx context.Context, deviceID string, row store.ActionRow) (*pmv1.WifiParams, error) {
+	stored := &pmv1.WifiAuthoringParams{}
+	if err := actionparams.UnmarshalActionParams(row.Params, stored); err != nil {
+		return nil, err
+	}
+	params := &pmv1.WifiParams{
+		Ssid: stored.Ssid, AuthType: stored.AuthType, CaCert: stored.CaCert,
+		ClientCert: stored.ClientCert, Identity: stored.Identity,
+		AutoConnect: stored.AutoConnect, Hidden: stored.Hidden, Priority: stored.Priority,
+	}
+	var err error
+	switch stored.AuthType {
+	case pmv1.WifiAuthType_WIFI_AUTH_TYPE_PSK:
+		params.Psk, err = c.sealActionField(ctx, deviceID, row.ID, "powermanage.v1.WifiParams",
+			"psk", stored.GetPsk(), pmcrypto.PurposeActionWifiPSK)
+	case pmv1.WifiAuthType_WIFI_AUTH_TYPE_EAP_TLS:
+		params.ClientKey, err = c.sealActionField(ctx, deviceID, row.ID, "powermanage.v1.WifiParams",
+			"client_key", stored.GetClientKey(), pmcrypto.PurposeActionWifiClientKey)
+	default:
+		return nil, errors.New("unsupported WiFi authentication type")
+	}
+	return params, err
+}
+
+func (c *Compiler) sealActionField(ctx context.Context, deviceID, actionID, message, field, ciphertext, purpose string) (*pmv1.SealedValue, error) {
+	if c.atRest == nil || !validInput(ctx, deviceID) || !pmcrypto.IsEncryptedValue(ciphertext) {
+		return nil, errors.New("action secret compiler requires encrypted storage and a target device")
+	}
+	plaintext, err := c.atRest.DecryptWithContext(ciphertext, pmcrypto.RowAAD(actionID, purpose))
+	if err != nil {
+		return nil, fmt.Errorf("decrypt action credential: %w", err)
+	}
+	secret := []byte(plaintext)
+	defer clear(secret)
+	recipient, err := c.deviceRecipient(ctx, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	aad, info, err := sdkcrypto.FieldSealContext(sdkcrypto.DirectionControlToAgent,
+		message, field, deviceID, actionID)
+	if err != nil {
+		return nil, err
+	}
+	sealed, err := sdkcrypto.SealToPublicKey(recipient, secret, aad, info)
+	if err != nil {
+		return nil, fmt.Errorf("seal action credential: %w", err)
+	}
+	return &pmv1.SealedValue{Version: 1, Ciphertext: sealed}, nil
+}
+
+func (c *Compiler) deviceRecipient(ctx context.Context, deviceID string) (*ecdh.PublicKey, error) {
+	device, err := c.store.GetDevice(ctx, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	return sdkcrypto.ParseX25519PublicKey(device.AgentSealingPublicKey)
 }
 
 func requiredSchedule(raw []byte) (*pmv1.ActionSchedule, error) {

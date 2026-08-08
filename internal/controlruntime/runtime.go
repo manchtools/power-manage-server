@@ -151,7 +151,7 @@ func New(cfg Config) *Runtime {
 			ControlURL: cfg.AgentURL, ControlSealingPublicKey: cfg.ControlSealingPrivateKey.PublicKey().Bytes(),
 			CloseStream: manager.Unregister,
 		}),
-		Authoring:    authoring.NewHandlers(authoring.HandlersConfig{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
+		Authoring:    authoring.NewHandlers(authoring.HandlersConfig{Store: cfg.Store, AtRest: cfg.AtRest, Logger: cfg.Logger, Now: cfg.Now}),
 		Assignments:  assignment.New(assignment.Config{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
 		DeviceGroups: devicegroup.NewHandlers(devicegroup.HandlersConfig{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
 		Devices:      deviceHandlers,
@@ -159,7 +159,7 @@ func New(cfg Config) *Runtime {
 			Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now, CAFingerprint: caFingerprint,
 		}),
 		Compliance: compliance.NewHandlers(compliance.HandlersConfig{Store: cfg.Store, Logger: cfg.Logger, Now: cfg.Now}),
-		Dispatch:   dispatch.NewHandlers(dispatch.HandlersConfig{Store: cfg.Store, Waker: dispatcher, Logger: cfg.Logger, Now: cfg.Now}),
+		Dispatch:   dispatch.NewHandlers(dispatch.HandlersConfig{Store: cfg.Store, AtRest: cfg.AtRest, Waker: dispatcher, Logger: cfg.Logger, Now: cfg.Now}),
 		Search:     searchrpc.NewHandlers(cfg.Store, cfg.Logger, cfg.Now),
 	}.Mount(publicMux, controlOptions...)
 

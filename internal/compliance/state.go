@@ -177,6 +177,15 @@ func (s *State) RemoveRule(ctx context.Context, op store.AuditOperation, policyI
 		}); err != nil {
 			return err
 		}
+		evaluationDevices, err := tx.DeleteCompliancePolicyEvaluationsForRule(ctx, db.DeleteCompliancePolicyEvaluationsForRuleParams{
+			PolicyID: policyID, ActionID: actionID,
+		})
+		if err != nil {
+			return fmt.Errorf("compliance: delete rule evaluations: %w", err)
+		}
+		if err := store.RefreshDeviceCompliance(ctx, tx, rec, evaluationDevices); err != nil {
+			return err
+		}
 		before := actionID
 		effect := policyEffect(policyID, "UPDATE", "rules")
 		effect.BeforeRef = &before
@@ -224,8 +233,12 @@ func (s *State) Delete(ctx context.Context, op store.AuditOperation, id string) 
 		for _, actionID := range actionIDs {
 			rec.RefreshSearch("action", actionID)
 		}
-		if _, err := tx.DeleteCompliancePolicyEvaluations(ctx, id); err != nil {
+		evaluationDevices, err := tx.DeleteCompliancePolicyEvaluations(ctx, id)
+		if err != nil {
 			return fmt.Errorf("compliance: delete policy evaluations: %w", err)
+		}
+		if err := store.RefreshDeviceCompliance(ctx, tx, rec, evaluationDevices); err != nil {
+			return err
 		}
 		if _, err := tx.DeleteCompliancePolicyAssignments(ctx, id); err != nil {
 			return fmt.Errorf("compliance: delete policy assignments: %w", err)
@@ -237,6 +250,13 @@ func (s *State) Delete(ctx context.Context, op store.AuditOperation, id string) 
 		return nil
 	})
 	return translateNotFound(err)
+}
+
+// IsComplianceAction reports whether an authored action is a compliance check.
+// Result ingestion asks this rather than re-deriving the rule, so the set of
+// actions that can produce a finding is exactly the set attachment accepts.
+func IsComplianceAction(row store.ActionRow) bool {
+	return validateComplianceAction(row) == nil
 }
 
 func validateComplianceAction(row store.ActionRow) error {

@@ -62,6 +62,15 @@ func MarshalActionParams(msg proto.Message) ([]byte, error) {
 	return marshalOptions.Marshal(msg)
 }
 
+// UnmarshalActionParams decodes one stored params object into the caller's
+// concrete contract message while rejecting unknown fields.
+func UnmarshalActionParams(raw []byte, msg proto.Message) error {
+	if msg == nil {
+		return fmt.Errorf("actionparams.UnmarshalActionParams: nil message")
+	}
+	return unmarshalOpts.Unmarshal(raw, msg)
+}
+
 // isNoParamsActionType reports whether an action type legitimately carries no
 // params oneof (so reaching the switch default is expected, not an error).
 // REBOOT and SYNC are instant actions with no parameters; UNSPECIFIED is the
@@ -93,4 +102,11 @@ func PopulateAction(action *pm.Action, actionType int32, paramsJSON []byte) erro
 // responses). Fail-closed identically to PopulateAction.
 func PopulateManagedAction(action *pm.ManagedAction, actionType pm.ActionType, paramsJSON []byte) error {
 	return populateParamsOneof(action, actionType, paramsJSON)
+}
+
+// PopulateUpdateActionParams deserializes stored authoring params into the
+// API input shape. Encryption and WiFi deliberately differ from their sealed
+// agent-wire shapes, so persisted authoring validation uses this carrier.
+func PopulateUpdateActionParams(request *pm.UpdateActionParamsRequest, actionType pm.ActionType, paramsJSON []byte) error {
+	return populateParamsOneof(request, actionType, paramsJSON)
 }

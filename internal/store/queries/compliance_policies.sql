@@ -125,6 +125,11 @@ DELETE FROM compliance_policy_rules
 WHERE policy_id = sqlc.arg(policy_id) AND action_id = sqlc.arg(action_id)
 RETURNING *;
 
+-- name: DeleteCompliancePolicyEvaluationsForRule :many
+DELETE FROM compliance_policy_evaluation
+WHERE policy_id = sqlc.arg(policy_id) AND action_id = sqlc.arg(action_id)
+RETURNING device_id;
+
 -- name: UpdateAuthoringCompliancePolicyRule :one
 UPDATE compliance_policy_rules
 SET grace_period_hours = sqlc.arg(grace_period_hours)
@@ -151,10 +156,13 @@ DELETE FROM compliance_policy_rules
 WHERE action_id = ?
 RETURNING policy_id;
 
+-- Compliance evidence deletes return the devices whose summary was derived from
+-- the rows they remove, so the caller can recompute it in the same transaction.
+
 -- name: DeleteCompliancePolicyEvaluationsForAction :many
 DELETE FROM compliance_policy_evaluation
 WHERE action_id = ?
-RETURNING policy_id;
+RETURNING device_id;
 
 -- name: DeleteComplianceResultsForAction :many
 DELETE FROM compliance_results

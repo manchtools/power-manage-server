@@ -4,11 +4,18 @@ set -euo pipefail
 
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(mktemp -d)"
+ARCHIVE_DIR=""
 PROJECT_NAME="pm-smoke-$$"
 PUBLISHED_IMAGE_TAG="${IMAGE_TAG:-}"
 REQUESTED_IMAGE_TAG="${PUBLISHED_IMAGE_TAG:-smoke-$$}"
 CONTROL_IMAGE="ghcr.io/manchtools/power-manage-control:$REQUESTED_IMAGE_TAG"
 BUILT_IMAGE=""
+
+# The archive has to hold control's audit anchors and archived chain prefixes
+# plus the one SQLite backup this run takes and verifies. Below this a tmpfs
+# fails partway through with ENOSPC inside a health check, which says nothing
+# about the release under test.
+ARCHIVE_MINIMUM_KIB=16384
 
 # Compose substitutes from the process environment before any env file, and CI
 # exports IMAGE_TAG as an empty string, which resolves compose.yml's
@@ -21,6 +28,16 @@ compose() {
         --env-file "$WORK_DIR/.env" "$@"
 }
 
+# Control and backup.sh write into the state and archive directories as root,
+# and the host user running this script cannot unlink what they leave in the
+# directories root creates underneath. Empty those from a container instead.
+remove_root_owned_content() {
+    local directory="$1"
+    [[ -d "$directory" ]] || return 0
+    docker run --rm -v "$directory:/target" docker.io/library/alpine:3.23 \
+        find /target -mindepth 1 -delete >/dev/null 2>&1 || true
+}
+
 cleanup() {
     local status=$?
     trap - EXIT
@@ -29,8 +46,14 @@ cleanup() {
         compose logs --no-color >&2 || true
     fi
     compose down --remove-orphans >/dev/null 2>&1 || true
-    docker run --rm -v "$WORK_DIR:/work" docker.io/library/alpine:3.23 \
-        sh -c 'rm -rf /work/data/control' >/dev/null 2>&1 || true
+    remove_root_owned_content "$WORK_DIR/data/control"
+    # The archive is a filesystem of its own outside $WORK_DIR, so it needs a
+    # mount of its own: reached through $WORK_DIR it is only a symlink, and
+    # what that symlink names does not exist inside the container.
+    if [[ -n "$ARCHIVE_DIR" ]]; then
+        remove_root_owned_content "$ARCHIVE_DIR"
+        rmdir "$ARCHIVE_DIR" 2>/dev/null || true
+    fi
     if [[ -n "$BUILT_IMAGE" ]]; then
         docker image rm "$BUILT_IMAGE" >/dev/null 2>&1 || true
     fi
@@ -39,7 +62,96 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Control refuses to boot when the audit archive shares a filesystem with the
+# database, and setup.sh refuses to render such a configuration, so this
+# deployment needs two filesystems rather than the single $WORK_DIR. /dev/shm
+# is a tmpfs on every Linux and is always a different mount from the one behind
+# mktemp; the archive lives there and data/backups points at it. A symlink is
+# one of the two arrangements setup.sh accepts, and Docker resolves it the same
+# way when it binds the directory into control.
+#
+# There is deliberately no fallback to $WORK_DIR. Falling back would render a
+# deployment that cannot start and reduce this release gate to a --wait timeout
+# with nothing naming the cause.
+provision_archive_storage() {
+    local available
+    [[ -d /dev/shm && -w /dev/shm ]] || {
+        printf 'the audit archive needs a filesystem separate from %s, and /dev/shm is not writable\n' \
+            "$WORK_DIR" >&2
+        exit 1
+    }
+    available="$(df -Pk /dev/shm | awk 'NR == 2 { print $4 }')"
+    [[ "$available" =~ ^[0-9]+$ ]] || {
+        printf 'cannot read the free space on /dev/shm, which has to hold the audit archive\n' >&2
+        exit 1
+    }
+    (( available >= ARCHIVE_MINIMUM_KIB )) || {
+        printf '/dev/shm has %s KiB free; the audit archive needs at least %s KiB\n' \
+            "$available" "$ARCHIVE_MINIMUM_KIB" >&2
+        exit 1
+    }
+    ARCHIVE_DIR="$(mktemp -d /dev/shm/pm-smoke-archive-XXXXXX)"
+    mkdir -p "$WORK_DIR/data"
+    rm -rf -- "$WORK_DIR/data/backups"
+    ln -s "$ARCHIVE_DIR" "$WORK_DIR/data/backups"
+}
+
+# The value of one variable in the rendered configuration. A name rendered zero
+# times, or twice, fails here rather than yielding an empty string the caller
+# would go on to compare.
+control_env_value() {
+    local name="$1" matches value
+    matches="$(grep -c "^$name=" "$WORK_DIR/config/control.env" || true)"
+    [[ "$matches" == 1 ]] || {
+        printf '%s is set %s times in the rendered control.env, want once\n' "$name" "$matches" >&2
+        return 1
+    }
+    value="$(sed -n "s|^$name=||p" "$WORK_DIR/config/control.env")"
+    [[ -n "$value" ]] || {
+        printf '%s is empty in the rendered control.env\n' "$name" >&2
+        return 1
+    }
+    printf '%s\n' "$value"
+}
+
+# The host path Compose will bind onto a container path, read from the resolved
+# configuration rather than from compose.yml's text, so it is the mount control
+# actually gets. A container path bound zero times, or more than once, fails
+# here instead of leaving the comparison below testing nothing.
+host_mount_for() {
+    local target="$1"
+    compose config | awk -v target="$target" '
+        $1 == "-" { source = "" }
+        $1 == "source:" { source = $2 }
+        $1 == "target:" && $2 == target && source != "" { print source; matches++ }
+        END { exit matches == 1 ? 0 : 1 }
+    ' || {
+        printf 'compose does not bind exactly one host path onto %s\n' "$target" >&2
+        return 1
+    }
+}
+
+# Control compares these two filesystems at startup and refuses to run when
+# they match, so a colliding pair would spend the whole of `compose up --wait`
+# on a container that was never going to become healthy. Both paths are derived
+# from the rendered configuration and the resolved mounts, so a path that moves
+# in setup.sh or is remounted in compose.yml stays covered instead of escaping
+# a hardcoded pair.
+assert_archive_isolated() {
+    local database_path archive_path database archive
+    database_path="$(control_env_value POWER_MANAGE_DATABASE_PATH)"
+    archive_path="$(control_env_value POWER_MANAGE_BACKUP_PATH)"
+    database="$(host_mount_for "$(dirname "$database_path")")"
+    archive="$(host_mount_for "$archive_path")"
+    [[ "$(stat -L -c '%d' "$database")" != "$(stat -L -c '%d' "$archive")" ]] || {
+        printf 'the audit archive shares a filesystem with the database and control will not start:\n    database %s\n    archive  %s\n' \
+            "$database" "$archive" >&2
+        return 1
+    }
+}
+
 cp -R "$SOURCE_DIR/." "$WORK_DIR/"
+provision_archive_storage
 if [[ -z "$PUBLISHED_IMAGE_TAG" ]]; then
     CGO_ENABLED=0 go -C "$SOURCE_DIR/.." build -o "$WORK_DIR/control" ./cmd/control
     docker build --build-arg BINARY=control -f "$SOURCE_DIR/Containerfile.control" \
@@ -55,6 +167,7 @@ EOF
 
 cd "$WORK_DIR"
 bash ./setup.sh >/dev/null
+assert_archive_isolated
 
 mapfile -t services < <(compose config --services | sort)
 [[ "${services[*]}" == "control traefik" ]] || {
@@ -148,4 +261,4 @@ direct_status="$(docker run --rm --network "container:$control_id" --user 0:0 \
     exit 1
 }
 
-printf 'PASS: two services, verified SQLite backup, FTS5, exact RPC surface, authenticated backend TLS, query-safe logs, and isolated agent route\n'
+printf 'PASS: two services, isolated audit archive, verified SQLite backup, FTS5, exact RPC surface, authenticated backend TLS, query-safe logs, and isolated agent route\n'

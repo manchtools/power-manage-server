@@ -82,6 +82,109 @@ LEFT JOIN compliance_results cr ON cr.device_id = e.device_id AND cr.action_id =
 WHERE e.device_id = ?
 ORDER BY e.policy_id, e.action_id;
 
+-- Compliance ingestion is this statement and the three below it. All four run
+-- inside the execution-result transaction, so the compliance surface cannot
+-- disagree with the execution evidence it is derived from.
+
+-- name: UpsertDeviceComplianceResult :execrows
+INSERT INTO compliance_results (
+    device_id, action_id, action_name, compliant, detection_output, checked_at
+)
+SELECT sqlc.arg(device_id), a.id, a.name, sqlc.arg(compliant),
+       sqlc.narg(detection_output), sqlc.arg(checked_at)
+FROM actions a
+WHERE a.id = sqlc.arg(action_id) AND a.is_deleted = FALSE
+ON CONFLICT (device_id, action_id) DO UPDATE
+SET action_name = excluded.action_name,
+    compliant = excluded.compliant,
+    detection_output = excluded.detection_output,
+    checked_at = excluded.checked_at;
+
+-- name: ListComplianceRuleEvaluationTargets :many
+SELECT r.policy_id, r.grace_period_hours, e.first_failed_at
+FROM compliance_policy_rules r
+JOIN compliance_policies p ON p.id = r.policy_id AND p.is_deleted = FALSE
+LEFT JOIN compliance_policy_evaluation e
+       ON e.policy_id = r.policy_id AND e.action_id = r.action_id
+      AND e.device_id = sqlc.arg(device_id)
+WHERE r.action_id = sqlc.arg(action_id)
+ORDER BY r.policy_id;
+
+-- name: UpsertCompliancePolicyEvaluation :exec
+INSERT INTO compliance_policy_evaluation (
+    device_id, policy_id, action_id, compliant, first_failed_at, status, checked_at
+) VALUES (
+    sqlc.arg(device_id), sqlc.arg(policy_id), sqlc.arg(action_id),
+    sqlc.arg(compliant), sqlc.narg(first_failed_at), sqlc.arg(status), sqlc.arg(checked_at)
+)
+ON CONFLICT (device_id, policy_id, action_id) DO UPDATE
+SET compliant = excluded.compliant,
+    first_failed_at = excluded.first_failed_at,
+    status = excluded.status,
+    checked_at = excluded.checked_at;
+
+-- Rolls the device summary up from the rows just written. severity orders the
+-- statuses by how bad they are (non-compliant worst, then grace, then unknown,
+-- then compliant) because the stored enum is not in that order. A check that
+-- belongs to no live policy rule has no grace period, so it contributes
+-- directly. No rows at all leaves the device UNKNOWN, which is what
+-- distinguishes "never checked" from "checked and failed".
+
+-- name: RefreshDeviceComplianceStatus :execrows
+UPDATE devices
+SET compliance_total = (
+        SELECT COUNT(*)
+        FROM compliance_results cr
+        JOIN actions a ON a.id = cr.action_id AND a.is_deleted = FALSE
+        WHERE cr.device_id = sqlc.arg(device_id)
+    ),
+    compliance_passing = (
+        SELECT COUNT(*)
+        FROM compliance_results cr
+        JOIN actions a ON a.id = cr.action_id AND a.is_deleted = FALSE
+        WHERE cr.device_id = sqlc.arg(device_id) AND cr.compliant
+    ),
+    compliance_checked_at = CASE
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM compliance_results cr
+            JOIN actions a ON a.id = cr.action_id AND a.is_deleted = FALSE
+            WHERE cr.device_id = sqlc.arg(device_id)
+        ) THEN NULL
+        WHEN compliance_checked_at IS NULL OR compliance_checked_at < sqlc.arg(checked_at)
+        THEN sqlc.arg(checked_at)
+        ELSE compliance_checked_at
+    END,
+    compliance_status = (
+        SELECT CASE
+                   WHEN COUNT(*) = 0 THEN 0
+                   WHEN MAX(severity) = 3 THEN 2
+                   WHEN MAX(severity) = 2 THEN 3
+                   WHEN MAX(severity) = 1 THEN 0
+                   ELSE 1
+               END
+        FROM (
+            SELECT CASE e.status WHEN 2 THEN 3 WHEN 3 THEN 2 WHEN 0 THEN 1 ELSE 0 END AS severity
+            FROM compliance_policy_evaluation e
+            JOIN compliance_policies p ON p.id = e.policy_id AND p.is_deleted = FALSE
+            JOIN compliance_policy_rules r ON r.policy_id = e.policy_id AND r.action_id = e.action_id
+            JOIN actions a ON a.id = e.action_id AND a.is_deleted = FALSE
+            WHERE e.device_id = sqlc.arg(device_id)
+            UNION ALL
+            SELECT CASE WHEN cr.compliant THEN 0 ELSE 3 END
+            FROM compliance_results cr
+            JOIN actions a ON a.id = cr.action_id AND a.is_deleted = FALSE
+            WHERE cr.device_id = sqlc.arg(device_id)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM compliance_policy_rules r
+                  JOIN compliance_policies p ON p.id = r.policy_id AND p.is_deleted = FALSE
+                  WHERE r.action_id = cr.action_id
+              )
+        )
+    )
+WHERE id = sqlc.arg(device_id) AND is_deleted = FALSE;
+
 -- name: GetExecutionView :one
 SELECT e.*, COALESCE(a.name, '') AS action_name
 FROM executions e
