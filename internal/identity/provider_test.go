@@ -183,6 +183,32 @@ func TestUpdateIdentityProvider_EmptySecretKeepsTheStoredOne(t *testing.T) {
 		"the record must not claim a field changed when it did not")
 }
 
+func TestUpdateIdentityProvider_OmittedCLIClientKeepsTheStoredOne(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.seedActor(grant{Permissions: []string{"UpdateIdentityProvider"}})
+	providerID := f.insertProvider("corp", func(s *providerSeed) {
+		s.CliClientID = "powermanage-cli"
+		s.IssuerURL = "https://idp.example/"
+	})
+
+	response, err := f.client.UpdateIdentityProvider(f.ctx(), authed(&pmv1.UpdateIdentityProviderRequest{
+		Id: providerID, Name: "Renamed", Enabled: true, ClientId: "browser-client",
+		IssuerUrl: "https://idp.example/",
+	}, admin.Token))
+	require.NoError(t, err)
+	assert.Equal(t, "powermanage-cli", response.Msg.Provider.CliClientId)
+
+	var stored string
+	require.NoError(t, f.raw.QueryRow(f.ctx(),
+		`SELECT cli_client_id FROM identity_providers WHERE id = $1`, providerID).Scan(&stored))
+	assert.Equal(t, "powermanage-cli", stored)
+
+	op := f.onlyOperationFor(powermanagev1connect.ControlServiceUpdateIdentityProviderProcedure)
+	effect := f.effectWithAction(f.effectsOf(op.OperationID), "UPDATE")
+	assert.NotContains(t, effect.ChangedFields, "cli_client_id")
+}
+
 func TestUpdateIdentityProvider_DroppingTheBrowserClientClearsItsSecret(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -193,8 +219,9 @@ func TestUpdateIdentityProvider_DroppingTheBrowserClientClearsItsSecret(t *testi
 		s.IssuerURL = "https://idp.example/"
 	})
 
+	cliClientID := "powermanage-cli"
 	_, err := f.client.UpdateIdentityProvider(f.ctx(), authed(&pmv1.UpdateIdentityProviderRequest{
-		Id: providerID, Name: "CLI only", Enabled: true, CliClientId: "powermanage-cli",
+		Id: providerID, Name: "CLI only", Enabled: true, CliClientId: &cliClientID,
 		IssuerUrl: "https://idp.example/",
 	}, admin.Token))
 	require.NoError(t, err)

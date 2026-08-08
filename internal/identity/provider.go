@@ -209,7 +209,11 @@ func (h *Handlers) UpdateIdentityProvider(ctx context.Context, req *connect.Requ
 		}
 		return nil, internalError(ctx, "failed to load identity provider")
 	}
-	if err := validateProviderClients(ctx, req.Msg.ClientId, req.Msg.ClientSecret, req.Msg.CliClientId); err != nil {
+	cliClientID := before.CliClientID
+	if req.Msg.CliClientId != nil {
+		cliClientID = req.Msg.GetCliClientId()
+	}
+	if err := validateProviderClients(ctx, req.Msg.ClientId, req.Msg.ClientSecret, cliClientID); err != nil {
 		return nil, err
 	}
 	if req.Msg.DefaultRoleId != "" {
@@ -251,7 +255,7 @@ func (h *Handlers) UpdateIdentityProvider(ctx context.Context, req *connect.Requ
 				Name:                  req.Msg.Name,
 				Enabled:               req.Msg.Enabled,
 				ClientID:              req.Msg.ClientId,
-				CliClientID:           req.Msg.CliClientId,
+				CliClientID:           cliClientID,
 				ClientSecretEncrypted: secret,
 				IssuerUrl:             req.Msg.IssuerUrl,
 				AuthorizationUrl:      req.Msg.AuthorizationUrl,
@@ -269,7 +273,10 @@ func (h *Handlers) UpdateIdentityProvider(ctx context.Context, req *connect.Requ
 			if err != nil {
 				return err
 			}
-			changed := []string{"name", "enabled", "client_id", "cli_client_id", "issuer_url", "auto_create_users", "auto_link_by_email", "trust_email_assertions"}
+			changed := []string{"name", "enabled", "client_id", "issuer_url", "auto_create_users", "auto_link_by_email", "trust_email_assertions"}
+			if req.Msg.CliClientId != nil {
+				changed = append(changed, "cli_client_id")
+			}
 			effect := store.AuditEffect{
 				ResourceType:  "identity_provider",
 				ResourceID:    before.ID,

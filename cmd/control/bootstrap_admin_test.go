@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 	"time"
 
@@ -33,3 +34,16 @@ func TestWriteBootstrapAdminOutput_DefaultRemainsHumanReadable(t *testing.T) {
 	assert.Contains(t, output.String(), "Bootstrap setup URL")
 	assert.Contains(t, output.String(), issued.URL)
 }
+
+func TestWriteBootstrapAdminOutput_ReturnsWriterErrors(t *testing.T) {
+	want := errors.New("write failed")
+	writer := errorWriter{err: want}
+	for _, rawToken := range []bool{false, true} {
+		err := writeBootstrapAdminOutput(writer, identity.BootstrapToken{Token: "secret"}, rawToken)
+		assert.ErrorIs(t, err, want)
+	}
+}
+
+type errorWriter struct{ err error }
+
+func (w errorWriter) Write([]byte) (int, error) { return 0, w.err }
