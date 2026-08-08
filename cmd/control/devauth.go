@@ -1,18 +1,20 @@
 //go:build devauth
 
 // Development-only authentication bypass. Target design §5.2: a build
-// compiled with the `devauth` tag AND run with PM_DEV_AUTH=1
+// compiled with the `devauth` tag AND run with PM_DEV_AUTH=1 plus a
+// PM_DEV_AUTH_TOKEN
 // exposes POST /dev/session, which provisions one fixed local
 // administrator and mints an ordinary session for it so the web UI can be
-// exercised without an identity provider. Both gates are mandatory: a
+// exercised without an identity provider. All three gates are mandatory: a
 // release build omits this file entirely (the !devauth stub replaces it),
-// and a devauth build still refuses unless the environment flag is set.
+// and a devauth build still refuses unless both runtime gates are set.
 // The minted session is an ordinary signed session subject to the same
 // validation, revocation and expiry as an OIDC login.
 package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -30,8 +32,10 @@ import (
 )
 
 const (
-	devAuthEnv     = "PM_DEV_AUTH"
-	devSessionPath = "/dev/session"
+	devAuthEnv         = "PM_DEV_AUTH"
+	devAuthTokenEnv    = "PM_DEV_AUTH_TOKEN"
+	devAuthTokenHeader = "X-Power-Manage-Dev-Auth"
+	devSessionPath     = "/dev/session"
 	// devAdminEmail is the fixed local administrator. Lookup by this
 	// address keeps provisioning idempotent across restarts and repeat
 	// logins.
@@ -56,20 +60,29 @@ type devSessionResponse struct {
 // and the archive are two directories on one disk and mounting a second
 // filesystem needs root.
 //
-// It rides the two gates this file already establishes rather than adding a
-// third: a release binary compiles the !devauth stub, which returns false and
-// has no way to be told otherwise, and a devauth binary still enforces the
-// requirement unless PM_DEV_AUTH=1 is set. A build in which this can return
+// It rides the same gates as the session endpoint: a release binary compiles
+// the !devauth stub, which returns false and has no way to be told otherwise,
+// and a devauth binary still enforces the requirement unless PM_DEV_AUTH=1 and
+// a sufficiently long PM_DEV_AUTH_TOKEN are set. A build in which this can return
 // true is a build that also mints administrator sessions without an identity
 // provider, so it can never be mistaken for a deployable one.
-func archiveIsolationRelaxed() bool { return os.Getenv(devAuthEnv) == "1" }
+func archiveIsolationRelaxed() bool { return devAuthEnabled() }
+
+func devAuthEnabled() bool {
+	return os.Getenv(devAuthEnv) == "1" && len(os.Getenv(devAuthTokenEnv)) >= 32
+}
 
 // wrapDevAuth mounts POST /dev/session in front of next when this devauth
-// build is run with PM_DEV_AUTH=1. Without the flag it returns
+// build is run with PM_DEV_AUTH=1 and a development token. Without them it returns
 // next unchanged, so the route does not exist. Production builds never
 // reach here — they compile the !devauth stub instead.
 func wrapDevAuth(next http.Handler, st *store.Store, jwtMgr *auth.JWTManager, kek *pmcrypto.Encryptor, logger *slog.Logger) http.Handler {
 	if os.Getenv(devAuthEnv) != "1" {
+		return next
+	}
+	token := os.Getenv(devAuthTokenEnv)
+	if len(token) < 32 {
+		logger.Error("development auth bypass disabled: PM_DEV_AUTH_TOKEN must contain at least 32 bytes")
 		return next
 	}
 	logger.Warn("DEVELOPMENT AUTH BYPASS ACTIVE — POST /dev/session mints an administrator session without an identity provider; never run a devauth build in production",
@@ -78,6 +91,10 @@ func wrapDevAuth(next http.Handler, st *store.Store, jwtMgr *auth.JWTManager, ke
 	mux := http.NewServeMux()
 	mux.HandleFunc(devSessionPath, func(w http.ResponseWriter, r *http.Request) {
 		if !devRequestIsLocal(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get(devAuthTokenHeader)), []byte(token)) != 1 {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -183,8 +200,8 @@ func devMintAdminSession(ctx context.Context, st *store.Store, jwtMgr *auth.JWTM
 }
 
 // devEnsureAdmin returns the fixed admin's id, provisioning it on first
-// use. Provision + role grant + the session-issue effect land in one
-// audited transaction, mirroring OIDC JIT.
+// use. Provision + role grant land in one audited transaction, mirroring
+// OIDC JIT; devMintAdminSession records each subsequent session issue.
 //
 // ponytail: check-then-create races on the unique email constraint, which
 // a second concurrent InsertUser would reject. That is fine for a

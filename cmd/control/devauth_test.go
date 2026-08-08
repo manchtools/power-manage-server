@@ -24,6 +24,7 @@ import (
 
 // devTestKEK is a 32-byte KEK in hex; the dev admin's DEK is minted under it.
 const devTestKEK = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+const devTestAuthToken = "0123456789abcdef0123456789abcdef"
 
 func devTestDeps(t *testing.T) (*store.Store, *auth.JWTManager, *crypto.Encryptor) {
 	t.Helper()
@@ -64,19 +65,23 @@ func TestDevAuthDisabledWithoutEnv(t *testing.T) {
 }
 
 // TestArchiveIsolationRelaxationFollowsTheDevAuthFlag holds the escape hatch's
-// only reason to exist: it rides the same two gates as the sign-in bypass and
-// adds no third way to turn a verification off. A devauth binary run without
-// PM_DEV_AUTH=1 still demands the audit archive's own filesystem, and the
+// only reason to exist: it rides the same gates as the sign-in bypass and adds
+// no separate way to turn a verification off. A devauth binary run without
+// its runtime gates still demands the audit archive's own filesystem, and the
 // !devauth stub cannot relax it at all.
 func TestArchiveIsolationRelaxationFollowsTheDevAuthFlag(t *testing.T) {
 	t.Setenv(devAuthEnv, "")
+	t.Setenv(devAuthTokenEnv, "")
 	assert.False(t, archiveIsolationRelaxed(), "the build tag alone must not relax the requirement")
 
 	t.Setenv(devAuthEnv, "yes")
 	assert.False(t, archiveIsolationRelaxed(), "only the exact flag value relaxes it")
 
 	t.Setenv(devAuthEnv, "1")
-	assert.True(t, archiveIsolationRelaxed(), "a workstation with one disk must still be able to run control")
+	assert.False(t, archiveIsolationRelaxed(), "the bypass token is an independent gate")
+
+	t.Setenv(devAuthTokenEnv, devTestAuthToken)
+	assert.True(t, archiveIsolationRelaxed(), "a fully gated workstation with one disk must still be able to run control")
 }
 
 // TestLoadConfigToleratesOneDiskInADevAuthBuild drives the relaxation through
@@ -93,6 +98,7 @@ func TestLoadConfigToleratesOneDiskInADevAuthBuild(t *testing.T) {
 	require.Nil(t, cfg)
 
 	t.Setenv(devAuthEnv, "1")
+	t.Setenv(devAuthTokenEnv, devTestAuthToken)
 	cfg, err = loadConfig()
 	require.NoError(t, err)
 	assert.Equal(t, fixture.values["POWER_MANAGE_BACKUP_PATH"], cfg.BackupPath)
@@ -103,6 +109,7 @@ func TestLoadConfigToleratesOneDiskInADevAuthBuild(t *testing.T) {
 // administrator (carries the reconciled admin permission set).
 func TestDevAuthMintsAdminSession(t *testing.T) {
 	t.Setenv(devAuthEnv, "1")
+	t.Setenv(devAuthTokenEnv, devTestAuthToken)
 	st, jwtMgr, kek := devTestDeps(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h := wrapDevAuth(base404(), st, jwtMgr, kek, logger)
@@ -111,6 +118,7 @@ func TestDevAuthMintsAdminSession(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, devSessionPath, nil)
 		req.RemoteAddr = "127.0.0.1:1234"
+		req.Header.Set(devAuthTokenHeader, devTestAuthToken)
 		h.ServeHTTP(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 		var resp devSessionResponse
@@ -161,18 +169,21 @@ func TestDevAuthMintsAdminSession(t *testing.T) {
 
 func TestDevAuthOnlyAcceptsLocalRequestsFromKnownDevOrigins(t *testing.T) {
 	t.Setenv(devAuthEnv, "1")
+	t.Setenv(devAuthTokenEnv, devTestAuthToken)
 	st, jwtMgr, kek := devTestDeps(t)
 	h := wrapDevAuth(base404(), st, jwtMgr, kek, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	for name, test := range map[string]struct {
 		remote string
 		origin string
+		token  string
 		want   int
 	}{
-		"remote caller":    {"203.0.113.10:1234", "", http.StatusForbidden},
-		"unknown origin":   {"127.0.0.1:1234", "https://evil.example", http.StatusForbidden},
-		"localhost origin": {"127.0.0.1:1234", "https://localhost:5173", http.StatusNoContent},
-		"local no origin":  {"[::1]:1234", "", http.StatusNoContent},
+		"remote caller":     {"203.0.113.10:1234", "", devTestAuthToken, http.StatusForbidden},
+		"unknown origin":    {"127.0.0.1:1234", "https://evil.example", devTestAuthToken, http.StatusForbidden},
+		"wrong proxy token": {"127.0.0.1:1234", "https://localhost:5173", "wrong", http.StatusForbidden},
+		"localhost origin":  {"127.0.0.1:1234", "https://localhost:5173", devTestAuthToken, http.StatusNoContent},
+		"local no origin":   {"[::1]:1234", "", devTestAuthToken, http.StatusNoContent},
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodOptions, devSessionPath, nil)
@@ -180,6 +191,7 @@ func TestDevAuthOnlyAcceptsLocalRequestsFromKnownDevOrigins(t *testing.T) {
 			if test.origin != "" {
 				req.Header.Set("Origin", test.origin)
 			}
+			req.Header.Set(devAuthTokenHeader, test.token)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			assert.Equal(t, test.want, rec.Code)
@@ -190,4 +202,16 @@ func TestDevAuthOnlyAcceptsLocalRequestsFromKnownDevOrigins(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDevAuthRouteStaysAbsentWithoutAConfiguredToken(t *testing.T) {
+	t.Setenv(devAuthEnv, "1")
+	t.Setenv(devAuthTokenEnv, "short")
+	st, jwtMgr, kek := devTestDeps(t)
+	h := wrapDevAuth(base404(), st, jwtMgr, kek, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodPost, devSessionPath, nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
