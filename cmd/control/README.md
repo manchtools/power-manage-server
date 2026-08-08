@@ -80,9 +80,10 @@ search semantics. PostgreSQL is removed and guarded against return.
 <!-- docref: begin src=cmd/control/devauth.go#wrapDevAuth:f04e68b9,cmd/control/devauth.go#devAuthEnabled:4a7b3325 -->
 The development session endpoint is available only in a `devauth` build run
 with `PM_DEV_AUTH=1` and a `PM_DEV_AUTH_TOKEN` of at least 32 bytes. Start Vite
-with the same token; its local proxy injects the token into `/dev/session`
-requests without exposing it to browser code. Requests without the matching
-token are refused even when the proxy's connection to control is loopback.
+with the same token; its loopback-only proxy injects the token and forwards the
+original client address into `/dev/session` without exposing the token to
+browser code. Control requires both proxy and original client hops to be
+loopback and refuses requests without the matching token.
 <!-- docref: end -->
 
 ```bash

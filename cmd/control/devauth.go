@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -133,7 +134,29 @@ func wrapDevAuth(next http.Handler, st *store.Store, jwtMgr *auth.JWTManager, ke
 
 func devRequestIsLocal(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	return err == nil && net.ParseIP(host).IsLoopback()
+	if err != nil || !net.ParseIP(host).IsLoopback() {
+		return false
+	}
+
+	// The Vite proxy terminates the browser connection, so RemoteAddr proves
+	// only that the proxy is local. xfwd records the original client hop; require
+	// every address in that chain to be loopback so a remotely reachable proxy
+	// cannot turn its own backend connection into local-client evidence.
+	forwarded := r.Header.Values("X-Forwarded-For")
+	if len(forwarded) == 0 || r.Header.Get("Forwarded") != "" {
+		return false
+	}
+	for _, value := range forwarded {
+		for _, address := range strings.Split(value, ",") {
+			if !net.ParseIP(strings.TrimSpace(address)).IsLoopback() {
+				return false
+			}
+		}
+	}
+	if realIP := r.Header.Get("X-Real-IP"); realIP != "" && !net.ParseIP(strings.TrimSpace(realIP)).IsLoopback() {
+		return false
+	}
+	return true
 }
 
 func devOriginAllowed(origin string) bool {

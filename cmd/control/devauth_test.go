@@ -118,6 +118,7 @@ func TestDevAuthMintsAdminSession(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, devSessionPath, nil)
 		req.RemoteAddr = "127.0.0.1:1234"
+		req.Header.Set("X-Forwarded-For", "127.0.0.1")
 		req.Header.Set(devAuthTokenHeader, devTestAuthToken)
 		h.ServeHTTP(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -174,20 +175,32 @@ func TestDevAuthOnlyAcceptsLocalRequestsFromKnownDevOrigins(t *testing.T) {
 	h := wrapDevAuth(base404(), st, jwtMgr, kek, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	for name, test := range map[string]struct {
-		remote string
-		origin string
-		token  string
-		want   int
+		remote    string
+		forwarded string
+		realIP    string
+		origin    string
+		token     string
+		want      int
 	}{
-		"remote caller":     {"203.0.113.10:1234", "", devTestAuthToken, http.StatusForbidden},
-		"unknown origin":    {"127.0.0.1:1234", "https://evil.example", devTestAuthToken, http.StatusForbidden},
-		"wrong proxy token": {"127.0.0.1:1234", "https://localhost:5173", "wrong", http.StatusForbidden},
-		"localhost origin":  {"127.0.0.1:1234", "https://localhost:5173", devTestAuthToken, http.StatusNoContent},
-		"local no origin":   {"[::1]:1234", "", devTestAuthToken, http.StatusNoContent},
+		"remote proxy peer":        {"203.0.113.10:1234", "127.0.0.1", "", "", devTestAuthToken, http.StatusForbidden},
+		"missing original client":  {"127.0.0.1:1234", "", "", "", devTestAuthToken, http.StatusForbidden},
+		"remote original client":   {"127.0.0.1:1234", "203.0.113.10", "", "", devTestAuthToken, http.StatusForbidden},
+		"spoofed forwarded prefix": {"127.0.0.1:1234", "127.0.0.1, 203.0.113.10", "", "", devTestAuthToken, http.StatusForbidden},
+		"remote real IP":           {"127.0.0.1:1234", "127.0.0.1", "203.0.113.10", "", devTestAuthToken, http.StatusForbidden},
+		"unknown origin":           {"127.0.0.1:1234", "127.0.0.1", "", "https://evil.example", devTestAuthToken, http.StatusForbidden},
+		"wrong proxy token":        {"127.0.0.1:1234", "127.0.0.1", "", "https://localhost:5173", "wrong", http.StatusForbidden},
+		"localhost origin":         {"127.0.0.1:1234", "127.0.0.1", "", "https://localhost:5173", devTestAuthToken, http.StatusNoContent},
+		"local no origin":          {"[::1]:1234", "::1", "", "", devTestAuthToken, http.StatusNoContent},
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodOptions, devSessionPath, nil)
 			req.RemoteAddr = test.remote
+			if test.forwarded != "" {
+				req.Header.Set("X-Forwarded-For", test.forwarded)
+			}
+			if test.realIP != "" {
+				req.Header.Set("X-Real-IP", test.realIP)
+			}
 			if test.origin != "" {
 				req.Header.Set("Origin", test.origin)
 			}
