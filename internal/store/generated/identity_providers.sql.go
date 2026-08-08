@@ -24,7 +24,7 @@ func (q *Queries) CountIdentityProviders(ctx context.Context) (int64, error) {
 }
 
 const getIdentityProvider = `-- name: GetIdentityProvider :one
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted FROM identity_providers WHERE id = ? AND is_deleted = FALSE
+SELECT id, name, slug, provider_type, enabled, client_id, cli_client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted FROM identity_providers WHERE id = ? AND is_deleted = FALSE
 `
 
 func (q *Queries) GetIdentityProvider(ctx context.Context, id string) (IdentityProvider, error) {
@@ -37,6 +37,7 @@ func (q *Queries) GetIdentityProvider(ctx context.Context, id string) (IdentityP
 		&i.ProviderType,
 		&i.Enabled,
 		&i.ClientID,
+		&i.CliClientID,
 		&i.ClientSecretEncrypted,
 		&i.IssuerUrl,
 		&i.AuthorizationUrl,
@@ -61,7 +62,7 @@ func (q *Queries) GetIdentityProvider(ctx context.Context, id string) (IdentityP
 }
 
 const getIdentityProviderBySlug = `-- name: GetIdentityProviderBySlug :one
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted FROM identity_providers WHERE slug = ? AND is_deleted = FALSE
+SELECT id, name, slug, provider_type, enabled, client_id, cli_client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted FROM identity_providers WHERE slug = ? AND is_deleted = FALSE
 `
 
 func (q *Queries) GetIdentityProviderBySlug(ctx context.Context, slug string) (IdentityProvider, error) {
@@ -74,6 +75,7 @@ func (q *Queries) GetIdentityProviderBySlug(ctx context.Context, slug string) (I
 		&i.ProviderType,
 		&i.Enabled,
 		&i.ClientID,
+		&i.CliClientID,
 		&i.ClientSecretEncrypted,
 		&i.IssuerUrl,
 		&i.AuthorizationUrl,
@@ -101,7 +103,7 @@ const insertIdentityProvider = `-- name: InsertIdentityProvider :one
 
 INSERT INTO identity_providers (
     id, name, slug, provider_type, enabled,
-    client_id, client_secret_encrypted,
+    client_id, cli_client_id, client_secret_encrypted,
     issuer_url, authorization_url, token_url, userinfo_url,
     scopes, auto_create_users, auto_link_by_email, trust_email_assertions,
     default_role_id, group_claim, group_mapping,
@@ -109,13 +111,13 @@ INSERT INTO identity_providers (
 )
 VALUES (
     ?, ?, ?, ?, ?,
-    ?, ?,
+    ?, ?, ?,
     ?, ?, ?, ?,
     ?, ?, ?, ?,
     ?, ?, ?,
     ?, ?, ?
 )
-RETURNING id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted
+RETURNING id, name, slug, provider_type, enabled, client_id, cli_client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted
 `
 
 type InsertIdentityProviderParams struct {
@@ -125,6 +127,7 @@ type InsertIdentityProviderParams struct {
 	ProviderType          string                `json:"provider_type"`
 	Enabled               bool                  `json:"enabled"`
 	ClientID              string                `json:"client_id"`
+	CliClientID           string                `json:"cli_client_id"`
 	ClientSecretEncrypted string                `json:"client_secret_encrypted"`
 	IssuerUrl             string                `json:"issuer_url"`
 	AuthorizationUrl      string                `json:"authorization_url"`
@@ -153,6 +156,7 @@ func (q *Queries) InsertIdentityProvider(ctx context.Context, arg InsertIdentity
 		arg.ProviderType,
 		arg.Enabled,
 		arg.ClientID,
+		arg.CliClientID,
 		arg.ClientSecretEncrypted,
 		arg.IssuerUrl,
 		arg.AuthorizationUrl,
@@ -177,6 +181,7 @@ func (q *Queries) InsertIdentityProvider(ctx context.Context, arg InsertIdentity
 		&i.ProviderType,
 		&i.Enabled,
 		&i.ClientID,
+		&i.CliClientID,
 		&i.ClientSecretEncrypted,
 		&i.IssuerUrl,
 		&i.AuthorizationUrl,
@@ -201,7 +206,7 @@ func (q *Queries) InsertIdentityProvider(ctx context.Context, arg InsertIdentity
 }
 
 const listEnabledIdentityProviders = `-- name: ListEnabledIdentityProviders :many
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted FROM identity_providers
+SELECT id, name, slug, provider_type, enabled, client_id, cli_client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted FROM identity_providers
 WHERE is_deleted = FALSE AND enabled = TRUE
 ORDER BY name
 `
@@ -222,6 +227,7 @@ func (q *Queries) ListEnabledIdentityProviders(ctx context.Context) ([]IdentityP
 			&i.ProviderType,
 			&i.Enabled,
 			&i.ClientID,
+			&i.CliClientID,
 			&i.ClientSecretEncrypted,
 			&i.IssuerUrl,
 			&i.AuthorizationUrl,
@@ -256,7 +262,7 @@ func (q *Queries) ListEnabledIdentityProviders(ctx context.Context) ([]IdentityP
 }
 
 const listIdentityProviders = `-- name: ListIdentityProviders :many
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted FROM identity_providers
+SELECT id, name, slug, provider_type, enabled, client_id, cli_client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted FROM identity_providers
 WHERE is_deleted = FALSE AND id > ?
 ORDER BY id
 LIMIT ?
@@ -283,6 +289,7 @@ func (q *Queries) ListIdentityProviders(ctx context.Context, arg ListIdentityPro
 			&i.ProviderType,
 			&i.Enabled,
 			&i.ClientID,
+			&i.CliClientID,
 			&i.ClientSecretEncrypted,
 			&i.IssuerUrl,
 			&i.AuthorizationUrl,
@@ -320,7 +327,7 @@ const setIdentityProviderSCIM = `-- name: SetIdentityProviderSCIM :one
 UPDATE identity_providers
 SET scim_enabled = ?, scim_token_hash = ?, updated_at = ?
 WHERE id = ? AND is_deleted = FALSE
-RETURNING id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted
+RETURNING id, name, slug, provider_type, enabled, client_id, cli_client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted
 `
 
 type SetIdentityProviderSCIMParams struct {
@@ -348,6 +355,7 @@ func (q *Queries) SetIdentityProviderSCIM(ctx context.Context, arg SetIdentityPr
 		&i.ProviderType,
 		&i.Enabled,
 		&i.ClientID,
+		&i.CliClientID,
 		&i.ClientSecretEncrypted,
 		&i.IssuerUrl,
 		&i.AuthorizationUrl,
@@ -396,6 +404,7 @@ UPDATE identity_providers
 SET name = ?,
     enabled = ?,
     client_id = ?,
+    cli_client_id = ?,
     client_secret_encrypted = ?,
     issuer_url = ?,
     authorization_url = ?,
@@ -410,13 +419,14 @@ SET name = ?,
     group_mapping = ?,
     updated_at = ?
 WHERE id = ? AND is_deleted = FALSE
-RETURNING id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted
+RETURNING id, name, slug, provider_type, enabled, client_id, cli_client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id, attribute_mapping, group_claim, group_mapping, scim_enabled, scim_token_hash, created_at, created_by, updated_at, is_deleted
 `
 
 type UpdateIdentityProviderParams struct {
 	Name                  string                `json:"name"`
 	Enabled               bool                  `json:"enabled"`
 	ClientID              string                `json:"client_id"`
+	CliClientID           string                `json:"cli_client_id"`
 	ClientSecretEncrypted string                `json:"client_secret_encrypted"`
 	IssuerUrl             string                `json:"issuer_url"`
 	AuthorizationUrl      string                `json:"authorization_url"`
@@ -438,6 +448,7 @@ func (q *Queries) UpdateIdentityProvider(ctx context.Context, arg UpdateIdentity
 		arg.Name,
 		arg.Enabled,
 		arg.ClientID,
+		arg.CliClientID,
 		arg.ClientSecretEncrypted,
 		arg.IssuerUrl,
 		arg.AuthorizationUrl,
@@ -461,6 +472,7 @@ func (q *Queries) UpdateIdentityProvider(ctx context.Context, arg UpdateIdentity
 		&i.ProviderType,
 		&i.Enabled,
 		&i.ClientID,
+		&i.CliClientID,
 		&i.ClientSecretEncrypted,
 		&i.IssuerUrl,
 		&i.AuthorizationUrl,

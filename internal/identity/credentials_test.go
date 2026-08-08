@@ -220,10 +220,12 @@ var authenticatedMutations = map[string]call{
 // carry no session token: the SSO handshake and the session lifecycle a
 // client must be able to drive when its access token is gone.
 var publicMutations = map[string]bool{
-	powermanagev1connect.ControlServiceRefreshTokenProcedure:   true,
-	powermanagev1connect.ControlServiceLogoutProcedure:         true,
-	powermanagev1connect.ControlServiceGetSSOLoginURLProcedure: true,
-	powermanagev1connect.ControlServiceSSOCallbackProcedure:    true,
+	powermanagev1connect.ControlServiceRefreshTokenProcedure:       true,
+	powermanagev1connect.ControlServiceLogoutProcedure:             true,
+	powermanagev1connect.ControlServiceGetSSOLoginURLProcedure:     true,
+	powermanagev1connect.ControlServiceSSOCallbackProcedure:        true,
+	powermanagev1connect.ControlServiceBeginCLILoginProcedure:      true,
+	powermanagev1connect.ControlServiceExchangeCLISessionProcedure: true,
 }
 
 // testSSHKey is a real, parsable ed25519 authorized-key line. The

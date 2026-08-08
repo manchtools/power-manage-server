@@ -25,7 +25,7 @@ func (q *Queries) CleanupExpiredAuthStates(ctx context.Context) (int64, error) {
 const consumeAuthState = `-- name: ConsumeAuthState :one
 DELETE FROM auth_states
 WHERE state = ? AND expires_at > CURRENT_TIMESTAMP
-RETURNING state, provider_id, nonce, code_verifier, redirect_uri, created_at, expires_at
+RETURNING state, provider_id, flow_kind, nonce, code_verifier, redirect_uri, created_at, expires_at
 `
 
 func (q *Queries) ConsumeAuthState(ctx context.Context, state string) (AuthState, error) {
@@ -34,6 +34,7 @@ func (q *Queries) ConsumeAuthState(ctx context.Context, state string) (AuthState
 	err := row.Scan(
 		&i.State,
 		&i.ProviderID,
+		&i.FlowKind,
 		&i.Nonce,
 		&i.CodeVerifier,
 		&i.RedirectUri,
@@ -44,13 +45,14 @@ func (q *Queries) ConsumeAuthState(ctx context.Context, state string) (AuthState
 }
 
 const createAuthState = `-- name: CreateAuthState :exec
-INSERT INTO auth_states (state, provider_id, nonce, code_verifier, redirect_uri, created_at, expires_at)
-VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+INSERT INTO auth_states (state, provider_id, flow_kind, nonce, code_verifier, redirect_uri, created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
 `
 
 type CreateAuthStateParams struct {
 	State        string    `json:"state"`
 	ProviderID   string    `json:"provider_id"`
+	FlowKind     string    `json:"flow_kind"`
 	Nonce        string    `json:"nonce"`
 	CodeVerifier string    `json:"code_verifier"`
 	RedirectUri  string    `json:"redirect_uri"`
@@ -61,6 +63,7 @@ func (q *Queries) CreateAuthState(ctx context.Context, arg CreateAuthStateParams
 	_, err := q.db.ExecContext(ctx, createAuthState,
 		arg.State,
 		arg.ProviderID,
+		arg.FlowKind,
 		arg.Nonce,
 		arg.CodeVerifier,
 		arg.RedirectUri,

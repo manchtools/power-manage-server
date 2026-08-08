@@ -39,6 +39,10 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetSSOLoginURLProcedure, h.GetSSOLoginURL, opts...))
 	register(powermanagev1connect.ControlServiceSSOCallbackProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSSOCallbackProcedure, h.SSOCallback, opts...))
+	register(powermanagev1connect.ControlServiceBeginCLILoginProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceBeginCLILoginProcedure, h.BeginCLILogin, opts...))
+	register(powermanagev1connect.ControlServiceExchangeCLISessionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceExchangeCLISessionProcedure, h.ExchangeCLISession, opts...))
 
 	// Identity providers.
 	register(powermanagev1connect.ControlServiceCreateIdentityProviderProcedure,
@@ -161,6 +165,8 @@ func MutationProcedures() []string {
 		powermanagev1connect.ControlServiceLogoutProcedure,
 		powermanagev1connect.ControlServiceGetSSOLoginURLProcedure,
 		powermanagev1connect.ControlServiceSSOCallbackProcedure,
+		powermanagev1connect.ControlServiceBeginCLILoginProcedure,
+		powermanagev1connect.ControlServiceExchangeCLISessionProcedure,
 		powermanagev1connect.ControlServiceCreateIdentityProviderProcedure,
 		powermanagev1connect.ControlServiceUpdateIdentityProviderProcedure,
 		powermanagev1connect.ControlServiceDeleteIdentityProviderProcedure,

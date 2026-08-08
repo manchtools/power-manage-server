@@ -436,9 +436,10 @@ func upperSnake(name string) string {
 
 func TestParseCommandAcceptsSubcommandsAndRejectsEverythingElse(t *testing.T) {
 	for name, args := range map[string][]string{
-		"serve":           {},
-		"bootstrap-admin": {"bootstrap-admin"},
-		"backup-status":   {"backup-status"},
+		"serve":                 {},
+		"bootstrap-admin":       {"bootstrap-admin"},
+		"bootstrap-admin-token": {"bootstrap-admin", "--output", "token"},
+		"backup-status":         {"backup-status"},
 	} {
 		command, err := parseCommand(args)
 		require.NoError(t, err)

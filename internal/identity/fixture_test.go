@@ -341,7 +341,7 @@ func (f *fixture) insertDeviceGroup() string {
 // insertProvider plants an identity provider with a sealed secret.
 func (f *fixture) insertProvider(slug string, mutate func(*providerSeed)) string {
 	f.t.Helper()
-	seed := providerSeed{Enabled: true, Secret: "client-secret", GroupMapping: "{}"}
+	seed := providerSeed{Enabled: true, ClientID: "client-id", Secret: "client-secret", GroupMapping: "{}"}
 	if mutate != nil {
 		mutate(&seed)
 	}
@@ -350,11 +350,11 @@ func (f *fixture) insertProvider(slug string, mutate func(*providerSeed)) string
 	require.NoError(f.t, err)
 	_, err = f.raw.Exec(f.ctx(),
 		`INSERT INTO identity_providers
-		   (id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url,
+		   (id, name, slug, provider_type, enabled, client_id, cli_client_id, client_secret_encrypted, issuer_url,
 		    auto_create_users, auto_link_by_email, trust_email_assertions, default_role_id,
 		    group_claim, group_mapping, created_at, updated_at)
-		 VALUES ($1, $2, $3, 'oidc', $4, 'client-id', $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)`,
-		providerID, "provider-"+slug, slug, seed.Enabled, sealed, seed.IssuerURL,
+		 VALUES ($1, $2, $3, 'oidc', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)`,
+		providerID, "provider-"+slug, slug, seed.Enabled, seed.ClientID, seed.CliClientID, sealed, seed.IssuerURL,
 		seed.AutoCreateUsers, seed.AutoLinkByEmail, seed.TrustEmailAssertions, seed.DefaultRoleID,
 		seed.GroupClaim, seed.GroupMapping, f.now)
 	require.NoError(f.t, err)
@@ -363,6 +363,8 @@ func (f *fixture) insertProvider(slug string, mutate func(*providerSeed)) string
 
 type providerSeed struct {
 	Enabled              bool
+	ClientID             string
+	CliClientID          string
 	Secret               string
 	IssuerURL            string
 	AutoCreateUsers      bool

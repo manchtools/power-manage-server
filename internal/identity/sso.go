@@ -2,7 +2,11 @@ package identity
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"net"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +24,11 @@ import (
 // stays valid. It is short because it only has to survive one redirect
 // through the identity provider.
 const authStateTTL = 10 * time.Minute
+
+const (
+	authFlowBrowser = "browser"
+	authFlowCLI     = "cli"
+)
 
 // ListAuthMethods reports which identity providers a login page should
 // offer.
@@ -42,6 +51,8 @@ func (h *Handlers) ListAuthMethods(ctx context.Context, req *connect.Request[pmv
 			Slug:         p.Slug,
 			Name:         p.Name,
 			ProviderType: providerTypeToProto(p.ProviderType),
+			BrowserLogin: p.ClientID != "",
+			CliLogin:     p.CliClientID != "",
 		})
 	}
 	return connect.NewResponse(resp), nil
@@ -69,6 +80,10 @@ func (h *Handlers) GetSSOLoginURL(ctx context.Context, req *connect.Request[pmv1
 		// unauthenticated caller the two are the same fact about the
 		// deployment, and only one of them is theirs to learn.
 		return nil, notFound(ctx, ErrProviderNotFound, "identity provider not found")
+	}
+	if provider.ClientID == "" {
+		return nil, rpcError(ctx, ErrValidationFailed, connect.CodeFailedPrecondition,
+			"browser login is not configured for this identity provider")
 	}
 
 	oidcClient, err := h.oidcClientFor(ctx, provider, req.Msg.RedirectUrl)
@@ -109,6 +124,7 @@ func (h *Handlers) GetSSOLoginURL(ctx context.Context, req *connect.Request[pmv1
 		if err := tx.CreateAuthState(ctx, db.CreateAuthStateParams{
 			State:        state,
 			ProviderID:   provider.ID,
+			FlowKind:     authFlowBrowser,
 			Nonce:        nonce,
 			CodeVerifier: verifier,
 			RedirectUri:  req.Msg.RedirectUrl,
@@ -135,6 +151,98 @@ func (h *Handlers) GetSSOLoginURL(ctx context.Context, req *connect.Request[pmv1
 	return connect.NewResponse(&pmv1.GetSSOLoginURLResponse{
 		LoginUrl: oidcClient.AuthCodeURL(state, nonce, verifier),
 	}), nil
+}
+
+// BeginCLILogin starts a public-client OIDC flow whose verifier and callback
+// remain in the CLI process.
+func (h *Handlers) BeginCLILogin(ctx context.Context, req *connect.Request[pmv1.BeginCLILoginRequest]) (*connect.Response[pmv1.BeginCLILoginResponse], error) {
+	if err := h.validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+	redirectURL, err := validateCLIRedirect(req.Msg.RedirectUrl)
+	if err != nil {
+		return nil, rpcError(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
+	}
+	challenge, err := base64.RawURLEncoding.DecodeString(req.Msg.CodeChallenge)
+	if err != nil || len(challenge) != 32 {
+		return nil, rpcError(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "invalid PKCE challenge")
+	}
+	provider, err := h.store.GetIdentityProviderBySlug(ctx, req.Msg.Slug)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, ErrProviderNotFound, "identity provider not found")
+		}
+		return nil, internalError(ctx, "failed to load identity provider")
+	}
+	if !provider.Enabled {
+		return nil, notFound(ctx, ErrProviderNotFound, "identity provider not found")
+	}
+	if provider.CliClientID == "" {
+		return nil, rpcError(ctx, ErrValidationFailed, connect.CodeFailedPrecondition,
+			"CLI login is not configured for this identity provider")
+	}
+	oidcClient, err := h.cliOIDCClientFor(ctx, provider, redirectURL)
+	if err != nil {
+		h.logger.Error("failed to build the CLI OIDC client", "provider_id", provider.ID, "error", err)
+		return nil, internalError(ctx, "failed to reach the identity provider")
+	}
+	state, err := idp.GenerateState()
+	if err != nil {
+		return nil, internalError(ctx, "failed to start the login flow")
+	}
+	nonce, err := idp.GenerateNonce()
+	if err != nil {
+		return nil, internalError(ctx, "failed to start the login flow")
+	}
+	expires := h.now().UTC().Add(authStateTTL)
+	op := store.AuditOperation{
+		Class:                store.ClassBackgroundWriter,
+		ActorType:            auth.AnonymousActorType,
+		Origin:               auth.ControlRPCOrigin,
+		RequestDescriptor:    req.Spec().Procedure,
+		AuthorizationOutcome: store.AuthorizationNotApplicable,
+		Result:               store.ResultSuccess,
+	}
+	if ip := auth.ClientIP(req); ip != "" {
+		op.OriginFingerprint = auth.Fingerprint(ip)
+	}
+	_, err = h.store.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		if err := tx.CreateAuthState(ctx, db.CreateAuthStateParams{
+			State: state, ProviderID: provider.ID, FlowKind: authFlowCLI, Nonce: nonce,
+			CodeVerifier: "", RedirectUri: redirectURL, ExpiresAt: expires,
+		}); err != nil {
+			return err
+		}
+		rec.Effect(store.AuditEffect{
+			ResourceType: "auth_state", ResourceID: provider.ID, Action: "START_LOGIN", Outcome: store.EffectApplied,
+			EvidenceKind: "auth_state_sha256", EvidenceFingerprint: fingerprint(state),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, internalError(ctx, "failed to start the login flow")
+	}
+	return connect.NewResponse(&pmv1.BeginCLILoginResponse{
+		LoginUrl: oidcClient.AuthCodeURLWithChallenge(state, nonce, req.Msg.CodeChallenge),
+		State:    state, TokenUrl: oidcClient.OAuth2Cfg.Endpoint.TokenURL,
+		ClientId: provider.CliClientID, ExpiresAt: timestampValue(expires),
+	}), nil
+}
+
+func validateCLIRedirect(raw string) (string, error) {
+	u, err := url.ParseRequestURI(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("invalid CLI redirect")
+	}
+	host, port, err := net.SplitHostPort(u.Host)
+	if err != nil || host != "127.0.0.1" {
+		return "", errors.New("invalid CLI redirect")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", errors.New("invalid CLI redirect")
+	}
+	return u.String(), nil
 }
 
 // SSOCallback completes an authorization-code flow and issues a
@@ -164,7 +272,7 @@ func (h *Handlers) SSOCallback(ctx context.Context, req *connect.Request[pmv1.SS
 	// and only inside its window. Consumption happens BEFORE the code
 	// is exchanged: a caller who loses that race must not reach the
 	// identity provider on the winner's behalf.
-	state, err := h.consumeAuthState(ctx, req, provider.ID, req.Msg.State)
+	state, err := h.consumeAuthState(ctx, req, provider.ID, req.Msg.State, authFlowBrowser)
 	if err != nil {
 		return nil, err
 	}
@@ -185,6 +293,68 @@ func (h *Handlers) SSOCallback(ctx context.Context, req *connect.Request[pmv1.SS
 		return nil, h.rejectSSO(ctx, req, provider.ID, "identity token verification failed")
 	}
 
+	completed, err := h.completeLogin(ctx, req, provider, claims)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.SSOCallbackResponse{
+		AccessToken: completed.AccessToken, RefreshToken: completed.RefreshToken,
+		ExpiresAt: timestampValue(completed.ExpiresAt), User: completed.User,
+	}), nil
+}
+
+// ExchangeCLISession verifies the public client's ID-token assertion and
+// issues the same Power Manage session as browser SSO.
+func (h *Handlers) ExchangeCLISession(ctx context.Context, req *connect.Request[pmv1.ExchangeCLISessionRequest]) (*connect.Response[pmv1.ExchangeCLISessionResponse], error) {
+	if err := h.validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+	provider, err := h.store.GetIdentityProviderBySlug(ctx, req.Msg.Slug)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, ErrProviderNotFound, "identity provider not found")
+		}
+		return nil, internalError(ctx, "failed to load identity provider")
+	}
+	if !provider.Enabled {
+		return nil, notFound(ctx, ErrProviderNotFound, "identity provider not found")
+	}
+	if provider.CliClientID == "" {
+		return nil, rpcError(ctx, ErrValidationFailed, connect.CodeFailedPrecondition,
+			"CLI login is not configured for this identity provider")
+	}
+	state, err := h.consumeAuthState(ctx, req, provider.ID, req.Msg.State, authFlowCLI)
+	if err != nil {
+		return nil, err
+	}
+	oidcClient, err := h.cliOIDCClientFor(ctx, provider, state.RedirectUri)
+	if err != nil {
+		h.logger.Error("failed to build the CLI OIDC client", "provider_id", provider.ID, "error", err)
+		return nil, internalError(ctx, "failed to reach the identity provider")
+	}
+	claims, err := oidcClient.VerifyIDToken(ctx, req.Msg.IdToken, state.Nonce)
+	if err != nil {
+		h.logger.Warn("CLI identity token verification failed", "provider_id", provider.ID)
+		return nil, h.rejectSSO(ctx, req, provider.ID, "identity token verification failed")
+	}
+	completed, err := h.completeLogin(ctx, req, provider, claims)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.ExchangeCLISessionResponse{
+		AccessToken: completed.AccessToken, RefreshToken: completed.RefreshToken,
+		ExpiresAt: timestampValue(completed.ExpiresAt), User: completed.User,
+	}), nil
+}
+
+type completedLogin struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    time.Time
+	User         *pmv1.User
+}
+
+func (h *Handlers) completeLogin(ctx context.Context, req connect.AnyRequest, provider store.IdentityProviderRow, claims *idp.UserClaims) (*completedLogin, error) {
 	actor := &auth.UserContext{Kind: auth.PrincipalUser}
 	op := h.mutationOp(req, actor, "")
 	op.ActorType = auth.AnonymousActorType
@@ -196,7 +366,7 @@ func (h *Handlers) SSOCallback(ctx context.Context, req *connect.Request[pmv1.SS
 		linkErr  error
 		sessions store.UserSessionStateRow
 	)
-	_, err = h.store.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+	_, err := h.store.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
 		result, linkErr = h.linker.LinkOrCreate(ctx, tx, rec, provider, claims)
 		if linkErr != nil {
 			return linkErr
@@ -248,12 +418,10 @@ func (h *Handlers) SSOCallback(ctx context.Context, req *connect.Request[pmv1.SS
 	if err != nil {
 		return nil, internalError(ctx, "failed to issue session")
 	}
-	return connect.NewResponse(&pmv1.SSOCallbackResponse{
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    timestampValue(tokens.ExpiresAt),
-		User:         userToProto(view),
-	}), nil
+	return &completedLogin{
+		AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken,
+		ExpiresAt: tokens.ExpiresAt, User: userToProto(view),
+	}, nil
 }
 
 // errSubjectNotEligible marks a verified external identity whose local
@@ -266,7 +434,7 @@ var errSubjectNotEligible = errors.New("identity: subject is not eligible for a 
 // existed, had not been spent, and had not expired. A state minted for
 // a DIFFERENT provider is refused even though the row was consumed —
 // spending it is correct, since it has now been presented.
-func (h *Handlers) consumeAuthState(ctx context.Context, req connect.AnyRequest, providerID, state string) (store.AuthStateRow, error) {
+func (h *Handlers) consumeAuthState(ctx context.Context, req connect.AnyRequest, providerID, state, flowKind string) (store.AuthStateRow, error) {
 	var consumed store.AuthStateRow
 	op := store.AuditOperation{
 		Class:                store.ClassBackgroundWriter,
@@ -301,8 +469,8 @@ func (h *Handlers) consumeAuthState(ctx context.Context, req connect.AnyRequest,
 		}
 		return store.AuthStateRow{}, internalError(ctx, "failed to complete the login")
 	}
-	if consumed.ProviderID != providerID {
-		return store.AuthStateRow{}, h.rejectSSO(ctx, req, providerID, "the login attempt does not belong to this provider")
+	if consumed.ProviderID != providerID || consumed.FlowKind != flowKind {
+		return store.AuthStateRow{}, h.rejectSSO(ctx, req, providerID, "the login attempt does not belong to this flow")
 	}
 	return consumed, nil
 }
@@ -350,5 +518,14 @@ func (h *Handlers) oidcClientFor(ctx context.Context, provider store.IdentityPro
 		Scopes:           provider.Scopes,
 		RedirectURL:      strings.TrimSpace(redirectURL),
 		GroupClaim:       provider.GroupClaim,
+	})
+}
+
+func (h *Handlers) cliOIDCClientFor(ctx context.Context, provider store.IdentityProviderRow, redirectURL string) (*idp.OIDCProvider, error) {
+	return h.newOIDC(ctx, idp.ProviderConfig{
+		IssuerURL: provider.IssuerUrl, AuthorizationURL: provider.AuthorizationUrl,
+		TokenURL: provider.TokenUrl, UserinfoURL: provider.UserinfoUrl,
+		ClientID: provider.CliClientID, Scopes: provider.Scopes,
+		RedirectURL: strings.TrimSpace(redirectURL), GroupClaim: provider.GroupClaim,
 	})
 }

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,8 @@ func TestListAuthMethods_ReturnsEnabledProvidersAndNothingAboutTheEmail(t *testi
 
 	require.Len(t, forKnown.Msg.Providers, 1)
 	assert.Equal(t, "corp", forKnown.Msg.Providers[0].Slug, "a disabled provider is not offered")
+	assert.True(t, forKnown.Msg.Providers[0].BrowserLogin)
+	assert.False(t, forKnown.Msg.Providers[0].CliLogin)
 	assert.Equal(t, len(forKnown.Msg.Providers), len(forUnknown.Msg.Providers),
 		"the answer must not depend on whether the address has an account here")
 	assert.Equal(t, forKnown.Msg.Providers[0].Slug, forUnknown.Msg.Providers[0].Slug)
@@ -114,6 +117,152 @@ func TestGetSSOLoginURL_RejectsAMalformedRedirect(t *testing.T) {
 	}))
 	assert.Equal(t, connect.CodeInvalidArgument, connectCodeOf(t, err))
 	assert.Zero(t, f.countAuditOperations())
+}
+
+func TestBeginCLILogin_StoresOnlyTheChallengeAndReturnsPublicProviderMetadata(t *testing.T) {
+	t.Parallel()
+	oidc := newOIDCDouble(t)
+	f := newFixture(t, withProviderFactory(loopbackProviderFactory))
+	providerID := f.insertProvider("corp", func(s *providerSeed) {
+		s.CliClientID = "powermanage-cli"
+		s.IssuerURL = oidc.URL
+	})
+	challenge := strings.Repeat("A", 43)
+	redirectURL := "http://127.0.0.1:45123/callback"
+
+	resp, err := f.client.BeginCLILogin(f.ctx(), connect.NewRequest(&pmv1.BeginCLILoginRequest{
+		Slug: "corp", RedirectUrl: redirectURL, CodeChallenge: challenge,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, oidc.URL+"/token", resp.Msg.TokenUrl)
+	assert.Equal(t, "powermanage-cli", resp.Msg.ClientId)
+	assert.NotEmpty(t, resp.Msg.State)
+	assert.WithinDuration(t, f.now.Add(10*time.Minute), resp.Msg.ExpiresAt.AsTime(), time.Second)
+
+	loginURL, err := url.Parse(resp.Msg.LoginUrl)
+	require.NoError(t, err)
+	assert.Equal(t, redirectURL, loginURL.Query().Get("redirect_uri"))
+	assert.Equal(t, challenge, loginURL.Query().Get("code_challenge"))
+	assert.Equal(t, "S256", loginURL.Query().Get("code_challenge_method"))
+	assert.Equal(t, "powermanage-cli", loginURL.Query().Get("client_id"))
+	assert.NotEmpty(t, loginURL.Query().Get("nonce"))
+
+	var storedProvider, kind, verifier, storedRedirect string
+	require.NoError(t, f.raw.QueryRow(f.ctx(), `
+		SELECT provider_id, flow_kind, code_verifier, redirect_uri
+		  FROM auth_states WHERE state = $1`, resp.Msg.State).
+		Scan(&storedProvider, &kind, &verifier, &storedRedirect))
+	assert.Equal(t, providerID, storedProvider)
+	assert.Equal(t, "cli", kind)
+	assert.Empty(t, verifier, "the CLI verifier never crosses the process boundary")
+	assert.Equal(t, redirectURL, storedRedirect)
+}
+
+func TestBeginCLILogin_RejectsUnsafeRedirectAndBrowserOnlyProvider(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, withProviderFactory(discardProviderFactory))
+	f.insertProvider("browser", nil)
+	f.insertProvider("cli", func(s *providerSeed) { s.CliClientID = "powermanage-cli" })
+	challenge := strings.Repeat("A", 43)
+
+	_, err := f.client.BeginCLILogin(f.ctx(), connect.NewRequest(&pmv1.BeginCLILoginRequest{
+		Slug: "browser", RedirectUrl: "http://127.0.0.1:45123/callback", CodeChallenge: challenge,
+	}))
+	assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
+
+	for _, redirectURL := range []string{
+		"https://127.0.0.1:45123/callback",
+		"http://localhost:45123/callback",
+		"http://127.0.0.2:45123/callback",
+		"http://127.0.0.1:45123/callback?code=leak",
+	} {
+		_, err = f.client.BeginCLILogin(f.ctx(), connect.NewRequest(&pmv1.BeginCLILoginRequest{
+			Slug: "cli", RedirectUrl: redirectURL, CodeChallenge: challenge,
+		}))
+		assert.Equal(t, connect.CodeInvalidArgument, connectCodeOf(t, err), redirectURL)
+	}
+}
+
+func TestExchangeCLISession_VerifiesTheIDTokenAndIssuesARegularSession(t *testing.T) {
+	t.Parallel()
+	oidc := newOIDCDouble(t)
+	oidc.audience = "powermanage-cli"
+	f := newFixture(t, withProviderFactory(loopbackProviderFactory))
+	role := f.insertRole([]string{"GetCurrentUser"})
+	f.insertProvider("corp", func(s *providerSeed) {
+		s.CliClientID = "powermanage-cli"
+		s.IssuerURL = oidc.URL
+		s.AutoCreateUsers = true
+		s.DefaultRoleID = role
+	})
+	oidc.subject, oidc.email, oidc.emailVerified = "cli-subject", "cli@test.example", true
+
+	begin, err := f.client.BeginCLILogin(f.ctx(), connect.NewRequest(&pmv1.BeginCLILoginRequest{
+		Slug: "corp", RedirectUrl: "http://127.0.0.1:45123/callback", CodeChallenge: strings.Repeat("A", 43),
+	}))
+	require.NoError(t, err)
+	oidc.nonce = f.nonceFor(begin.Msg.State)
+
+	resp, err := f.client.ExchangeCLISession(f.ctx(), connect.NewRequest(&pmv1.ExchangeCLISessionRequest{
+		Slug: "corp", State: begin.Msg.State, IdToken: oidc.idToken(t, oidc.URL),
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "cli@test.example", resp.Msg.User.Email)
+	assert.NotEmpty(t, resp.Msg.AccessToken)
+	assert.NotEmpty(t, resp.Msg.RefreshToken)
+	f.operationOfClass(powermanagev1connect.ControlServiceExchangeCLISessionProcedure, "MUTATION")
+
+	_, err = f.client.ExchangeCLISession(f.ctx(), connect.NewRequest(&pmv1.ExchangeCLISessionRequest{
+		Slug: "corp", State: begin.Msg.State, IdToken: oidc.idToken(t, oidc.URL),
+	}))
+	assert.Equal(t, connect.CodeUnauthenticated, connectCodeOf(t, err), "the state is one-use")
+}
+
+func TestExchangeCLISession_RejectsAnIDTokenForTheBrowserAudience(t *testing.T) {
+	t.Parallel()
+	oidc := newOIDCDouble(t) // default audience is the browser client-id
+	f := newFixture(t, withProviderFactory(loopbackProviderFactory))
+	f.insertProvider("corp", func(s *providerSeed) {
+		s.CliClientID = "powermanage-cli"
+		s.IssuerURL = oidc.URL
+		s.AutoCreateUsers = true
+	})
+	oidc.subject, oidc.email, oidc.emailVerified = "cli-subject", "cli@test.example", true
+	begin, err := f.client.BeginCLILogin(f.ctx(), connect.NewRequest(&pmv1.BeginCLILoginRequest{
+		Slug: "corp", RedirectUrl: "http://127.0.0.1:45123/callback", CodeChallenge: strings.Repeat("A", 43),
+	}))
+	require.NoError(t, err)
+	oidc.nonce = f.nonceFor(begin.Msg.State)
+
+	_, err = f.client.ExchangeCLISession(f.ctx(), connect.NewRequest(&pmv1.ExchangeCLISessionRequest{
+		Slug: "corp", State: begin.Msg.State, IdToken: oidc.idToken(t, oidc.URL),
+	}))
+	assert.Equal(t, connect.CodeUnauthenticated, connectCodeOf(t, err))
+	f.operationOfClass(powermanagev1connect.ControlServiceExchangeCLISessionProcedure, "REJECTED_AUTHENTICATION")
+}
+
+func TestBrowserAndCLIStatesCannotBeCrossConsumed(t *testing.T) {
+	t.Parallel()
+	oidc := newOIDCDouble(t)
+	f := newFixture(t, withProviderFactory(loopbackProviderFactory))
+	f.insertProvider("corp", func(s *providerSeed) {
+		s.CliClientID = "powermanage-cli"
+		s.IssuerURL = oidc.URL
+	})
+	browserState := f.startLogin("corp")
+	cliBegin, err := f.client.BeginCLILogin(f.ctx(), connect.NewRequest(&pmv1.BeginCLILoginRequest{
+		Slug: "corp", RedirectUrl: "http://127.0.0.1:45123/callback", CodeChallenge: strings.Repeat("A", 43),
+	}))
+	require.NoError(t, err)
+
+	_, err = f.client.SSOCallback(f.ctx(), connect.NewRequest(&pmv1.SSOCallbackRequest{
+		Slug: "corp", State: cliBegin.Msg.State, Code: "unused-code",
+	}))
+	assert.Equal(t, connect.CodeUnauthenticated, connectCodeOf(t, err))
+	_, err = f.client.ExchangeCLISession(f.ctx(), connect.NewRequest(&pmv1.ExchangeCLISessionRequest{
+		Slug: "corp", State: browserState, IdToken: "unused-token",
+	}))
+	assert.Equal(t, connect.CodeUnauthenticated, connectCodeOf(t, err))
 }
 
 func TestSSOCallback_AutoCreatesASubjectAndIssuesASession(t *testing.T) {
@@ -390,6 +539,7 @@ type oidcDouble struct {
 	emailVerified bool
 	name          string
 	nonce         string
+	audience      string
 	groups        []string
 }
 
@@ -397,7 +547,7 @@ func newOIDCDouble(t *testing.T) *oidcDouble {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
-	d := &oidcDouble{key: key, keyID: "test-key"}
+	d := &oidcDouble{key: key, keyID: "test-key", audience: "client-id"}
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -446,7 +596,7 @@ func (d *oidcDouble) idToken(t *testing.T, issuer string) string {
 	claims := map[string]any{
 		"iss":            issuer,
 		"sub":            d.subject,
-		"aud":            "client-id",
+		"aud":            d.audience,
 		"exp":            now.Add(time.Hour).Unix(),
 		"iat":            now.Unix(),
 		"nonce":          d.nonce,

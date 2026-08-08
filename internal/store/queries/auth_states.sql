@@ -1,6 +1,6 @@
 -- name: CreateAuthState :exec
-INSERT INTO auth_states (state, provider_id, nonce, code_verifier, redirect_uri, created_at, expires_at)
-VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?);
+INSERT INTO auth_states (state, provider_id, flow_kind, nonce, code_verifier, redirect_uri, created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?);
 
 -- name: ConsumeAuthState :one
 DELETE FROM auth_states

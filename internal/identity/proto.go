@@ -217,6 +217,7 @@ func (h *Handlers) providerToProto(p store.IdentityProviderRow) *pmv1.IdentityPr
 		ProviderType:         providerTypeToProto(p.ProviderType),
 		Enabled:              p.Enabled,
 		ClientId:             p.ClientID,
+		CliClientId:          p.CliClientID,
 		IssuerUrl:            p.IssuerUrl,
 		AuthorizationUrl:     p.AuthorizationUrl,
 		TokenUrl:             p.TokenUrl,
