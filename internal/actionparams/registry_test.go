@@ -39,7 +39,11 @@ func TestEveryActionTypeUsesOneParamsRegistry(t *testing.T) {
 			managedParams := ExtractParamsMsg(managed)
 			require.NotNil(t, actionParams)
 			require.NotNil(t, managedParams)
-			assert.Equal(t, proto.MessageName(actionParams), proto.MessageName(managedParams))
+			if actionType == pm.ActionType_ACTION_TYPE_ENCRYPTION || actionType == pm.ActionType_ACTION_TYPE_WIFI {
+				assert.NotEqual(t, proto.MessageName(actionParams), proto.MessageName(managedParams))
+			} else {
+				assert.Equal(t, proto.MessageName(actionParams), proto.MessageName(managedParams))
+			}
 			assert.True(t, ParamsMatchType(action, actionType))
 		})
 	}

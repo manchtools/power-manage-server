@@ -10,12 +10,10 @@ import (
 	"connectrpc.com/connect"
 	"github.com/go-playground/validator/v10"
 	"github.com/oklog/ulid/v2"
-	"google.golang.org/protobuf/proto"
 
-	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
-	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -25,6 +23,7 @@ const defaultAuthoringPageSize = int32(50)
 // used by the authoring RPC handlers.
 type HandlersConfig struct {
 	Store  *store.Store
+	AtRest *pmcrypto.Encryptor
 	Logger *slog.Logger
 	Now    func() time.Time
 }
@@ -36,19 +35,20 @@ type Handlers struct {
 	state     *Service
 	logger    *slog.Logger
 	validator *validator.Validate
+	atRest    *pmcrypto.Encryptor
 }
 
 // NewHandlers constructs the explicit authoring RPC handlers.
 func NewHandlers(cfg HandlersConfig) *Handlers {
-	if cfg.Store == nil {
-		panic("authoring: handler store is required")
+	if cfg.Store == nil || cfg.AtRest == nil {
+		panic("authoring: handler store and at-rest cipher are required")
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
 	return &Handlers{
 		store: cfg.Store, state: New(Config{Store: cfg.Store, Now: cfg.Now}),
-		logger: cfg.Logger, validator: sdkvalidate.NewValidator(),
+		logger: cfg.Logger, validator: sdkvalidate.NewValidator(), atRest: cfg.AtRest,
 	}
 }
 
@@ -99,21 +99,6 @@ func (h *Handlers) operation(req connect.AnyRequest, actor *auth.UserContext, pr
 		op.OriginFingerprint = auth.Fingerprint(ip)
 	}
 	return op
-}
-
-func requestParams(message proto.Message, actionType pmv1.ActionType) ([]byte, error) {
-	params := actionparams.ExtractParamsMsg(message)
-	if params == nil {
-		return []byte("{}"), nil
-	}
-	if !actionparams.ParamsMatchType(message, actionType) {
-		return nil, ErrInvalidInput
-	}
-	raw, err := actionparams.MarshalActionParams(params)
-	if err != nil {
-		return nil, ErrInvalidInput
-	}
-	return raw, nil
 }
 
 func (h *Handlers) actionError(ctx context.Context, operation string, err error) error {

@@ -19,6 +19,7 @@ import (
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/store/sqlitetype"
@@ -61,6 +62,7 @@ func New(cfg Config) *Service {
 
 // CreateActionParams is the complete stored shape of a new Action.
 type CreateActionParams struct {
+	ID             string
 	Name           string
 	Description    string
 	CreatedBy      string
@@ -94,7 +96,13 @@ func (s *Service) CreateAction(ctx context.Context, op store.AuditOperation, p C
 	if timeout == 0 {
 		timeout = defaultActionTimeout
 	}
-	params, err := validateActionData("pending", p.Type, p.DesiredState, timeout, p.Schedule, p.Params)
+	id := p.ID
+	if id == "" {
+		id = ulid.Make().String()
+	} else if !validID(id) {
+		return store.ActionRow{}, ErrInvalidInput
+	}
+	params, err := validateActionData(id, p.Type, p.DesiredState, timeout, p.Schedule, p.Params)
 	if err != nil {
 		return store.ActionRow{}, err
 	}
@@ -103,7 +111,6 @@ func (s *Service) CreateAction(ctx context.Context, op store.AuditOperation, p C
 		return store.ActionRow{}, fmt.Errorf("authoring: encode action schedule: %w", err)
 	}
 
-	id := ulid.Make().String()
 	now := s.now().UTC()
 	var out store.ActionRow
 	_, err = s.store.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
@@ -292,23 +299,52 @@ func validateActionData(id string, actionType pmv1.ActionType, desired pmv1.Desi
 	if !validID(actionID) {
 		actionID = ulid.Make().String()
 	}
-	action := &pmv1.Action{
-		Id: &pmv1.ActionId{Value: actionID}, Type: actionType,
-		DesiredState: desired, TimeoutSeconds: timeout, Schedule: schedule,
+	request := &pmv1.UpdateActionParamsRequest{
+		Id: actionID, DesiredState: desired, TimeoutSeconds: timeout, Schedule: schedule,
 	}
-	if err := actionparams.PopulateAction(action, int32(actionType), canonical); err != nil {
+	if err := actionparams.PopulateUpdateActionParams(request, actionType, canonical); err != nil {
 		return nil, fmt.Errorf("authoring: validate action params: %w", err)
 	}
-	if actionparams.ExtractParamsMsg(action) == nil && !bytes.Equal(canonical, []byte("{}")) {
+	params := actionparams.ExtractParamsMsg(request)
+	if params == nil && !bytes.Equal(canonical, []byte("{}")) {
 		return nil, ErrInvalidInput
 	}
-	if detail, ok := sdkvalidate.Struct(actionValidator, action); !ok {
+	if err := normalizeStoredSecretsForValidation(params); err != nil {
+		return nil, err
+	}
+	if detail, ok := sdkvalidate.Struct(actionValidator, request); !ok {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, detail)
 	}
-	if err := validateActionSafety(actionparams.ExtractParamsMsg(action)); err != nil {
+	if err := validateActionSafety(params); err != nil {
 		return nil, err
 	}
 	return canonical, nil
+}
+
+func normalizeStoredSecretsForValidation(params proto.Message) error {
+	switch value := params.(type) {
+	case *pmv1.EncryptionAuthoringParams:
+		if value.PresharedKey == nil || !pmcrypto.IsEncryptedValue(value.GetPresharedKey()) {
+			return ErrInvalidInput
+		}
+		value.PresharedKey = stringPointer("configured")
+	case *pmv1.WifiAuthoringParams:
+		switch value.AuthType {
+		case pmv1.WifiAuthType_WIFI_AUTH_TYPE_PSK:
+			if value.Psk == nil || !pmcrypto.IsEncryptedValue(value.GetPsk()) || value.ClientKey != nil {
+				return ErrInvalidInput
+			}
+			value.Psk = stringPointer("configured")
+		case pmv1.WifiAuthType_WIFI_AUTH_TYPE_EAP_TLS:
+			if value.ClientKey == nil || !pmcrypto.IsEncryptedValue(value.GetClientKey()) || value.Psk != nil {
+				return ErrInvalidInput
+			}
+			value.ClientKey = stringPointer("configured")
+		default:
+			return ErrInvalidInput
+		}
+	}
+	return nil
 }
 
 // ValidateExecutableAction applies the same type, parameter, and safety rules

@@ -33,8 +33,16 @@ const prefix = "enc:v1:"
 // Purpose tags for RowAAD — shared constants so the write and read
 // paths can never drift apart on the AAD purpose dimension.
 const (
-	PurposeIdPClientSecret = "idp-client-secret"
+	PurposeIdPClientSecret              = "idp-client-secret"
+	PurposeActionEncryptionPresharedKey = "action-encryption-preshared-key"
+	PurposeActionWifiPSK                = "action-wifi-psk"
+	PurposeActionWifiClientKey          = "action-wifi-client-key"
 )
+
+// IsEncryptedValue reports whether value uses the only supported at-rest
+// envelope. It is a shape check for metadata-only read paths; authenticated
+// validity is established only by DecryptWithContext at the execution sink.
+func IsEncryptedValue(value string) bool { return strings.HasPrefix(value, prefix) }
 
 // SecretAAD builds the additional-authenticated-data that binds a
 // device-scoped at-rest secret to its row context. deviceID and actionID

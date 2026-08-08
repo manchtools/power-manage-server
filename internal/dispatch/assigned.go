@@ -59,7 +59,7 @@ func (h *Handlers) assignedManifests(ctx context.Context, deviceID string) ([]Ma
 		if !visible {
 			return nil, errAssignedSourceNotVisible
 		}
-		compiled, err := h.compiler.Definition(ctx, source.Row.SourceID)
+		compiled, err := h.compiler.DefinitionForDevice(ctx, deviceID, source.Row.SourceID)
 		if err != nil {
 			return nil, err
 		}
@@ -91,7 +91,7 @@ func (h *Handlers) assignedManifests(ctx context.Context, deviceID string) ([]Ma
 		if !visible {
 			return nil, errAssignedSourceNotVisible
 		}
-		compiled, err := h.compiler.ActionSet(ctx, source.Row.SourceID)
+		compiled, err := h.compiler.ActionSetForDevice(ctx, deviceID, source.Row.SourceID)
 		if err != nil {
 			return nil, err
 		}
@@ -118,7 +118,7 @@ func (h *Handlers) assignedManifests(ctx context.Context, deviceID string) ([]Ma
 		if !visible {
 			return nil, errAssignedSourceNotVisible
 		}
-		compiled, err := h.compiler.Action(ctx, source.Row.SourceID)
+		compiled, err := h.compiler.ActionForDevice(ctx, deviceID, source.Row.SourceID)
 		if err != nil {
 			return nil, err
 		}
@@ -152,7 +152,7 @@ func (h *Handlers) assignedManifests(ctx context.Context, deviceID string) ([]Ma
 			if !visible {
 				return nil, errAssignedSourceNotVisible
 			}
-			compiled, err := h.compiler.Action(ctx, rule.ActionID)
+			compiled, err := h.compiler.ActionForDevice(ctx, deviceID, rule.ActionID)
 			if err != nil {
 				return nil, err
 			}

@@ -27,7 +27,7 @@ func ActionToProto(row store.ActionRow) (*pmv1.ManagedAction, error) {
 	if row.UpdatedAt != nil {
 		action.UpdatedAt = timestamppb.New(*row.UpdatedAt)
 	}
-	if err := actionparams.PopulateManagedAction(action, action.Type, row.Params); err != nil {
+	if err := populateManagedParams(action, action.Type, row.Params); err != nil {
 		return nil, fmt.Errorf("authoring: decode stored action params: %w", err)
 	}
 	schedule, err := actionparams.ParseSchedule(row.Schedule)

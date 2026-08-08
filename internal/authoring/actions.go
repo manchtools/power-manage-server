@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"connectrpc.com/connect"
+	"github.com/oklog/ulid/v2"
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
@@ -23,13 +24,15 @@ func (h *Handlers) CreateAction(ctx context.Context, req *connect.Request[pmv1.C
 	if err := h.authorize(ctx, "CreateAction", ""); err != nil {
 		return nil, err
 	}
-	params, err := requestParams(req.Msg, req.Msg.Type)
+	actionID := ulid.Make().String()
+	params, err := h.requestParams(req.Msg, req.Msg.Type, actionID, nil)
 	if err != nil {
 		return nil, h.actionError(ctx, "validate create action params", err)
 	}
 	row, err := h.state.CreateAction(ctx, h.operation(req, actor,
 		powermanagev1connect.ControlServiceCreateActionProcedure, "CreateAction"), CreateActionParams{
 		Name: req.Msg.Name, Description: req.Msg.Description, CreatedBy: actor.ID,
+		ID:   actionID,
 		Type: req.Msg.Type, DesiredState: req.Msg.DesiredState, Params: params,
 		TimeoutSeconds: req.Msg.TimeoutSeconds, Schedule: req.Msg.Schedule,
 	})
@@ -167,7 +170,7 @@ func (h *Handlers) UpdateActionParams(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, err
 	}
-	params, err := requestParams(req.Msg, pmv1.ActionType(row.ActionType))
+	params, err := h.requestParams(req.Msg, pmv1.ActionType(row.ActionType), req.Msg.Id, row.Params)
 	if err != nil {
 		return nil, h.actionError(ctx, "validate updated action params", err)
 	}

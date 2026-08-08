@@ -17,6 +17,7 @@ import (
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/authoring"
+	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/manifest"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
@@ -24,6 +25,7 @@ import (
 // HandlersConfig supplies the durable store and bounded dispatcher wake seam.
 type HandlersConfig struct {
 	Store  *store.Store
+	AtRest *pmcrypto.Encryptor
 	Waker  Waker
 	Logger *slog.Logger
 	Now    func() time.Time
@@ -41,14 +43,14 @@ type Handlers struct {
 // NewHandlers constructs direct dispatch handlers. Missing durable state or a
 // wake target is a boot-time wiring defect.
 func NewHandlers(cfg HandlersConfig) *Handlers {
-	if cfg.Store == nil || cfg.Waker == nil {
-		panic("dispatch: handler store and waker are required")
+	if cfg.Store == nil || cfg.Waker == nil || cfg.AtRest == nil {
+		panic("dispatch: handler store, waker, and at-rest cipher are required")
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
 	return &Handlers{
-		store: cfg.Store, compiler: manifest.New(cfg.Store),
+		store: cfg.Store, compiler: manifest.New(cfg.Store, cfg.AtRest),
 		submitter: New(Config{Store: cfg.Store, Waker: cfg.Waker, Now: cfg.Now}),
 		logger:    cfg.Logger, validator: sdkvalidate.NewValidator(),
 	}
@@ -151,7 +153,7 @@ func (h *Handlers) DispatchAction(ctx context.Context, req *connect.Request[pmv1
 	var input ManifestInput
 	switch source := req.Msg.ActionSource.(type) {
 	case *pmv1.DispatchActionRequest_ActionId:
-		compiled, err := h.catalogActionTemplate(ctx, source.ActionId)
+		compiled, err := h.catalogActionTemplate(ctx, req.Msg.DeviceId, source.ActionId)
 		if err != nil {
 			return nil, err
 		}
@@ -245,7 +247,7 @@ func (h *Handlers) DispatchActionSet(ctx context.Context, req *connect.Request[p
 	if err := h.target(ctx, actor, "DispatchActionSet", req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
-	compiled, err := h.catalogActionSetTemplate(ctx, req.Msg.ActionSetId)
+	compiled, err := h.catalogActionSetTemplate(ctx, req.Msg.DeviceId, req.Msg.ActionSetId)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +276,7 @@ func (h *Handlers) DispatchDefinition(ctx context.Context, req *connect.Request[
 	if err := h.target(ctx, actor, "DispatchDefinition", req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
-	compiled, err := h.catalogDefinitionTemplates(ctx, req.Msg.DefinitionId)
+	compiled, err := h.catalogDefinitionTemplates(ctx, req.Msg.DeviceId, req.Msg.DefinitionId)
 	if err != nil {
 		return nil, err
 	}
@@ -308,28 +310,29 @@ func (h *Handlers) DispatchToMultiple(ctx context.Context, req *connect.Request[
 		}
 	}
 
-	var templates []*pmv1.Manifest
-	persistActionIDs := false
+	var targets []TargetInput
 	switch source := req.Msg.ActionSource.(type) {
 	case *pmv1.DispatchToMultipleRequest_ActionId:
-		compiled, err := h.catalogActionTemplate(ctx, source.ActionId)
-		if err != nil {
-			return nil, err
+		targets = make([]TargetInput, len(req.Msg.DeviceIds))
+		for i, deviceID := range req.Msg.DeviceIds {
+			compiled, err := h.catalogActionTemplate(ctx, deviceID, source.ActionId)
+			if err != nil {
+				return nil, err
+			}
+			targets[i] = TargetInput{DeviceID: deviceID, Manifests: catalogManifests(compiled)}
 		}
-		templates, persistActionIDs = []*pmv1.Manifest{compiled}, true
 	case *pmv1.DispatchToMultipleRequest_InlineAction:
 		compiled, err := h.inlineTemplate(ctx, source.InlineAction)
 		if err != nil {
 			return nil, err
 		}
-		templates = []*pmv1.Manifest{compiled}
+		targets, err = freshTargets(req.Msg.DeviceIds, []*pmv1.Manifest{compiled}, false)
+		if err != nil {
+			return nil, h.internal(ctx, "prepare multi-device dispatch", err)
+		}
 	default:
 		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument,
 			"either action_id or inline_action is required")
-	}
-	targets, err := freshTargets(req.Msg.DeviceIds, templates, persistActionIDs)
-	if err != nil {
-		return nil, h.internal(ctx, "prepare multi-device dispatch", err)
 	}
 	result, err := h.submitter.SubmitBatch(ctx, SubmitBatchParams{
 		Operation: h.operation(req, actor, powermanagev1connect.ControlServiceDispatchToMultipleProcedure, "DispatchToMultiple"),
@@ -380,35 +383,6 @@ func (h *Handlers) DispatchToGroup(ctx context.Context, req *connect.Request[pmv
 		}
 	}
 
-	var templates []*pmv1.Manifest
-	persistActionIDs := true
-	switch source := req.Msg.ActionSource.(type) {
-	case *pmv1.DispatchToGroupRequest_ActionId:
-		compiled, err := h.catalogActionTemplate(ctx, source.ActionId)
-		if err != nil {
-			return nil, err
-		}
-		templates = []*pmv1.Manifest{compiled}
-	case *pmv1.DispatchToGroupRequest_ActionSetId:
-		compiled, err := h.catalogActionSetTemplate(ctx, source.ActionSetId)
-		if err != nil {
-			return nil, err
-		}
-		templates = []*pmv1.Manifest{compiled}
-	case *pmv1.DispatchToGroupRequest_DefinitionId:
-		templates, err = h.catalogDefinitionTemplates(ctx, source.DefinitionId)
-		if err != nil {
-			return nil, err
-		}
-	case *pmv1.DispatchToGroupRequest_InlineAction:
-		compiled, err := h.inlineTemplate(ctx, source.InlineAction)
-		if err != nil {
-			return nil, err
-		}
-		templates, persistActionIDs = []*pmv1.Manifest{compiled}, false
-	default:
-		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "an action source is required")
-	}
 	op := h.operation(req, actor, powermanagev1connect.ControlServiceDispatchToGroupProcedure, "DispatchToGroup")
 	if len(deviceIDs) == 0 {
 		_, err := h.store.RecordOperation(ctx, op, store.AuditEffect{
@@ -420,9 +394,38 @@ func (h *Handlers) DispatchToGroup(ctx context.Context, req *connect.Request[pmv
 		}
 		return connect.NewResponse(&pmv1.DispatchToGroupResponse{}), nil
 	}
-	targets, err := freshTargets(deviceIDs, templates, persistActionIDs)
-	if err != nil {
-		return nil, h.internal(ctx, "prepare group dispatch", err)
+	targets := make([]TargetInput, len(deviceIDs))
+	for i, deviceID := range deviceIDs {
+		var inputs []ManifestInput
+		switch source := req.Msg.ActionSource.(type) {
+		case *pmv1.DispatchToGroupRequest_ActionId:
+			compiled, err := h.catalogActionTemplate(ctx, deviceID, source.ActionId)
+			if err != nil {
+				return nil, err
+			}
+			inputs = catalogManifests(compiled)
+		case *pmv1.DispatchToGroupRequest_ActionSetId:
+			compiled, err := h.catalogActionSetTemplate(ctx, deviceID, source.ActionSetId)
+			if err != nil {
+				return nil, err
+			}
+			inputs = catalogManifests(compiled)
+		case *pmv1.DispatchToGroupRequest_DefinitionId:
+			compiled, err := h.catalogDefinitionTemplates(ctx, deviceID, source.DefinitionId)
+			if err != nil {
+				return nil, err
+			}
+			inputs = catalogManifests(compiled...)
+		case *pmv1.DispatchToGroupRequest_InlineAction:
+			compiled, err := h.inlineTemplate(ctx, source.InlineAction)
+			if err != nil {
+				return nil, err
+			}
+			inputs = []ManifestInput{{Manifest: compiled}}
+		default:
+			return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "an action source is required")
+		}
+		targets[i] = TargetInput{DeviceID: deviceID, Manifests: inputs}
 	}
 	result, err := h.submitter.SubmitBatch(ctx, SubmitBatchParams{Operation: op, Targets: targets})
 	if err != nil {
@@ -520,8 +523,8 @@ func catalogManifests(manifests ...*pmv1.Manifest) []ManifestInput {
 	return inputs
 }
 
-func (h *Handlers) catalogActionTemplate(ctx context.Context, actionID string) (*pmv1.Manifest, error) {
-	compiled, err := h.compiler.Action(ctx, actionID)
+func (h *Handlers) catalogActionTemplate(ctx context.Context, deviceID, actionID string) (*pmv1.Manifest, error) {
+	compiled, err := h.compiler.ActionForDevice(ctx, deviceID, actionID)
 	if err != nil {
 		return nil, h.compileError(ctx, "compile dispatched action", err)
 	}
@@ -535,8 +538,8 @@ func (h *Handlers) catalogActionTemplate(ctx context.Context, actionID string) (
 	return manifest.AsOneShot(compiled), nil
 }
 
-func (h *Handlers) catalogActionSetTemplate(ctx context.Context, setID string) (*pmv1.Manifest, error) {
-	compiled, err := h.compiler.ActionSet(ctx, setID)
+func (h *Handlers) catalogActionSetTemplate(ctx context.Context, deviceID, setID string) (*pmv1.Manifest, error) {
+	compiled, err := h.compiler.ActionSetForDevice(ctx, deviceID, setID)
 	if err != nil {
 		return nil, h.collectionCompileError(ctx, "action set", errActionSetMissing, "compile dispatched action set", err)
 	}
@@ -550,8 +553,8 @@ func (h *Handlers) catalogActionSetTemplate(ctx context.Context, setID string) (
 	return manifest.AsOneShot(compiled), nil
 }
 
-func (h *Handlers) catalogDefinitionTemplates(ctx context.Context, definitionID string) ([]*pmv1.Manifest, error) {
-	compiled, err := h.compiler.Definition(ctx, definitionID)
+func (h *Handlers) catalogDefinitionTemplates(ctx context.Context, deviceID, definitionID string) ([]*pmv1.Manifest, error) {
+	compiled, err := h.compiler.DefinitionForDevice(ctx, deviceID, definitionID)
 	if err != nil {
 		return nil, h.collectionCompileError(ctx, "definition", errDefinitionMissing, "compile dispatched definition", err)
 	}
@@ -571,6 +574,10 @@ func (h *Handlers) catalogDefinitionTemplates(ctx context.Context, definitionID 
 func (h *Handlers) inlineTemplate(ctx context.Context, action *pmv1.Action) (*pmv1.Manifest, error) {
 	if action == nil {
 		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid inline action")
+	}
+	if action.Type == pmv1.ActionType_ACTION_TYPE_ENCRYPTION || action.Type == pmv1.ActionType_ACTION_TYPE_WIFI {
+		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument,
+			"credential-bearing actions must be authored before dispatch")
 	}
 	inline := proto.Clone(action).(*pmv1.Action)
 	if inline.TimeoutSeconds == 0 {
