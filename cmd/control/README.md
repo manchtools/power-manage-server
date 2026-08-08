@@ -27,11 +27,12 @@ Control must fail readiness when the schema is not current, required keys or CA
 material are unusable, artifact paths are not writable, or the agent listener
 cannot enforce revocation.
 
-<!-- docref: begin src=cmd/control/main.go#parseCommand:9ba09808,cmd/control/config.go#configEnvironment:f192d94c,cmd/control/config.go#readEnvironment:88fc4d61,cmd/control/config.go#parseList:02da4e62 -->
+<!-- docref: begin src=cmd/control/main.go#parseCommand:dfecd82c,cmd/control/config.go#configEnvironment:f192d94c,cmd/control/config.go#readEnvironment:88fc4d61,cmd/control/config.go#parseList:02da4e62 -->
 Configuration is entirely environmental: every option is its own documented
 `POWER_MANAGE_`-prefixed variable. There is no configuration file and no
-`-config` flag, and the only accepted arguments are the `bootstrap-admin` and
-`backup-status` subcommands. The `configEnvironment` declarations in
+`-config` flag, and the only accepted top-level arguments are the
+`bootstrap-admin` and `backup-status` subcommands. `bootstrap-admin` additionally
+accepts the exact machine-output form `--output token`. The `configEnvironment` declarations in
 `config.go` are the authoritative option list — each field's tag names its
 variable and its type selects the parser — and startup fails closed on any
 `POWER_MANAGE_` variable that is not declared there, so a misspelling stops the
@@ -64,6 +65,18 @@ For the values the reference deployment renders, see `../../deploy/QUICKSTART.md
 Initial administration uses the host-authorized `bootstrap-admin` command to
 produce a single-use, short-lived URL. Configure OIDC/SCIM immediately; there
 is no local administrator password.
+
+<!-- docref: begin src=cmd/control/bootstrap_admin.go#writeBootstrapAdminOutput:665c9c92,cmd/control/main.go#parseCommand:dfecd82c -->
+For the open operator CLI, request the pipe-safe token form explicitly:
+
+```bash
+control bootstrap-admin --output token \
+  | powermanage bootstrap oidc --file provider.json --token-stdin
+```
+
+`--output token` writes only the raw token and a newline. Without it, the
+existing human-readable setup URL remains the default.
+<!-- docref: end -->
 
 ## Database
 

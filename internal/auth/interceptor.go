@@ -37,13 +37,15 @@ const ControlProcedurePrefix = "/" + powermanagev1connect.ControlServiceName + "
 // access token, and the two device-certificate procedures whose caller
 // authenticates with an enrollment token or its existing certificate.
 var PublicProcedures = map[string]bool{
-	powermanagev1connect.ControlServiceRefreshTokenProcedure:     true,
-	powermanagev1connect.ControlServiceLogoutProcedure:           true,
-	powermanagev1connect.ControlServiceRegisterProcedure:         true,
-	powermanagev1connect.ControlServiceRenewCertificateProcedure: true,
-	powermanagev1connect.ControlServiceListAuthMethodsProcedure:  true,
-	powermanagev1connect.ControlServiceGetSSOLoginURLProcedure:   true,
-	powermanagev1connect.ControlServiceSSOCallbackProcedure:      true,
+	powermanagev1connect.ControlServiceRefreshTokenProcedure:       true,
+	powermanagev1connect.ControlServiceLogoutProcedure:             true,
+	powermanagev1connect.ControlServiceRegisterProcedure:           true,
+	powermanagev1connect.ControlServiceRenewCertificateProcedure:   true,
+	powermanagev1connect.ControlServiceListAuthMethodsProcedure:    true,
+	powermanagev1connect.ControlServiceGetSSOLoginURLProcedure:     true,
+	powermanagev1connect.ControlServiceSSOCallbackProcedure:        true,
+	powermanagev1connect.ControlServiceBeginCLILoginProcedure:      true,
+	powermanagev1connect.ControlServiceExchangeCLISessionProcedure: true,
 }
 
 // procedureAlternatives maps a procedure to the permission keys that
@@ -480,7 +482,8 @@ func (i *AuthInterceptor) applyPublicLimiters(ctx context.Context, procedure str
 	}
 	var g gate
 	switch procedure {
-	case powermanagev1connect.ControlServiceSSOCallbackProcedure:
+	case powermanagev1connect.ControlServiceSSOCallbackProcedure,
+		powermanagev1connect.ControlServiceExchangeCLISessionProcedure:
 		g = gate{i.limiters.SSOCallback, "sso_callback", "too many login attempts, try again later"}
 	case powermanagev1connect.ControlServiceRefreshTokenProcedure:
 		g = gate{i.limiters.Refresh, "refresh", "too many refresh attempts, try again later"}
@@ -492,7 +495,8 @@ func (i *AuthInterceptor) applyPublicLimiters(ctx context.Context, procedure str
 		g = gate{i.limiters.RenewCert, "renew_cert", "too many certificate renewal attempts, try again later"}
 	case powermanagev1connect.ControlServiceListAuthMethodsProcedure:
 		g = gate{i.limiters.AuthMethods, "auth_methods", "too many requests, try again later"}
-	case powermanagev1connect.ControlServiceGetSSOLoginURLProcedure:
+	case powermanagev1connect.ControlServiceGetSSOLoginURLProcedure,
+		powermanagev1connect.ControlServiceBeginCLILoginProcedure:
 		g = gate{i.limiters.SSO, "sso", "too many requests, try again later"}
 	default:
 		return nil

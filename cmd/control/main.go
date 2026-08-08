@@ -40,7 +40,10 @@ func main() {
 		os.Exit(2)
 	}
 	if command == "bootstrap-admin" {
-		os.Exit(runBootstrapAdmin(context.Background(), cfg))
+		os.Exit(runBootstrapAdmin(context.Background(), cfg, false))
+	}
+	if command == "bootstrap-admin-token" {
+		os.Exit(runBootstrapAdmin(context.Background(), cfg, true))
 	}
 	if command == "backup-status" {
 		os.Exit(runBackupStatus(os.Stdout, os.Stderr, cfg, time.Now))
@@ -60,6 +63,9 @@ func parseCommand(args []string) (string, error) {
 	if len(args) > 0 {
 		switch args[0] {
 		case "bootstrap-admin", "backup-status":
+			if args[0] == "bootstrap-admin" && len(args) == 3 && args[1] == "--output" && args[2] == "token" {
+				return "bootstrap-admin-token", nil
+			}
 			if len(args) > 1 {
 				return "", fmt.Errorf("unexpected arguments: %s", strings.Join(args[1:], " "))
 			}

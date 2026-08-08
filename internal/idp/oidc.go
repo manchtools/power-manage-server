@@ -183,6 +183,16 @@ func (p *OIDCProvider) AuthCodeURL(state, nonce, codeVerifier string) string {
 	return p.OAuth2Cfg.AuthCodeURL(state, opts...)
 }
 
+// AuthCodeURLWithChallenge generates a public-client authorization URL from a
+// challenge whose verifier remains in the native client.
+func (p *OIDCProvider) AuthCodeURLWithChallenge(state, nonce, codeChallenge string) string {
+	return p.OAuth2Cfg.AuthCodeURL(state,
+		oidc.Nonce(nonce),
+		oauth2.SetAuthURLParam("code_challenge", codeChallenge),
+		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+	)
+}
+
 // ExchangeCode exchanges an authorization code for tokens.
 func (p *OIDCProvider) ExchangeCode(ctx context.Context, code, codeVerifier string) (*oauth2.Token, error) {
 	opts := []oauth2.AuthCodeOption{
@@ -210,7 +220,11 @@ func (p *OIDCProvider) VerifyAndExtractClaims(ctx context.Context, oauth2Token *
 	if !ok {
 		return nil, fmt.Errorf("no id_token in token response")
 	}
+	return p.VerifyIDToken(ctx, rawIDToken, expectedNonce)
+}
 
+// VerifyIDToken verifies a raw OIDC assertion received from a public client.
+func (p *OIDCProvider) VerifyIDToken(ctx context.Context, rawIDToken, expectedNonce string) (*UserClaims, error) {
 	idToken, err := p.Verifier.Verify(p.clientCtx(ctx), rawIDToken)
 	if err != nil {
 		return nil, fmt.Errorf("verify id_token: %w", err)

@@ -9,6 +9,7 @@ import (
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 )
 
@@ -60,6 +61,56 @@ func TestCreateIdentityProvider_SealsTheSecretAndNeverReturnsIt(t *testing.T) {
 		 WHERE evidence_fingerprint LIKE '%' || $1 || '%'
 		    OR CAST(coalesce(sealed_detail, X'') AS TEXT) LIKE '%' || $1 || '%'`, secret).Scan(&hits))
 	assert.Zero(t, hits, "the client secret never reaches the audit log in the clear")
+}
+
+func TestCreateIdentityProvider_AcceptsASecretlessCLIOnlyProvider(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.seedActor(grant{Permissions: []string{"CreateIdentityProvider"}})
+
+	resp, err := f.client.CreateIdentityProvider(f.ctx(), authed(&pmv1.CreateIdentityProviderRequest{
+		Name:          "Corp CLI",
+		Slug:          "corpcli",
+		ProviderType:  pmv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
+		CliClientId:   "powermanage-cli",
+		IssuerUrl:     "https://idp.example/",
+		DefaultRoleId: auth.AdminRoleID,
+	}, admin.Token))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.Provider)
+	assert.Empty(t, resp.Msg.Provider.ClientId)
+	assert.Equal(t, "powermanage-cli", resp.Msg.Provider.CliClientId)
+
+	var cliClientID, sealedSecret string
+	require.NoError(t, f.raw.QueryRow(f.ctx(),
+		`SELECT cli_client_id, client_secret_encrypted FROM identity_providers WHERE id = $1`,
+		resp.Msg.Provider.Id).Scan(&cliClientID, &sealedSecret))
+	assert.Equal(t, "powermanage-cli", cliClientID)
+	assert.Empty(t, sealedSecret)
+}
+
+func TestCreateIdentityProvider_RequiresAUsableClientMode(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.seedActor(grant{Permissions: []string{"CreateIdentityProvider"}})
+
+	for name, mutate := range map[string]func(*pmv1.CreateIdentityProviderRequest){
+		"neither client": func(*pmv1.CreateIdentityProviderRequest) {},
+		"secret without browser client": func(req *pmv1.CreateIdentityProviderRequest) {
+			req.ClientSecret = "orphaned-secret"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := &pmv1.CreateIdentityProviderRequest{
+				Name: "Invalid", Slug: "invalid", ProviderType: pmv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
+				IssuerUrl: "https://idp.example/",
+			}
+			mutate(req)
+			_, err := f.client.CreateIdentityProvider(f.ctx(), authed(req, admin.Token))
+			assert.Equal(t, connect.CodeInvalidArgument, connectCodeOf(t, err))
+		})
+	}
+	assert.Zero(t, f.countAuditOperations())
 }
 
 func TestCreateIdentityProvider_RejectsADuplicateSlug(t *testing.T) {
@@ -132,6 +183,34 @@ func TestUpdateIdentityProvider_EmptySecretKeepsTheStoredOne(t *testing.T) {
 		"the record must not claim a field changed when it did not")
 }
 
+func TestUpdateIdentityProvider_DroppingTheBrowserClientClearsItsSecret(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.seedActor(grant{Permissions: []string{"UpdateIdentityProvider"}})
+	providerID := f.insertProvider("corp", func(s *providerSeed) {
+		s.CliClientID = "powermanage-cli"
+		s.Secret = "browser-secret"
+		s.IssuerURL = "https://idp.example/"
+	})
+
+	_, err := f.client.UpdateIdentityProvider(f.ctx(), authed(&pmv1.UpdateIdentityProviderRequest{
+		Id: providerID, Name: "CLI only", Enabled: true, CliClientId: "powermanage-cli",
+		IssuerUrl: "https://idp.example/",
+	}, admin.Token))
+	require.NoError(t, err)
+	var browserClientID, sealedSecret string
+	require.NoError(t, f.raw.QueryRow(f.ctx(),
+		`SELECT client_id, client_secret_encrypted FROM identity_providers WHERE id = $1`, providerID).
+		Scan(&browserClientID, &sealedSecret))
+	assert.Empty(t, browserClientID)
+	assert.Empty(t, sealedSecret)
+
+	op := f.onlyOperationFor(powermanagev1connect.ControlServiceUpdateIdentityProviderProcedure)
+	effect := f.effectWithAction(f.effectsOf(op.OperationID), "UPDATE")
+	assert.Contains(t, effect.ChangedFields, "client_secret_encrypted")
+	assert.Empty(t, effect.EvidenceKind, "clearing a secret records no credential fingerprint")
+}
+
 func TestUpdateIdentityProvider_RecordsTheEmailAssertionTransition(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -145,6 +224,7 @@ func TestUpdateIdentityProvider_RecordsTheEmailAssertionTransition(t *testing.T)
 		Id:                   providerID,
 		Name:                 "Corp",
 		Enabled:              true,
+		ClientId:             "client-id",
 		IssuerUrl:            "https://idp.example/",
 		TrustEmailAssertions: true,
 	}, admin.Token))

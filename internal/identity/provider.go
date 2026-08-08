@@ -38,6 +38,9 @@ func (h *Handlers) CreateIdentityProvider(ctx context.Context, req *connect.Requ
 	if err := h.authorize(ctx, PermCreateIdentityProvider, ""); err != nil {
 		return nil, err
 	}
+	if err := validateProviderClients(ctx, req.Msg.ClientId, req.Msg.ClientSecret, req.Msg.CliClientId); err != nil {
+		return nil, err
+	}
 	providerType, ok := providerTypeFromProto(req.Msg.ProviderType)
 	if !ok {
 		return nil, rpcError(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "unsupported provider_type")
@@ -77,6 +80,7 @@ func (h *Handlers) CreateIdentityProvider(ctx context.Context, req *connect.Requ
 				ProviderType:          providerType,
 				Enabled:               true,
 				ClientID:              req.Msg.ClientId,
+				CliClientID:           req.Msg.CliClientId,
 				ClientSecretEncrypted: sealed,
 				IssuerUrl:             req.Msg.IssuerUrl,
 				AuthorizationUrl:      req.Msg.AuthorizationUrl,
@@ -96,13 +100,13 @@ func (h *Handlers) CreateIdentityProvider(ctx context.Context, req *connect.Requ
 				return err
 			}
 			trust := req.Msg.TrustEmailAssertions
-			rec.Effect(store.AuditEffect{
+			effect := store.AuditEffect{
 				ResourceType: "identity_provider",
 				ResourceID:   providerID,
 				Action:       "CREATE",
 				Outcome:      store.EffectApplied,
 				ChangedFields: []string{
-					"name", "slug", "client_id", "client_secret_encrypted", "issuer_url",
+					"name", "slug", "client_id", "cli_client_id", "issuer_url",
 					"auto_create_users", "auto_link_by_email", "trust_email_assertions",
 				},
 				// The email-assertion switch is the account-takeover
@@ -111,15 +115,20 @@ func (h *Handlers) CreateIdentityProvider(ctx context.Context, req *connect.Requ
 				AfterFlag: &trust,
 				// The secret never appears, but proving WHICH secret was
 				// configured is legitimate evidence, so its digest is.
-				EvidenceKind:        "idp_client_secret_sha256",
-				EvidenceFingerprint: fingerprint(req.Msg.ClientSecret),
-			})
+			}
+			if req.Msg.ClientSecret != "" {
+				effect.ChangedFields = append(effect.ChangedFields, "client_secret_encrypted")
+				effect.EvidenceKind = "idp_client_secret_sha256"
+				effect.EvidenceFingerprint = fingerprint(req.Msg.ClientSecret)
+			}
+			rec.Effect(effect)
 			return nil
 		})
 	if err != nil {
 		if store.IsConflict(err) {
 			return nil, rpcError(ctx, ErrProviderSlugExists, connect.CodeAlreadyExists, "a provider with that slug already exists")
 		}
+		h.logger.Error("failed to create identity provider", "error", err)
 		return nil, internalError(ctx, "failed to create identity provider")
 	}
 	return connect.NewResponse(&pmv1.CreateIdentityProviderResponse{Provider: h.providerToProto(created)}), nil
@@ -200,6 +209,9 @@ func (h *Handlers) UpdateIdentityProvider(ctx context.Context, req *connect.Requ
 		}
 		return nil, internalError(ctx, "failed to load identity provider")
 	}
+	if err := validateProviderClients(ctx, req.Msg.ClientId, req.Msg.ClientSecret, req.Msg.CliClientId); err != nil {
+		return nil, err
+	}
 	if req.Msg.DefaultRoleId != "" {
 		if _, err := h.store.GetRole(ctx, req.Msg.DefaultRoleId); err != nil {
 			if store.IsNotFound(err) {
@@ -214,8 +226,15 @@ func (h *Handlers) UpdateIdentityProvider(ctx context.Context, req *connect.Requ
 	}
 
 	secret := before.ClientSecretEncrypted
-	secretChanged := req.Msg.ClientSecret != ""
-	if secretChanged {
+	secretCleared := req.Msg.ClientId == "" && secret != ""
+	if req.Msg.ClientId == "" {
+		// Dropping the browser client also drops its secret. There is no
+		// browser credential left to retain for a CLI-only provider.
+		secret = ""
+	}
+	secretProvided := req.Msg.ClientSecret != ""
+	secretChanged := secretCleared || secretProvided
+	if secretProvided {
 		secret, err = h.kek.EncryptWithContext(req.Msg.ClientSecret, crypto.RowAAD(before.ID, crypto.PurposeIdPClientSecret))
 		if err != nil {
 			return nil, internalError(ctx, "failed to protect the client secret")
@@ -232,6 +251,7 @@ func (h *Handlers) UpdateIdentityProvider(ctx context.Context, req *connect.Requ
 				Name:                  req.Msg.Name,
 				Enabled:               req.Msg.Enabled,
 				ClientID:              req.Msg.ClientId,
+				CliClientID:           req.Msg.CliClientId,
 				ClientSecretEncrypted: secret,
 				IssuerUrl:             req.Msg.IssuerUrl,
 				AuthorizationUrl:      req.Msg.AuthorizationUrl,
@@ -249,7 +269,7 @@ func (h *Handlers) UpdateIdentityProvider(ctx context.Context, req *connect.Requ
 			if err != nil {
 				return err
 			}
-			changed := []string{"name", "enabled", "client_id", "issuer_url", "auto_create_users", "auto_link_by_email", "trust_email_assertions"}
+			changed := []string{"name", "enabled", "client_id", "cli_client_id", "issuer_url", "auto_create_users", "auto_link_by_email", "trust_email_assertions"}
 			effect := store.AuditEffect{
 				ResourceType:  "identity_provider",
 				ResourceID:    before.ID,
@@ -261,6 +281,8 @@ func (h *Handlers) UpdateIdentityProvider(ctx context.Context, req *connect.Requ
 			}
 			if secretChanged {
 				effect.ChangedFields = append(changed, "client_secret_encrypted")
+			}
+			if secretProvided {
 				effect.EvidenceKind = "idp_client_secret_sha256"
 				effect.EvidenceFingerprint = fingerprint(req.Msg.ClientSecret)
 			}
@@ -274,6 +296,18 @@ func (h *Handlers) UpdateIdentityProvider(ctx context.Context, req *connect.Requ
 		return nil, internalError(ctx, "failed to update identity provider")
 	}
 	return connect.NewResponse(&pmv1.UpdateIdentityProviderResponse{Provider: h.providerToProto(updated)}), nil
+}
+
+func validateProviderClients(ctx context.Context, browserClientID, browserSecret, cliClientID string) error {
+	if browserClientID == "" && cliClientID == "" {
+		return rpcError(ctx, ErrValidationFailed, connect.CodeInvalidArgument,
+			"a browser or CLI client_id is required")
+	}
+	if browserSecret != "" && browserClientID == "" {
+		return rpcError(ctx, ErrValidationFailed, connect.CodeInvalidArgument,
+			"client_secret requires a browser client_id")
+	}
+	return nil
 }
 
 // DeleteIdentityProvider retires a provider.

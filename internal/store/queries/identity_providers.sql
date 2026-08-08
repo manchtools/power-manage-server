@@ -5,7 +5,7 @@
 -- name: InsertIdentityProvider :one
 INSERT INTO identity_providers (
     id, name, slug, provider_type, enabled,
-    client_id, client_secret_encrypted,
+    client_id, cli_client_id, client_secret_encrypted,
     issuer_url, authorization_url, token_url, userinfo_url,
     scopes, auto_create_users, auto_link_by_email, trust_email_assertions,
     default_role_id, group_claim, group_mapping,
@@ -13,7 +13,7 @@ INSERT INTO identity_providers (
 )
 VALUES (
     ?, ?, ?, ?, ?,
-    ?, ?,
+    ?, ?, ?,
     ?, ?, ?, ?,
     ?, ?, ?, ?,
     ?, ?, ?,
@@ -46,6 +46,7 @@ UPDATE identity_providers
 SET name = ?,
     enabled = ?,
     client_id = ?,
+    cli_client_id = ?,
     client_secret_encrypted = ?,
     issuer_url = ?,
     authorization_url = ?,

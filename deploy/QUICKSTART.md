@@ -82,7 +82,7 @@ metadata remain available without recording query-string credentials.
 Run `docker compose up -d --wait`, then inspect the result with
 `docker compose ps`.
 
-<!-- docref: begin src=cmd/control/bootstrap_admin.go#runBootstrapAdmin:aa979b40,internal/identity/bootstrap.go#Bootstrapper.setupURL:417b204e -->
+<!-- docref: begin src=cmd/control/bootstrap_admin.go#runBootstrapAdmin:fd19e1f2,internal/identity/bootstrap.go#Bootstrapper.setupURL:417b204e -->
 Create a host-authorized, single-use administrator setup URL:
 
 Run `docker compose exec control control bootstrap-admin`.

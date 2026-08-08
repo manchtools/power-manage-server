@@ -142,6 +142,7 @@ CREATE TABLE identity_providers (
     provider_type           text NOT NULL DEFAULT 'oidc',
     enabled                 boolean NOT NULL DEFAULT true,
     client_id               text NOT NULL,
+    cli_client_id           text NOT NULL DEFAULT '',
     client_secret_encrypted text NOT NULL DEFAULT '',
     issuer_url              text NOT NULL,
     authorization_url       text NOT NULL DEFAULT '',
@@ -202,6 +203,7 @@ CREATE UNIQUE INDEX idx_scim_group_mapping_provider_scim
 CREATE TABLE auth_states (
     state         text PRIMARY KEY,
     provider_id   text NOT NULL REFERENCES identity_providers(id) ON DELETE CASCADE,
+    flow_kind     text NOT NULL DEFAULT 'browser' CHECK (flow_kind IN ('browser', 'cli')),
     nonce         text NOT NULL DEFAULT '',
     code_verifier text NOT NULL DEFAULT '',
     redirect_uri  text NOT NULL DEFAULT '',
