@@ -9,12 +9,12 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/go-playground/validator/v10 v10.30.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/manchtools/power-manage-sdk v0.5.4-0.20260809083716-5f23bc6d3400
+	github.com/manchtools/power-manage-sdk v0.5.4
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/crypto v0.52.0
-	golang.org/x/net v0.55.0
+	golang.org/x/crypto v0.53.0
+	golang.org/x/net v0.56.0
 	golang.org/x/oauth2 v0.35.0
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.55.0
@@ -46,7 +46,7 @@ require (
 
 // The SDK import path differs from the actual GitHub repo URL
 // (monorepo-style import path, polyrepo actual layout). Map it here
-// so every `go build` uses a specific, pinned SDK commit rather than
+// so every `go build` uses a specific, pinned SDK version rather than
 // whatever happens to be in a local ../sdk checkout. Developers who
 // want to iterate against a local SDK override this with a per-dev
 // go.work at their workspace root — see server/README.md for setup.
