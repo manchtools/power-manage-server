@@ -398,9 +398,8 @@ func validateActionSafety(params proto.Message) error {
 				continue
 			}
 			if !strings.HasPrefix(strings.ToLower(arch.BinaryUrl), "https://") ||
-				(arch.ChecksumUrl == "" && arch.ExpectedSha256 == "") ||
-				(arch.ChecksumUrl != "" && !strings.HasPrefix(strings.ToLower(arch.ChecksumUrl), "https://")) ||
-				(arch.ExpectedSha256 != "" && !isLowerHex64(arch.ExpectedSha256)) {
+				arch.ChecksumUrl == "" ||
+				!strings.HasPrefix(strings.ToLower(arch.ChecksumUrl), "https://") {
 				return fmt.Errorf("%w: unsafe agent update source", ErrInvalidInput)
 			}
 		}
