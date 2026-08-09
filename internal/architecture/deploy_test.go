@@ -84,6 +84,29 @@ func TestDeploymentIsTheTwoServiceTarget(t *testing.T) {
 	}
 }
 
+func TestReleaseBuildsEachContainerForItsTargetPlatform(t *testing.T) {
+	root := repositoryRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(raw)
+	start := strings.Index(workflow, "  containers:\n")
+	end := strings.Index(workflow, "\n  smoke:\n")
+	if start < 0 || end <= start {
+		t.Fatal("release workflow containers job not found")
+	}
+	containers := workflow[start:end]
+	for _, required := range []string{
+		"docker/setup-qemu-action@v3",
+		`--platform "linux/${{ matrix.arch }}"`,
+	} {
+		if !strings.Contains(containers, required) {
+			t.Errorf("release containers job is missing %q", required)
+		}
+	}
+}
+
 func repositoryRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)

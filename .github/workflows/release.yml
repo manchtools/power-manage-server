@@ -52,6 +52,10 @@ jobs:
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v5
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.arch != 'amd64'
+        with:
+          platforms: ${{ matrix.arch }}
       - uses: actions/download-artifact@v5
         with:
           name: control-${{ matrix.arch }}
@@ -64,7 +68,7 @@ jobs:
       - name: Build and push control image
         run: |
           chmod +x dist/control-linux-${{ matrix.arch }}
-          docker build --provenance=false -f deploy/Containerfile.control \
+          docker build --platform "linux/${{ matrix.arch }}" --provenance=false -f deploy/Containerfile.control \
             --build-arg BINARY=dist/control-linux-${{ matrix.arch }} \
             -t ghcr.io/manchtools/power-manage-control:${GITHUB_REF_NAME#v}-${{ matrix.arch }} .
           docker push ghcr.io/manchtools/power-manage-control:${GITHUB_REF_NAME#v}-${{ matrix.arch }}
