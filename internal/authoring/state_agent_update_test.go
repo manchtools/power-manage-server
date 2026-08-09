@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// TestValidateActionSafetyRequiresSignedAgentUpdateManifest pins fail-closed source validation.
 func TestValidateActionSafetyRequiresSignedAgentUpdateManifest(t *testing.T) {
 	t.Parallel()
 	validBinaryURL := "https://releases.example/power-manage-agent-linux-amd64"
