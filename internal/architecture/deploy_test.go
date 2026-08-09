@@ -99,6 +99,8 @@ func TestReleaseBuildsEachContainerForItsTargetPlatform(t *testing.T) {
 	containers := workflow[start:end]
 	for _, required := range []string{
 		"docker/setup-qemu-action@v3",
+		"if: matrix.arch != 'amd64'",
+		"platforms: ${{ matrix.arch }}",
 		`--platform "linux/${{ matrix.arch }}"`,
 	} {
 		if !strings.Contains(containers, required) {
