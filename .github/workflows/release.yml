@@ -13,22 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Resolve SDK ref
-        id: sdk
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if git ls-remote --tags https://github.com/MANCHTOOLS/power-manage-sdk.git "refs/tags/${GITHUB_REF_NAME}" | grep -q .; then
-            echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=main" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/checkout@v5
-        with:
-          repository: MANCHTOOLS/power-manage-sdk
-          ref: ${{ steps.sdk.outputs.ref }}
-          path: _sdk
-      - run: go mod edit -replace github.com/manchtools/power-manage-sdk=./_sdk
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -43,22 +27,6 @@ jobs:
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v5
-      - name: Resolve SDK ref
-        id: sdk
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if git ls-remote --tags https://github.com/MANCHTOOLS/power-manage-sdk.git "refs/tags/${GITHUB_REF_NAME}" | grep -q .; then
-            echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=main" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/checkout@v5
-        with:
-          repository: MANCHTOOLS/power-manage-sdk
-          ref: ${{ steps.sdk.outputs.ref }}
-          path: _sdk
-      - run: go mod edit -replace github.com/manchtools/power-manage-sdk=./_sdk
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
