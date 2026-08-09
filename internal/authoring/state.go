@@ -16,6 +16,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	sdk "github.com/manchtools/power-manage-sdk"
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
@@ -397,9 +398,7 @@ func validateActionSafety(params proto.Message) error {
 			if arch == nil {
 				continue
 			}
-			if !strings.HasPrefix(strings.ToLower(arch.BinaryUrl), "https://") ||
-				arch.ChecksumUrl == "" ||
-				!strings.HasPrefix(strings.ToLower(arch.ChecksumUrl), "https://") {
+			if sdk.ValidateHTTPSURL(arch.BinaryUrl) != nil || sdk.ValidateHTTPSURL(arch.ChecksumUrl) != nil {
 				return fmt.Errorf("%w: unsafe agent update source", ErrInvalidInput)
 			}
 		}

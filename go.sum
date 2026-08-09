@@ -46,6 +46,8 @@ github.com/manchtools/power-manage-sdk v0.5.4-0.20260808183110-41889787d778 h1:z
 github.com/manchtools/power-manage-sdk v0.5.4-0.20260808183110-41889787d778/go.mod h1:kW40GYv7KS/CQRUCW8hyX06AOb/FtG6PF6cGXUu3/IQ=
 github.com/manchtools/power-manage-sdk v0.5.4-0.20260809075732-1f98c6d6df19 h1:xLxW20riAwTSUFRGgLTGYvsE24CqRejjyHibRjM2114=
 github.com/manchtools/power-manage-sdk v0.5.4-0.20260809075732-1f98c6d6df19/go.mod h1:kW40GYv7KS/CQRUCW8hyX06AOb/FtG6PF6cGXUu3/IQ=
+github.com/manchtools/power-manage-sdk v0.5.4-0.20260809081706-6e8b0d70cb7c h1:5YyazeQUsxwKUcv6DTNG7IWlOU2FfyMo5W0lWEV7KvQ=
+github.com/manchtools/power-manage-sdk v0.5.4-0.20260809081706-6e8b0d70cb7c/go.mod h1:kW40GYv7KS/CQRUCW8hyX06AOb/FtG6PF6cGXUu3/IQ=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=

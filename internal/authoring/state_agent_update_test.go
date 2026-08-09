@@ -23,10 +23,12 @@ func TestValidateActionSafetyRequiresSignedAgentUpdateManifest(t *testing.T) {
 		{name: "valid", arch: &pmv1.AgentUpdateArch{BinaryUrl: validBinaryURL, ChecksumUrl: validChecksumURL}, ok: true},
 		{name: "missing checksum URL", arch: &pmv1.AgentUpdateArch{BinaryUrl: validBinaryURL}},
 		{name: "non-HTTPS checksum URL", arch: &pmv1.AgentUpdateArch{BinaryUrl: validBinaryURL, ChecksumUrl: "http://releases.example/SHA256SUMS"}},
+		{name: "hostless binary URL", arch: &pmv1.AgentUpdateArch{BinaryUrl: "https://", ChecksumUrl: validChecksumURL}},
+		{name: "hostless checksum URL", arch: &pmv1.AgentUpdateArch{BinaryUrl: validBinaryURL, ChecksumUrl: "https://"}},
 	}
 
 	// Field 3 was the disposable pre-alpha expected_sha256 bypass. Old binary
-	// protobuf input must not make an update valid after that field is reserved.
+	// protobuf input must not make an update valid after that field is removed.
 	legacyWire := protowire.AppendTag(nil, 1, protowire.BytesType)
 	legacyWire = protowire.AppendString(legacyWire, validBinaryURL)
 	legacyWire = protowire.AppendTag(legacyWire, 3, protowire.BytesType)
