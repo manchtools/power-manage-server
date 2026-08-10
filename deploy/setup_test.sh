@@ -146,6 +146,60 @@ assert_archive_isolated() {
     }
 }
 
+# The operator authors config/traefik-dns.env by hand, so the fixture writes it
+# with an explicit mode. setup.sh must judge its presence, its emptiness, and
+# its permissions without ever reading a value out of it.
+write_dns_credentials() {
+    local directory="$1" mode="$2" contents="${3-}"
+    mkdir -p "$directory/config"
+    printf '%s' "$contents" > "$directory/config/traefik-dns.env"
+    chmod "$mode" "$directory/config/traefik-dns.env"
+}
+
+# The ACME-challenge cases need a fixture each, and most also need .env lines
+# new_fixture does not write, so they allocate under one root the trap already
+# removes instead of extending the named list of fixtures.
+challenge_fixture() {
+    local directory
+    directory="$(mktemp -d "$CHALLENGE_ROOT/XXXXXX")"
+    new_fixture "$directory" manage.example.test agents.example.test
+    printf '%s\n' "$directory"
+}
+
+# A refused challenge configuration must be refused before setup.sh generates
+# anything. An operator who corrects the variable and re-runs must not already
+# own a CA, a control certificate, or secrets produced by the rejected attempt.
+assert_challenge_refused() {
+    local directory="$1" expected="$2" output artifact
+    if output="$(run_setup "$directory" 2>&1)"; then
+        printf 'setup.sh accepted an unusable ACME challenge configuration\n' >&2
+        return 1
+    fi
+    grep -Fq -- "$expected" <<<"$output" || {
+        printf 'refusal does not name the problem (%s): %s\n' "$expected" "$output" >&2
+        return 1
+    }
+    for artifact in certs/ca.key certs/ca.crt certs/control.key certs/control.crt \
+        secrets/encryption.key secrets/sealing.key secrets/session-signing.pem \
+        config/control.env config/traefik-acme.env; do
+        [[ ! -e "$directory/$artifact" ]] || {
+            printf 'refused run left %s behind\n' "$directory/$artifact" >&2
+            return 1
+        }
+    done
+}
+
+# Compose merges every env_file into the service environment, so the resolved
+# configuration is where the wiring can be asserted: a rendered file nothing
+# references would satisfy a file-content check and reach Traefik never.
+compose_service_environment() {
+    local directory="$1"
+    docker compose -p pm-challenge-test -f "$directory/compose.yml" config --format json \
+        | python3 -c 'import json, sys
+service = json.load(sys.stdin)["services"]["traefik"]["environment"]
+print("\n".join(f"{name}={value}" for name, value in service.items()))'
+}
+
 run_setup() {
     local directory="$1"
     (
@@ -306,6 +360,162 @@ test_ca_rotation_preserves_old_and_active_trust() {
         "$directory/certs/ca.crt" >/dev/null
 }
 
+# The challenge type is chosen per deployment and comes from the environment. A
+# challenge left in the static file would win for every deployment including
+# the dns01 ones, and the DNS provider would never be asked.
+test_static_traefik_config_names_no_challenge() {
+    if grep -Eq 'httpChallenge|dnsChallenge' "$DEPLOY_DIR/traefik/traefik.yml"; then
+        printf 'traefik.yml still pins an ACME challenge type\n' >&2
+        return 1
+    fi
+    grep -Fq 'storage: /letsencrypt/acme.json' "$DEPLOY_DIR/traefik/traefik.yml"
+}
+
+test_default_challenge_renders_http01() {
+    local directory acme credentials
+    directory="$(challenge_fixture)"
+    run_setup "$directory" >/dev/null
+
+    acme="$directory/config/traefik-acme.env"
+    credentials="$directory/config/traefik-dns.env"
+    [[ "$(stat -c '%a' "$acme")" == 600 ]]
+    assert_env_line "$acme" 'TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_HTTPCHALLENGE_ENTRYPOINT=web'
+    # Exactly one setting: an http01 deployment must not also carry a
+    # half-configured DNS challenge Traefik would try alongside it.
+    [[ "$(wc -l < "$acme")" == 1 ]]
+    # compose.yml references the credentials file unconditionally and Compose
+    # refuses to read a configuration whose env_file is missing, so http01 gets
+    # an empty one rather than no file at all.
+    [[ -f "$credentials" && ! -s "$credentials" ]]
+    [[ "$(stat -c '%a' "$credentials")" == 600 ]]
+}
+
+test_dns01_renders_provider_and_public_resolvers() {
+    local directory acme
+    directory="$(challenge_fixture)"
+    printf 'ACME_CHALLENGE=dns01\nACME_DNS_PROVIDER=hetzner\n' >> "$directory/.env"
+    write_dns_credentials "$directory" 600 $'HETZNER_API_KEY=example-token\n'
+    run_setup "$directory" >/dev/null
+
+    acme="$directory/config/traefik-acme.env"
+    assert_env_line "$acme" 'TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_PROVIDER=hetzner'
+    # Pinned public resolvers: a homelab's split-horizon DNS answers the
+    # propagation check from the internal view, where the challenge record does
+    # not exist, and the order then never completes.
+    assert_env_line "$acme" 'TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_RESOLVERS=1.1.1.1:53,9.9.9.9:53'
+    [[ "$(wc -l < "$acme")" == 2 ]]
+    [[ "$(stat -c '%a' "$acme")" == 600 ]]
+    if grep -q HTTPCHALLENGE "$acme"; then
+        printf 'dns01 rendered the http01 entrypoint as well\n' >&2
+        return 1
+    fi
+    # The operator's file is consulted for its existence, size, and mode only,
+    # and is handed to Traefik exactly as written.
+    [[ "$(cat "$directory/config/traefik-dns.env")" == 'HETZNER_API_KEY=example-token' ]]
+}
+
+test_dns01_without_provider_fails() {
+    local directory
+    directory="$(challenge_fixture)"
+    printf 'ACME_CHALLENGE=dns01\n' >> "$directory/.env"
+    write_dns_credentials "$directory" 600 $'HETZNER_API_KEY=example-token\n'
+    assert_challenge_refused "$directory" 'ACME_DNS_PROVIDER is required'
+}
+
+test_dns01_without_credentials_fails() {
+    local directory
+    directory="$(challenge_fixture)"
+    printf 'ACME_CHALLENGE=dns01\nACME_DNS_PROVIDER=hetzner\n' >> "$directory/.env"
+    # No credentials file at all. The empty one setup.sh creates for http01
+    # must never stand in for provider credentials, or the deployment would
+    # start and fail its first certificate order instead of failing here.
+    assert_challenge_refused "$directory" 'traefik-dns.env does not exist'
+}
+
+test_dns01_with_empty_credentials_fails() {
+    local directory
+    directory="$(challenge_fixture)"
+    printf 'ACME_CHALLENGE=dns01\nACME_DNS_PROVIDER=hetzner\n' >> "$directory/.env"
+    write_dns_credentials "$directory" 600 ''
+    assert_challenge_refused "$directory" 'traefik-dns.env is empty'
+}
+
+test_dns01_with_readable_credentials_fails() {
+    local directory
+    directory="$(challenge_fixture)"
+    printf 'ACME_CHALLENGE=dns01\nACME_DNS_PROVIDER=hetzner\n' >> "$directory/.env"
+    write_dns_credentials "$directory" 644 $'HETZNER_API_KEY=example-token\n'
+    # Refused, not repaired: a provider credential every local account could
+    # read is one the operator has to rotate, not one a silent chmod fixes.
+    assert_challenge_refused "$directory" 'traefik-dns.env must not be group/world accessible'
+}
+
+test_unknown_challenge_fails() {
+    local directory
+    directory="$(challenge_fixture)"
+    printf 'ACME_CHALLENGE=bogus\n' >> "$directory/.env"
+    assert_challenge_refused "$directory" 'ACME_CHALLENGE must be http01 or dns01'
+}
+
+# Nothing setup.sh prints or renders may carry a provider credential; only the
+# operator's own file holds one.
+test_provider_credentials_never_leave_their_file() {
+    local directory output leaked
+    directory="$(challenge_fixture)"
+    printf 'ACME_CHALLENGE=dns01\nACME_DNS_PROVIDER=hetzner\n' >> "$directory/.env"
+    write_dns_credentials "$directory" 600 $'HETZNER_API_KEY=CANARY_SECRET_VALUE_9X7\n'
+
+    output="$(run_setup "$directory" 2>&1)"
+    # The run has to have taken the real dns01 path, or the canary below proves
+    # only that a credential nothing read was not printed.
+    assert_env_line "$directory/config/traefik-acme.env" \
+        'TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_PROVIDER=hetzner'
+    if grep -Fq CANARY_SECRET_VALUE_9X7 <<<"$output"; then
+        printf 'setup.sh printed the provider credential\n' >&2
+        return 1
+    fi
+    leaked="$(grep -rlF CANARY_SECRET_VALUE_9X7 "$directory" \
+        | grep -vFx "$directory/config/traefik-dns.env" || true)"
+    [[ -z "$leaked" ]] || {
+        printf 'provider credential copied into: %s\n' "$leaked" >&2
+        return 1
+    }
+}
+
+# This one reports its own verdict, because a skipped compose validation must
+# not be printed as a pass.
+test_compose_configuration_valid_in_both_modes() {
+    local directory
+    if ! docker compose version >/dev/null 2>&1; then
+        printf 'SKIP compose configuration: the Docker Compose plugin is unavailable\n'
+        return 0
+    fi
+
+    directory="$(challenge_fixture)"
+    cp "$DEPLOY_DIR/compose.yml" "$directory/compose.yml"
+    run_setup "$directory" >/dev/null
+    docker compose -p pm-challenge-test -f "$directory/compose.yml" config --quiet
+    compose_service_environment "$directory" > "$directory/resolved.env"
+    assert_env_line "$directory/resolved.env" \
+        'TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_HTTPCHALLENGE_ENTRYPOINT=web'
+
+    directory="$(challenge_fixture)"
+    cp "$DEPLOY_DIR/compose.yml" "$directory/compose.yml"
+    printf 'ACME_CHALLENGE=dns01\nACME_DNS_PROVIDER=hetzner\n' >> "$directory/.env"
+    write_dns_credentials "$directory" 600 $'HETZNER_API_KEY=example-token\n'
+    run_setup "$directory" >/dev/null
+    docker compose -p pm-challenge-test -f "$directory/compose.yml" config --quiet
+    compose_service_environment "$directory" > "$directory/resolved.env"
+    assert_env_line "$directory/resolved.env" \
+        'TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_PROVIDER=hetzner'
+    assert_env_line "$directory/resolved.env" \
+        'TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_RESOLVERS=1.1.1.1:53,9.9.9.9:53'
+    # The credentials are Traefik's to read, not setup.sh's: Compose carries
+    # them from the operator's file into the container.
+    assert_env_line "$directory/resolved.env" 'HETZNER_API_KEY=example-token'
+    printf 'PASS compose configuration valid in both challenge modes\n'
+}
+
 # The archive storage every fixture is given lives here, on a filesystem that
 # is not the one holding the fixtures themselves.
 ARCHIVE_ROOT="$(mktemp -d /dev/shm/pm-setup-test-XXXXXX)"
@@ -316,7 +526,8 @@ fixture_four="$(mktemp -d)"
 fixture_five="$(mktemp -d)"
 fixture_six="$(mktemp -d)"
 fixture_seven="$(mktemp -d)"
-trap 'rm -rf "$ARCHIVE_ROOT" "$fixture_one" "$fixture_two" "$fixture_three" "$fixture_four" "$fixture_five" "$fixture_six" "$fixture_seven"' EXIT
+CHALLENGE_ROOT="$(mktemp -d)"
+trap 'rm -rf "$ARCHIVE_ROOT" "$fixture_one" "$fixture_two" "$fixture_three" "$fixture_four" "$fixture_five" "$fixture_six" "$fixture_seven" "$CHALLENGE_ROOT"' EXIT
 
 test_secure_idempotent_setup "$fixture_one"
 printf 'PASS secure and idempotent setup\n'
@@ -332,3 +543,22 @@ test_backend_name_missing_fails "$fixture_six"
 printf 'PASS internal backend name required\n'
 test_ca_rotation_preserves_old_and_active_trust "$fixture_seven"
 printf 'PASS CA rotation trust bundle preserved\n'
+test_static_traefik_config_names_no_challenge
+printf 'PASS static Traefik configuration pins no challenge type\n'
+test_default_challenge_renders_http01
+printf 'PASS default ACME challenge renders http01\n'
+test_dns01_renders_provider_and_public_resolvers
+printf 'PASS dns01 renders the provider and public resolvers\n'
+test_dns01_without_provider_fails
+printf 'PASS dns01 without a provider rejected\n'
+test_dns01_without_credentials_fails
+printf 'PASS dns01 without a credentials file rejected\n'
+test_dns01_with_empty_credentials_fails
+printf 'PASS dns01 with empty credentials rejected\n'
+test_dns01_with_readable_credentials_fails
+printf 'PASS dns01 with group/world readable credentials rejected\n'
+test_unknown_challenge_fails
+printf 'PASS unknown ACME challenge rejected\n'
+test_provider_credentials_never_leave_their_file
+printf 'PASS provider credentials stay in their file\n'
+test_compose_configuration_valid_in_both_modes

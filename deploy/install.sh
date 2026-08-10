@@ -17,6 +17,15 @@ docker compose version >/dev/null 2>&1 || fail "the Docker Compose plugin is req
 [[ -n "${AGENT_DOMAIN:-}" ]] || fail "set AGENT_DOMAIN"
 [[ -n "${ACME_EMAIL:-}" ]] || fail "set ACME_EMAIL"
 
+# The same rules setup.sh applies, applied before anything is downloaded. dns01
+# additionally needs config/traefik-dns.env, which only exists once the tree is
+# unpacked, so setup.sh below is where that one is enforced.
+ACME_CHALLENGE="${ACME_CHALLENGE:-http01}"
+[[ "$ACME_CHALLENGE" == http01 || "$ACME_CHALLENGE" == dns01 ]] \
+    || fail "ACME_CHALLENGE must be http01 or dns01"
+[[ "$ACME_CHALLENGE" != dns01 || -n "${ACME_DNS_PROVIDER:-}" ]] \
+    || fail "ACME_DNS_PROVIDER is required when ACME_CHALLENGE=dns01"
+
 # setup.sh checks the audit archive's filesystem before it generates any key
 # material, so an install that stopped there leaves the directory tree and
 # nothing in it. Refusing that tree would strand the operator with a half-made
@@ -58,6 +67,8 @@ cat > "$INSTALL_DIR/.env" <<EOF
 CONTROL_DOMAIN=$CONTROL_DOMAIN
 AGENT_DOMAIN=$AGENT_DOMAIN
 ACME_EMAIL=$ACME_EMAIL
+ACME_CHALLENGE=$ACME_CHALLENGE
+ACME_DNS_PROVIDER=${ACME_DNS_PROVIDER:-}
 IMAGE_TAG=$image_tag
 EOF
 chmod 600 "$INSTALL_DIR/.env"

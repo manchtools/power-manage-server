@@ -4,6 +4,12 @@ services:
     image: docker.io/traefik:v3.7.1
     container_name: pm-traefik
     restart: unless-stopped
+    # traefik-acme.env carries the ACME challenge setup.sh rendered from
+    # ACME_CHALLENGE; traefik-dns.env carries the DNS provider credentials the
+    # operator wrote, and is empty for an http01 deployment.
+    env_file:
+      - ./config/traefik-acme.env
+      - ./config/traefik-dns.env
     environment:
       CONTROL_DOMAIN: ${CONTROL_DOMAIN:?CONTROL_DOMAIN is required}
       AGENT_DOMAIN: ${AGENT_DOMAIN:?AGENT_DOMAIN is required}

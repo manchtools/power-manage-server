@@ -1,10 +1,11 @@
 # Power Manage server quickstart
 
-<!-- docref: begin src=deploy/compose.yml#@deployment-services:1f0b2637 -->
+<!-- docref: begin src=deploy/compose.yml#@deployment-services:99b7e2db -->
 The stack has exactly two services: Traefik and one control process with an
 embedded SQLite database. Compose gives control no arguments and passes it the
-rendered `config/control.env` as the container's environment file. The
-authoritative system design is
+rendered `config/control.env` as the container's environment file, and passes
+Traefik `config/traefik-acme.env` and `config/traefik-dns.env` the same way.
+The authoritative system design is
 `../../DESIGN_2026_07_31/00_TARGET_DESIGN.md`.
 <!-- docref: end -->
 
@@ -12,9 +13,9 @@ authoritative system design is
 
 Copy `.env.example` to `.env`, set the three required public values
 (`CONTROL_DOMAIN`, `AGENT_DOMAIN`, and `ACME_EMAIL`), then give the audit
-archive its own storage and run `./setup.sh`. `.env` carries only those values
-and `IMAGE_TAG`; it is Compose's own environment file, not control's
-configuration.
+archive its own storage and run `./setup.sh`. `.env` carries only those values,
+the optional ACME challenge selection below, and `IMAGE_TAG`; it is Compose's
+own environment file, not control's configuration.
 
 ### Storage for the audit archive
 
@@ -44,21 +45,69 @@ is never rendered in the first place.
 Provide the archive storage under the install directory it created, then run
 `./setup.sh && ./deploy.sh` there.
 
+### Certificates without a reachable port 80
+
+Let's Encrypt proves you own `CONTROL_DOMAIN` and `AGENT_DOMAIN` before it
+issues anything. By default it does so over HTTP, which requires this host to
+be reachable from the internet on port 80. Behind CGNAT, on a residential line
+where port 80 is blocked, or on a private network, it is not — set the ACME
+challenge to DNS instead and Traefik proves ownership by writing a record into
+your DNS zone:
+
+```
+ACME_CHALLENGE=dns01
+ACME_DNS_PROVIDER=hetzner
+```
+
+`ACME_DNS_PROVIDER` is a [lego provider
+code](https://go-acme.github.io/lego/dns/). The zone has to be served by that
+provider, not merely registered there: Hetzner DNS answers for the domain only
+once its nameservers are the ones delegated to it. Write that provider's
+credentials into `config/traefik-dns.env`, one `KEY=VALUE` per line — for
+Hetzner DNS, `HETZNER_API_KEY`:
+
+```bash
+mkdir -p config && install -m 600 /dev/null config/traefik-dns.env
+printf 'HETZNER_API_KEY=%s\n' "$key" >> config/traefik-dns.env
+```
+
+Traefik reads that file itself. `setup.sh` never copies or prints its contents,
+and refuses a `dns01` run when the file is missing, empty, or readable by other
+accounts — before it generates any key material, so a corrected run starts from
+nothing. It renders the challenge selection into `config/traefik-acme.env` and
+pins the propagation check to public resolvers, because a split-horizon
+resolver at home answers from the internal view of the zone, where the
+challenge record does not exist, and the order would never complete.
+
+Set `ACME_CHALLENGE` and `ACME_DNS_PROVIDER` in `install.sh`'s environment and
+it writes them into the `.env` it generates, but the credentials file can only
+be written after it has unpacked the tree, so it stops there as it does for the
+archive storage. Write the file into the install directory it created, then run
+`./setup.sh && ./deploy.sh` there rather than `install.sh` again.
+
+Leave both unset for the default HTTP challenge; port 80 also carries the
+redirect to HTTPS either way, so keep it published.
+
 Control is configured entirely by `POWER_MANAGE_`-prefixed environment
 variables and reads no configuration file. `setup.sh` renders every one of them
 into `config/control.env`, and that file is where ordinary settings such as the
 log level or the retention windows are edited. `setup.sh` re-renders it on
 every run, including through `./deploy.sh`, so re-apply local edits afterwards.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:6bc71f80 -->
+<!-- docref: begin src=deploy/setup.sh#@generated-material:a69f9853 -->
 `setup.sh` creates the internal Ed25519 CA, the control certificate, the
 encryption, session and sealing keys, and `config/control.env` with a 90-day
 audit-retention policy and the SQLite `POWER_MANAGE_DATABASE_PATH`. It first
 refuses, before generating any key material, when `data/backups` shares a
 filesystem with `data/control`, because control refuses to start on such a
-configuration. Existing complete keypairs are retained, which permits a
+configuration, and equally when the chosen ACME challenge cannot work — an
+unknown `ACME_CHALLENGE`, `dns01` without an `ACME_DNS_PROVIDER`, or
+`config/traefik-dns.env` missing, empty, or readable by other accounts. It then
+renders the challenge into `config/traefik-acme.env`, and creates an empty
+`config/traefik-dns.env` for an `http01` deployment so Compose always has the
+file it references. Existing complete keypairs are retained, which permits a
 pre-provisioned CA. Partial or unusable material fails closed. Generated secret
-files and `config/control.env` are mode 0600, verified before the script
+files and every file under `config/` are mode 0600, verified before the script
 reports success, and no secret value is ever printed.
 <!-- docref: end -->
 

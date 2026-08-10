@@ -34,6 +34,11 @@ validate_environment() {
     [[ "$CONTROL_DOMAIN" != manage.example.com && "$AGENT_DOMAIN" != agents.example.com ]] \
         || fail "replace the example hostnames in .env"
     [[ "$ACME_EMAIL" != admin@example.com ]] || fail "replace the example ACME email in .env"
+    ACME_CHALLENGE="${ACME_CHALLENGE:-http01}"
+    [[ "$ACME_CHALLENGE" == http01 || "$ACME_CHALLENGE" == dns01 ]] \
+        || fail "ACME_CHALLENGE must be http01 or dns01"
+    [[ "$ACME_CHALLENGE" != dns01 || -n "${ACME_DNS_PROVIDER:-}" ]] \
+        || fail "ACME_DNS_PROVIDER is required when ACME_CHALLENGE=dns01"
 }
 
 require_pair() {
@@ -102,6 +107,52 @@ validate_key_pair() {
 }
 
 # docref: begin generated-material
+# Which ACME challenge Traefik runs is a per-deployment choice, so traefik.yml
+# names none and this renders the chosen one into config/traefik-acme.env as an
+# environment overlay. config/traefik-dns.env holds the provider credentials,
+# which Traefik reads for itself: nothing here ever reads a value out of it,
+# only whether it exists, is non-empty, and is unreadable to other accounts.
+#
+# It runs before any key material is generated, so an operator who mistyped the
+# provider or left the credentials world-readable gets the message and nothing
+# else.
+ensure_traefik_acme_config() {
+    local credentials="$CONFIG_DIR/traefik-dns.env"
+    if [[ "$ACME_CHALLENGE" == dns01 ]]; then
+        [[ -f "$credentials" ]] || fail "$(printf '%s\n' \
+            "$credentials does not exist; ACME_CHALLENGE=dns01 needs the credentials for" \
+            "ACME_DNS_PROVIDER=${ACME_DNS_PROVIDER}, one KEY=VALUE per line, readable by nobody else:" \
+            "" \
+            "    install -m 600 /dev/null $credentials" \
+            "" \
+            "then write the provider's variable into it - for Hetzner DNS that is HETZNER_API_KEY.")"
+        [[ -s "$credentials" ]] \
+            || fail "$credentials is empty; write the ACME_DNS_PROVIDER credentials into it, one KEY=VALUE per line"
+        # Refused, not repaired: a provider credential every local account could
+        # read is one to rotate, and a silent chmod would hide that.
+        [[ "$(stat -c '%a' "$credentials")" =~ ^[0-6]00$ ]] \
+            || fail "$credentials must not be group/world accessible; chmod 600 it and rotate the credentials it holds"
+        # The resolvers are pinned to public DNS on purpose. A homelab's own
+        # resolver answers the propagation check from the internal view of the
+        # zone, where the challenge record does not exist, and the order then
+        # never completes.
+        cat > "$CONFIG_DIR/traefik-acme.env" <<EOF
+TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_PROVIDER=${ACME_DNS_PROVIDER}
+TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_RESOLVERS=1.1.1.1:53,9.9.9.9:53
+EOF
+    else
+        # compose.yml references the credentials file unconditionally and
+        # Compose refuses a configuration whose env_file is missing, so an
+        # http01 deployment gets an empty one rather than no file at all.
+        [[ -f "$credentials" ]] || : > "$credentials"
+        chmod 600 "$credentials"
+        cat > "$CONFIG_DIR/traefik-acme.env" <<'EOF'
+TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_HTTPCHALLENGE_ENTRYPOINT=web
+EOF
+    fi
+    chmod 600 "$CONFIG_DIR/traefik-acme.env"
+}
+
 ensure_ca() {
     if require_pair "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca.key" "certificate authority"; then
         validate_key_pair "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca.key" "certificate authority"
@@ -221,7 +272,10 @@ EOF
 
 validate_permissions() {
     local private
-    for private in "$CERTS_DIR/ca.key" "$CERTS_DIR/control.key" "$SECRETS_DIR"/* "$CONFIG_DIR/control.env"; do
+    # Every rendered environment file, not a named one: control.env, the ACME
+    # overlay, and the operator's provider credentials all carry material no
+    # other account may read.
+    for private in "$CERTS_DIR/ca.key" "$CERTS_DIR/control.key" "$SECRETS_DIR"/* "$CONFIG_DIR"/*.env; do
         [[ "$(stat -c '%a' "$private")" =~ ^[0-6]00$ ]] \
             || fail "$private must not be group/world accessible"
     done
@@ -248,6 +302,7 @@ main() {
     # leaves nothing behind but the empty directory tree the operator has to
     # mount their archive storage onto.
     ensure_archive_isolation
+    ensure_traefik_acme_config
 
     ensure_ca
     ensure_certificates

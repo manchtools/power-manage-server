@@ -37,6 +37,8 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
+      # The challenge type is per deployment, not per image: setup.sh renders it
+      # into config/traefik-acme.env from ACME_CHALLENGE. A challenge pinned
+      # here would win for every deployment, including the dns01 ones that
+      # cannot answer on port 80 in the first place.
       storage: /letsencrypt/acme.json
-      httpChallenge:
-        entryPoint: web
