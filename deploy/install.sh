@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/power-manage}"
-RELEASE_TAG="${RELEASE_TAG:-main}"
+RELEASE_TAG="${RELEASE_TAG:-}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-MANCHTOOLS/power-manage-server}"
 
 fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
@@ -16,6 +16,14 @@ docker compose version >/dev/null 2>&1 || fail "the Docker Compose plugin is req
 [[ -n "${CONTROL_DOMAIN:-}" ]] || fail "set CONTROL_DOMAIN"
 [[ -n "${AGENT_DOMAIN:-}" ]] || fail "set AGENT_DOMAIN"
 [[ -n "${ACME_EMAIL:-}" ]] || fail "set ACME_EMAIL"
+
+# There is deliberately no default. A branch name installs whatever that branch
+# pointed at on the day it ran, which is not an installation anyone can
+# reproduce, attest, or roll back to, so the release has to be named. The
+# branch fallback further down is kept for an operator who names one on
+# purpose; only the silent default is gone.
+[[ -n "$RELEASE_TAG" ]] \
+    || fail "set RELEASE_TAG to the release to install, e.g. RELEASE_TAG=v2026.08.09-rc2"
 
 # The same rules setup.sh applies, applied before anything is downloaded. dns01
 # additionally needs config/traefik-dns.env, which only exists once the tree is

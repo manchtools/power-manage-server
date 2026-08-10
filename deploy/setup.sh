@@ -16,13 +16,37 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
 }
 
+# .env is the Compose environment file, which Compose reads as KEY=VALUE lines
+# and never executes. Neither does this: the file is parsed, not sourced, so a
+# value is data even when it is shaped like a command. Sourcing it would hand
+# every line to bash with whatever privileges setup.sh was started with, and a
+# value carrying a command substitution would run before anything here could
+# judge it.
 load_environment() {
-    [[ -f "$SCRIPT_DIR/.env" ]] || fail "copy .env.example to .env and set the two domains and ACME email"
-    set -a
-    # This is an operator-owned Compose environment file.
-    # shellcheck disable=SC1091
-    source "$SCRIPT_DIR/.env"
-    set +a
+    local file="$SCRIPT_DIR/.env" line trimmed name value number=0
+    [[ -f "$file" ]] || fail "copy .env.example to .env and set the two domains and ACME email"
+    # `|| [[ -n "$line" ]]` so a final line without a trailing newline is read
+    # rather than silently dropped.
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        number=$((number + 1))
+        trimmed="${line#"${line%%[![:space:]]*}"}"
+        [[ -n "$trimmed" ]] || continue
+        [[ "$trimmed" != '#'* ]] || continue
+        [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] \
+            || fail "$file line $number is not a KEY=VALUE assignment: $line"
+        name="${line%%=*}"
+        # Everything after the first `=`, taken literally: no expansion, no
+        # substitution, no unescaping.
+        value="${line#*=}"
+        # Compose strips a surrounding quote pair and bash applies its own
+        # quoting rules, so a quoted value would mean two different things
+        # inside one deployment. Refused rather than guessed at.
+        [[ "$value" != [\"\']* ]] \
+            || fail "$file line $number quotes its value; write $name=value without quotes"
+        # Exported, so the rest of this script and every child process see the
+        # same pairs `set -a` used to produce.
+        export "$name=$value"
+    done < "$file"
 }
 
 validate_environment() {

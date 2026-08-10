@@ -1,6 +1,12 @@
 api:
   dashboard: false
 
+# Answers /ping on Traefik's internal entrypoint, which nothing publishes. It
+# is what `traefik healthcheck --ping` asks, and that is the container
+# healthcheck `docker compose up --wait` waits on: without it the only route
+# into the deployment is reported ready the moment its process starts.
+ping: {}
+
 log:
   level: INFO
 

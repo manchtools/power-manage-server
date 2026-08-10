@@ -22,6 +22,17 @@ services:
       - ./traefik/dynamic:/etc/traefik/dynamic:ro,z
       - ./certs/ca-trust-bundle.crt:/run/certs/ca-trust-bundle.crt:ro,z
       - ./data/traefik:/letsencrypt:z
+    # `docker compose up -d --wait` waits only on services that declare a
+    # healthcheck. Traefik is the only way into the deployment, so without this
+    # the wait returns while every request into it still fails. It asks the
+    # ping endpoint traefik.yml enables, over the internal entrypoint nothing
+    # publishes.
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     networks:
       internal:
         ipv4_address: 172.29.0.2

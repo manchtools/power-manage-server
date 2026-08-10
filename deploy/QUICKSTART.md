@@ -1,6 +1,6 @@
 # Power Manage server quickstart
 
-<!-- docref: begin src=deploy/compose.yml#@deployment-services:99b7e2db -->
+<!-- docref: begin src=deploy/compose.yml#@deployment-services:3fac95e9 -->
 The stack has exactly two services: Traefik and one control process with an
 embedded SQLite database. Compose gives control no arguments and passes it the
 rendered `config/control.env` as the container's environment file, and passes
@@ -43,7 +43,9 @@ is never rendered in the first place.
 
 `install.sh` runs `setup.sh` for you and therefore stops at the same point.
 Provide the archive storage under the install directory it created, then run
-`./setup.sh && ./deploy.sh` there.
+`./setup.sh && ./deploy.sh` there. It has no default release: `RELEASE_TAG`
+must name a release tag such as `v2026.08.09-rc2`, because a branch name
+installs whatever that branch pointed at on the day it ran.
 
 ### Certificates without a reachable port 80
 

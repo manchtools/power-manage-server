@@ -166,10 +166,19 @@ challenge_fixture() {
     printf '%s\n' "$directory"
 }
 
-# A refused challenge configuration must be refused before setup.sh generates
+# The .env parser cases append to the file new_fixture wrote, and likewise need
+# one fixture each.
+env_fixture() {
+    local directory
+    directory="$(mktemp -d "$ENV_ROOT/XXXXXX")"
+    new_fixture "$directory" manage.example.test agents.example.test
+    printf '%s\n' "$directory"
+}
+
+# A configuration setup.sh cannot use must be refused before it generates
 # anything. An operator who corrects the variable and re-runs must not already
 # own a CA, a control certificate, or secrets produced by the rejected attempt.
-assert_challenge_refused() {
+assert_setup_refused() {
     local directory="$1" expected="$2" output artifact
     if output="$(run_setup "$directory" 2>&1)"; then
         printf 'setup.sh accepted an unusable ACME challenge configuration\n' >&2
@@ -198,6 +207,22 @@ compose_service_environment() {
         | python3 -c 'import json, sys
 service = json.load(sys.stdin)["services"]["traefik"]["environment"]
 print("\n".join(f"{name}={value}" for name, value in service.items()))'
+}
+
+# `docker compose up -d --wait` waits on the services that declare a
+# healthcheck and on no others, so a service without one is reported ready the
+# moment it is started. Traefik is the only way into the deployment; without
+# its healthcheck the wait returns while every request still fails.
+assert_service_healthcheck() {
+    local directory="$1" service="$2" expected="$3" command_line
+    command_line="$(docker compose -p pm-challenge-test -f "$directory/compose.yml" config --format json \
+        | python3 -c 'import json, sys
+service = json.load(sys.stdin)["services"][sys.argv[1]]
+print(" ".join(service.get("healthcheck", {}).get("test", [])))' "$service")"
+    [[ "$command_line" == *"$expected"* ]] || {
+        printf '%s healthcheck is "%s", want one running %s\n' "$service" "$command_line" "$expected" >&2
+        return 1
+    }
 }
 
 run_setup() {
@@ -360,6 +385,49 @@ test_ca_rotation_preserves_old_and_active_trust() {
         "$directory/certs/ca.crt" >/dev/null
 }
 
+# .env is an operator-authored data file that Compose reads as KEY=VALUE lines
+# and never executes, so setup.sh must not execute it either. A value that
+# looks like a command substitution has to arrive as those literal characters;
+# sourcing the file would instead run it as whoever ran setup.sh.
+test_env_file_values_are_never_executed() {
+    local directory
+    directory="$(env_fixture)"
+    printf 'EVIL=$(touch %s/pwned)\n' "$directory" >> "$directory/.env"
+
+    # The line is a well-formed assignment, so the run proceeds and only the
+    # value is left uninterpreted. Asserting the run completed matters: without
+    # it, "no pwned file" would also hold for a setup.sh that died first.
+    run_setup "$directory" >/dev/null
+    [[ -f "$directory/config/control.env" ]] || {
+        printf 'setup.sh did not complete, so the value was never parsed\n' >&2
+        return 1
+    }
+    [[ ! -e "$directory/pwned" ]] || {
+        printf 'setup.sh executed a value out of .env\n' >&2
+        return 1
+    }
+}
+
+# A line that is not an assignment is a line whose meaning setup.sh and Compose
+# would each have to guess at. It is refused, and the message names where it is
+# so the operator does not go looking.
+test_env_file_rejects_a_non_assignment_line() {
+    local directory
+    directory="$(env_fixture)"
+    printf 'this is not an assignment\n' >> "$directory/.env"
+    assert_setup_refused "$directory" 'line 4 is not a KEY=VALUE assignment'
+}
+
+# Compose strips a surrounding quote pair and bash keeps whatever the quoting
+# rules produce, so a quoted value means two different things in one
+# deployment. Quote-free values only.
+test_env_file_rejects_a_quoted_value() {
+    local directory
+    directory="$(env_fixture)"
+    printf 'CONTROL_DOMAIN="quoted.example.test"\n' >> "$directory/.env"
+    assert_setup_refused "$directory" 'quotes its value'
+}
+
 # The challenge type is chosen per deployment and comes from the environment. A
 # challenge left in the static file would win for every deployment including
 # the dns01 ones, and the DNS provider would never be asked.
@@ -369,6 +437,13 @@ test_static_traefik_config_names_no_challenge() {
         return 1
     fi
     grep -Fq 'storage: /letsencrypt/acme.json' "$DEPLOY_DIR/traefik/traefik.yml"
+    # `traefik healthcheck --ping`, the container healthcheck compose.yml
+    # declares, asks Traefik's own ping endpoint and fails closed when the
+    # endpoint is not enabled here.
+    grep -Fq 'ping:' "$DEPLOY_DIR/traefik/traefik.yml" || {
+        printf 'traefik.yml does not enable ping, so its healthcheck can never succeed\n' >&2
+        return 1
+    }
 }
 
 test_default_challenge_renders_http01() {
@@ -419,7 +494,7 @@ test_dns01_without_provider_fails() {
     directory="$(challenge_fixture)"
     printf 'ACME_CHALLENGE=dns01\n' >> "$directory/.env"
     write_dns_credentials "$directory" 600 $'HETZNER_API_KEY=example-token\n'
-    assert_challenge_refused "$directory" 'ACME_DNS_PROVIDER is required'
+    assert_setup_refused "$directory" 'ACME_DNS_PROVIDER is required'
 }
 
 test_dns01_without_credentials_fails() {
@@ -429,7 +504,7 @@ test_dns01_without_credentials_fails() {
     # No credentials file at all. The empty one setup.sh creates for http01
     # must never stand in for provider credentials, or the deployment would
     # start and fail its first certificate order instead of failing here.
-    assert_challenge_refused "$directory" 'traefik-dns.env does not exist'
+    assert_setup_refused "$directory" 'traefik-dns.env does not exist'
 }
 
 test_dns01_with_empty_credentials_fails() {
@@ -437,7 +512,7 @@ test_dns01_with_empty_credentials_fails() {
     directory="$(challenge_fixture)"
     printf 'ACME_CHALLENGE=dns01\nACME_DNS_PROVIDER=hetzner\n' >> "$directory/.env"
     write_dns_credentials "$directory" 600 ''
-    assert_challenge_refused "$directory" 'traefik-dns.env is empty'
+    assert_setup_refused "$directory" 'traefik-dns.env is empty'
 }
 
 test_dns01_with_readable_credentials_fails() {
@@ -447,14 +522,14 @@ test_dns01_with_readable_credentials_fails() {
     write_dns_credentials "$directory" 644 $'HETZNER_API_KEY=example-token\n'
     # Refused, not repaired: a provider credential every local account could
     # read is one the operator has to rotate, not one a silent chmod fixes.
-    assert_challenge_refused "$directory" 'traefik-dns.env must not be group/world accessible'
+    assert_setup_refused "$directory" 'traefik-dns.env must not be group/world accessible'
 }
 
 test_unknown_challenge_fails() {
     local directory
     directory="$(challenge_fixture)"
     printf 'ACME_CHALLENGE=bogus\n' >> "$directory/.env"
-    assert_challenge_refused "$directory" 'ACME_CHALLENGE must be http01 or dns01'
+    assert_setup_refused "$directory" 'ACME_CHALLENGE must be http01 or dns01'
 }
 
 # Nothing setup.sh prints or renders may carry a provider credential; only the
@@ -498,6 +573,7 @@ test_compose_configuration_valid_in_both_modes() {
     compose_service_environment "$directory" > "$directory/resolved.env"
     assert_env_line "$directory/resolved.env" \
         'TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_HTTPCHALLENGE_ENTRYPOINT=web'
+    assert_service_healthcheck "$directory" traefik 'traefik healthcheck'
 
     directory="$(challenge_fixture)"
     cp "$DEPLOY_DIR/compose.yml" "$directory/compose.yml"
@@ -527,7 +603,8 @@ fixture_five="$(mktemp -d)"
 fixture_six="$(mktemp -d)"
 fixture_seven="$(mktemp -d)"
 CHALLENGE_ROOT="$(mktemp -d)"
-trap 'rm -rf "$ARCHIVE_ROOT" "$fixture_one" "$fixture_two" "$fixture_three" "$fixture_four" "$fixture_five" "$fixture_six" "$fixture_seven" "$CHALLENGE_ROOT"' EXIT
+ENV_ROOT="$(mktemp -d)"
+trap 'rm -rf "$ARCHIVE_ROOT" "$fixture_one" "$fixture_two" "$fixture_three" "$fixture_four" "$fixture_five" "$fixture_six" "$fixture_seven" "$CHALLENGE_ROOT" "$ENV_ROOT"' EXIT
 
 test_secure_idempotent_setup "$fixture_one"
 printf 'PASS secure and idempotent setup\n'
@@ -543,8 +620,14 @@ test_backend_name_missing_fails "$fixture_six"
 printf 'PASS internal backend name required\n'
 test_ca_rotation_preserves_old_and_active_trust "$fixture_seven"
 printf 'PASS CA rotation trust bundle preserved\n'
+test_env_file_values_are_never_executed
+printf 'PASS .env values are never executed\n'
+test_env_file_rejects_a_non_assignment_line
+printf 'PASS .env line that is not an assignment rejected\n'
+test_env_file_rejects_a_quoted_value
+printf 'PASS .env quoted value rejected\n'
 test_static_traefik_config_names_no_challenge
-printf 'PASS static Traefik configuration pins no challenge type\n'
+printf 'PASS static Traefik configuration pins no challenge type and enables ping\n'
 test_default_challenge_renders_http01
 printf 'PASS default ACME challenge renders http01\n'
 test_dns01_renders_provider_and_public_resolvers
