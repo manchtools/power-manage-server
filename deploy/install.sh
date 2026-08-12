@@ -138,6 +138,22 @@ source_root="$(find "$temporary_directory/source" -mindepth 1 -maxdepth 1 -type 
 [[ -f "$source_root/deploy/compose.yml" ]] || fail "release does not contain the deployment tree"
 cp -R "$source_root/deploy/." "$INSTALL_DIR/"
 
+# This script evolves with main while RELEASE_TAG pins the tree it installs.
+# When the two diverge, values this script asked for may be silently ignored
+# by that tree's setup.sh. Named, not fatal: installing a pinned older
+# release with a newer entry script is a legitimate, deliberate choice.
+if ! cmp -s "${BASH_SOURCE[0]}" "$source_root/deploy/install.sh" 2>/dev/null; then
+    printf 'WARNING: this install.sh differs from the one inside release %s.\n' "$RELEASE_TAG" >&2
+    printf 'Options it offered may not be understood by that release; prefer a release\n' >&2
+    printf 'that matches this script, or RELEASE_TAG=main for the current tree.\n' >&2
+fi
+
+print_dns_reminder() {
+    printf 'DNS: both records must point at this host:\n' >&2
+    printf '    %s  (browser/API, HTTPS)\n' "$CONTROL_DOMAIN" >&2
+    printf '    %s  (agent mTLS)\n' "$AGENT_DOMAIN" >&2
+}
+
 image_tag=latest
 if [[ "$RELEASE_TAG" == v* ]]; then
     image_tag="${RELEASE_TAG#v}"
@@ -201,6 +217,7 @@ if [[ "$ACME_CHALLENGE" == dns01 && ! -s config/traefik-dns.env ]]; then
     printf ', then finish with:\n' >&2
     printf '    cd %q && ./setup.sh && ./deploy.sh\n' "$INSTALL_DIR" >&2
     printf 'The credential is deliberately not asked for by a prompt: it belongs only in that file.\n' >&2
+    print_dns_reminder
     exit 1
 fi
 
@@ -208,5 +225,6 @@ fi
 docker compose pull
 docker compose up -d --wait
 
+print_dns_reminder
 printf 'Power Manage is running. Create the one-time administrator setup URL with:\n'
 printf '  cd %q && docker compose exec control control bootstrap-admin\n' "$INSTALL_DIR"

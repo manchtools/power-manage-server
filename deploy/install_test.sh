@@ -48,6 +48,7 @@ done
 # never happens.
 FIXTURE_SOURCE="$FIXTURE_ROOT/power-manage-server-fixture"
 FIXTURE_TARBALL="$FIXTURE_ROOT/release.tar.gz"
+SKEW_TARBALL="$FIXTURE_ROOT/release-skew.tar.gz"
 mkdir -p "$FIXTURE_SOURCE/deploy"
 : > "$FIXTURE_SOURCE/deploy/compose.yml"
 cat > "$FIXTURE_SOURCE/deploy/setup.sh" <<'EOF'
@@ -55,6 +56,12 @@ cat > "$FIXTURE_SOURCE/deploy/setup.sh" <<'EOF'
 printf 'setup-ran\n' > setup-ran-marker
 EOF
 chmod +x "$FIXTURE_SOURCE/deploy/setup.sh"
+# The skew tarball ships WITHOUT the running install.sh: a tree whose entry
+# script differs from the one executing is tonight's version-skew trap and
+# must be warned about. The main tarball then gains a byte-identical copy,
+# which is what a matching release looks like and must stay silent.
+tar -czf "$SKEW_TARBALL" -C "$FIXTURE_ROOT" "$(basename "$FIXTURE_SOURCE")"
+cp "$DEPLOY_DIR/install.sh" "$FIXTURE_SOURCE/deploy/install.sh"
 tar -czf "$FIXTURE_TARBALL" -C "$FIXTURE_ROOT" "$(basename "$FIXTURE_SOURCE")"
 
 mkdir -p "$STUB_ROOT/download-bin"
@@ -83,6 +90,12 @@ done
 stub_command mountpoint 'exit 1'
 cp "$STUB_ROOT/bin/truncate" "$STUB_ROOT/bin/mkfs.ext4" "$STUB_ROOT/bin/mount" \
     "$STUB_ROOT/bin/mountpoint" "$STUB_ROOT/download-bin/"
+
+# A second download stub set that serves the skew tarball.
+mkdir -p "$STUB_ROOT/skew-bin"
+sed "s|$FIXTURE_TARBALL|$SKEW_TARBALL|" "$STUB_ROOT/download-bin/curl" > "$STUB_ROOT/skew-bin/curl"
+chmod +x "$STUB_ROOT/skew-bin/curl"
+cp "$STUB_ROOT/bin/docker" "$STUB_ROOT/bin/openssl" "$STUB_ROOT/skew-bin/"
 
 new_install_dir() {
     mktemp -d "$FIXTURE_ROOT/XXXXXX"
@@ -300,7 +313,38 @@ test_guided_dns01_marks_the_credential_for_self_pasting() {
         printf 'the stack was touched although the credential is missing:\n%s\n' "$(cat "$CALL_LOG")" >&2
         return 1
     }
+    grep -Fq 'differs from the one inside release' <<<"$output" && {
+        printf 'a matching release tree must not raise the skew warning: %s\n' "$output" >&2
+        return 1
+    }
+    grep -Fq 'must point at this host' <<<"$output" || {
+        printf 'the credential stop does not remind about the DNS records: %s\n' "$output" >&2
+        return 1
+    }
     return 0
+}
+
+# The entry script evolves with main while RELEASE_TAG pins the tree it
+# installs. A tree whose own deploy/install.sh differs from the running script
+# may silently ignore options the script offered, so the mismatch must be
+# named — while the install still proceeds to its normal stopping point.
+test_version_skew_between_script_and_tree_warns() {
+    local directory="$1" output
+    : > "$CALL_LOG"
+    if output="$(run_install "$directory" \
+        RELEASE_TAG=v2026.08.09-rc2 ACME_CHALLENGE=dns01 ACME_DNS_PROVIDER=hetzner \
+        PATH="$STUB_ROOT/skew-bin:$PATH" 2>&1)"; then
+        printf 'skewed dns01 run finished although the credential is missing\n' >&2
+        return 1
+    fi
+    grep -Fq 'differs from the one inside release' <<<"$output" || {
+        printf 'the version skew was not named: %s\n' "$output" >&2
+        return 1
+    }
+    grep -Fq 'ACTION REQUIRED' <<<"$output" || {
+        printf 'the skew warning must not replace the credential stop: %s\n' "$output" >&2
+        return 1
+    }
 }
 
 # The dangerous single-node choice never weakens control's own archive check:
@@ -340,6 +384,10 @@ test_guided_loopback_archive_prepares_same_disk_storage() {
         printf 'the stack was never started:\n%s\n' "$(cat "$CALL_LOG")" >&2
         return 1
     }
+    grep -Fq 'must point at this host' <<<"$output" || {
+        printf 'the success output does not remind about the DNS records: %s\n' "$output" >&2
+        return 1
+    }
 }
 
 test_missing_release_tag_refuses_before_downloading "$(new_install_dir)"
@@ -356,3 +404,5 @@ test_guided_dns01_marks_the_credential_for_self_pasting "$(new_install_dir)"
 printf 'PASS guided dns01 prepares the credential file and stops before setup.sh\n'
 test_guided_loopback_archive_prepares_same_disk_storage "$(new_install_dir)"
 printf 'PASS guided loopback archive prepares same-disk storage and reaches the stack\n'
+test_version_skew_between_script_and_tree_warns "$(new_install_dir)"
+printf 'PASS a tree whose install.sh differs from the running script is named\n'
