@@ -41,11 +41,28 @@ the same comparison first, naming both paths, so a deployment that cannot boot
 is never rendered in the first place.
 <!-- docref: end -->
 
+For a single-node test box with no second disk, `ARCHIVE_LOOPBACK=1` (or
+answering `loopback` in the guided run) makes `install.sh` create a 2 GiB
+image at `data/backups.img`, mount it at `data/backups`, and persist the
+mount in `/etc/fstab`. The check is satisfied — the archive really is a
+separate filesystem — but it lives on the same disk, so it protects against
+nothing that takes the disk with it: one disk failure or ransomware pass
+still takes the audit log and its proof together. Test nodes only.
+
 `install.sh` runs `setup.sh` for you and therefore stops at the same point.
 Provide the archive storage under the install directory it created, then run
 `./setup.sh && ./deploy.sh` there. It has no default release: `RELEASE_TAG`
 must name a release tag such as `v2026.08.09-rc2`, because a branch name
 installs whatever that branch pointed at on the day it ran.
+
+Run from a terminal, `install.sh` asks for every value it was not given — the
+two domains, the ACME email, the release, the certificate challenge, and the
+archive storage choice — re-asking on invalid input with the same rules
+`setup.sh` enforces. Without a terminal nothing prompts: a missing value keeps
+refusing with the messages above, so scripted runs never hang. No prompt ever
+asks for a secret; a `dns01` install stops after unpacking with
+`config/traefik-dns.env` created empty at mode 0600, ready for the credential
+to be pasted into, and names the two commands that finish the install.
 
 ### Certificates without a reachable port 80
 
