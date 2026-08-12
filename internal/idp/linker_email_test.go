@@ -201,3 +201,47 @@ func TestLinker_WhitespaceEmailIsRefused(t *testing.T) {
 		`SELECT count(*) FROM identity_links`).Scan(&links))
 	assert.Zero(t, links, "no identity link may be created on an empty email")
 }
+
+// The two refusal tests prove an operator reading the refusal can tell WHICH
+// auto-create gate stopped the login without reading this package: a disabled
+// provider flag and a missing trusted email are different deployment mistakes
+// with different fixes. The client-visible answer stays the opaque
+// no-matching-account sentinel either way.
+
+func TestLinker_RefusalNamesTheDisabledAutoCreateFlag(t *testing.T) {
+	ctx := context.Background()
+	st, raw := newLinkerStore(t)
+	linker := newTestLinker(t, time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC))
+
+	// A fully trusted email cannot help a disabled provider, and the refusal
+	// must name the flag, not the email.
+	disabled := seedProvider(t, raw, false, false)
+	_, err := st.WithAudit(ctx, linkerOp(), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		_, e := linker.LinkOrCreate(ctx, tx, rec, disabled,
+			&UserClaims{Subject: "ext-gate-1", Email: "one@example.com", Name: "One"})
+		return e
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoMatchingAccount, "the sentinel must survive wrapping")
+	assert.Contains(t, err.Error(), "auto_create_users",
+		"a disabled-flag refusal must name the flag")
+}
+
+func TestLinker_RefusalNamesTheMissingTrustedEmail(t *testing.T) {
+	ctx := context.Background()
+	st, raw := newLinkerStore(t)
+	linker := newTestLinker(t, time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC))
+
+	// Auto-create is enabled but no trusted email survived claim extraction.
+	// The refusal must name the missing claim, not the flag.
+	enabled := seedProvider(t, raw, true, false)
+	_, err := st.WithAudit(ctx, linkerOp(), func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		_, e := linker.LinkOrCreate(ctx, tx, rec, enabled,
+			&UserClaims{Subject: "ext-gate-2", Email: "", Name: "Two"})
+		return e
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoMatchingAccount, "the sentinel must survive wrapping")
+	assert.Contains(t, err.Error(), "trusted email",
+		"a missing-claim refusal must name the claim")
+}

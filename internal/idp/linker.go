@@ -182,9 +182,17 @@ func (l *Linker) LinkOrCreate(
 		return &LinkResult{UserID: userID, IsNew: true}, nil
 	}
 
+	// Name the gate that stopped the login: a disabled flag and a missing
+	// trusted email are different deployment mistakes with different fixes,
+	// and the operator reading this log cannot see which operand was false.
+	// The wrapped sentinel keeps the client-visible answer opaque.
+	reason := "auto_create_users is disabled on the provider"
+	if provider.AutoCreateUsers {
+		reason = "the identity carried no trusted email claim (missing or not email_verified)"
+	}
 	slog.Warn("SSO: no local account matched an external identity",
-		"provider_id", provider.ID, "provider_slug", provider.Slug)
-	return nil, ErrNoMatchingAccount
+		"provider_id", provider.ID, "provider_slug", provider.Slug, "reason", reason)
+	return nil, fmt.Errorf("%w: %s", ErrNoMatchingAccount, reason)
 }
 
 // createUser provisions a subject for an external identity.
