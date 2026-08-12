@@ -95,10 +95,13 @@ printf 'HETZNER_API_TOKEN=%s\n' "$token" >> config/traefik-dns.env
 Traefik reads that file itself. `setup.sh` never copies or prints its contents,
 and refuses a `dns01` run when the file is missing, empty, or readable by other
 accounts — before it generates any key material, so a corrected run starts from
-nothing. It renders the challenge selection into `config/traefik-acme.env` and
-pins the propagation check to public resolvers, because a split-horizon
-resolver at home answers from the internal view of the zone, where the
-challenge record does not exist, and the order would never complete.
+nothing. It renders the challenge selection into `config/traefik-acme.env`,
+pins the propagation check to public resolvers — a split-horizon resolver at
+home answers from the internal view of the zone, where the challenge record
+does not exist, and the order would never complete — and waits 60 seconds
+before that check, because the certificate authority validates from several
+vantage points and a record one resolver already sees can still be missing at
+the DNS operator's other anycast nodes.
 
 Set `ACME_CHALLENGE` and `ACME_DNS_PROVIDER` in `install.sh`'s environment and
 it writes them into the `.env` it generates, but the credentials file can only
@@ -115,7 +118,7 @@ into `config/control.env`, and that file is where ordinary settings such as the
 log level or the retention windows are edited. `setup.sh` re-renders it on
 every run, including through `./deploy.sh`, so re-apply local edits afterwards.
 
-<!-- docref: begin src=deploy/setup.sh#@generated-material:a69f9853 -->
+<!-- docref: begin src=deploy/setup.sh#@generated-material:6e3bca0c -->
 `setup.sh` creates the internal Ed25519 CA, the control certificate, the
 encryption, session and sealing keys, and `config/control.env` with a 90-day
 audit-retention policy and the SQLite `POWER_MANAGE_DATABASE_PATH`. It first

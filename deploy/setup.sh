@@ -149,7 +149,8 @@ ensure_traefik_acme_config() {
             "" \
             "    install -m 600 /dev/null $credentials" \
             "" \
-            "then write the provider's variable into it - for Hetzner DNS that is HETZNER_API_KEY.")"
+            "then write the provider's variable into it - for Hetzner DNS that is HETZNER_API_TOKEN" \
+            "with a Cloud Console API token (HETZNER_API_KEY selects the legacy API shut down in May 2026).")"
         [[ -s "$credentials" ]] \
             || fail "$credentials is empty; write the ACME_DNS_PROVIDER credentials into it, one KEY=VALUE per line"
         # Refused, not repaired: a provider credential every local account could
@@ -159,10 +160,15 @@ ensure_traefik_acme_config() {
         # The resolvers are pinned to public DNS on purpose. A homelab's own
         # resolver answers the propagation check from the internal view of the
         # zone, where the challenge record does not exist, and the order then
-        # never completes.
+        # never completes. The delay covers the gap the pinned resolvers cannot
+        # see: the ACME CA validates from several vantage points, and a record
+        # one resolver already serves can still be missing at the DNS
+        # operator's other anycast nodes, which fails secondary validation
+        # with NXDOMAIN and negative-caches the miss.
         cat > "$CONFIG_DIR/traefik-acme.env" <<EOF
 TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_PROVIDER=${ACME_DNS_PROVIDER}
 TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_RESOLVERS=1.1.1.1:53,9.9.9.9:53
+TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_PROPAGATION_DELAYBEFORECHECKS=60s
 EOF
     else
         # compose.yml references the credentials file unconditionally and

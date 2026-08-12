@@ -478,7 +478,11 @@ test_dns01_renders_provider_and_public_resolvers() {
     # propagation check from the internal view, where the challenge record does
     # not exist, and the order then never completes.
     assert_env_line "$acme" 'TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_RESOLVERS=1.1.1.1:53,9.9.9.9:53'
-    [[ "$(wc -l < "$acme")" == 2 ]]
+    # A propagation delay: the ACME CA validates from several vantage points,
+    # and a record the pinned resolvers already see can still be missing at
+    # the authoritative operator's other anycast nodes.
+    assert_env_line "$acme" 'TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_DNSCHALLENGE_PROPAGATION_DELAYBEFORECHECKS=60s'
+    [[ "$(wc -l < "$acme")" == 3 ]]
     [[ "$(stat -c '%a' "$acme")" == 600 ]]
     if grep -q HTTPCHALLENGE "$acme"; then
         printf 'dns01 rendered the http01 entrypoint as well\n' >&2
