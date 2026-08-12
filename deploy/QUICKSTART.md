@@ -83,11 +83,13 @@ code](https://go-acme.github.io/lego/dns/). The zone has to be served by that
 provider, not merely registered there: Hetzner DNS answers for the domain only
 once its nameservers are the ones delegated to it. Write that provider's
 credentials into `config/traefik-dns.env`, one `KEY=VALUE` per line — for
-Hetzner DNS, `HETZNER_API_KEY`:
+Hetzner DNS, `HETZNER_API_TOKEN` with a Cloud Console API token (the
+`HETZNER_API_KEY` variable selects the legacy DNS API that Hetzner shut down
+in May 2026, which fails with an HTML-instead-of-JSON unmarshal error):
 
 ```bash
 mkdir -p config && install -m 600 /dev/null config/traefik-dns.env
-printf 'HETZNER_API_KEY=%s\n' "$key" >> config/traefik-dns.env
+printf 'HETZNER_API_TOKEN=%s\n' "$token" >> config/traefik-dns.env
 ```
 
 Traefik reads that file itself. `setup.sh` never copies or prints its contents,

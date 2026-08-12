@@ -193,7 +193,10 @@ if [[ "$ACME_CHALLENGE" == dns01 && ! -s config/traefik-dns.env ]]; then
     printf '    %s/config/traefik-dns.env\n' "$INSTALL_DIR" >&2
     printf 'as one KEY=VALUE line for the %s lego provider' "$ACME_DNS_PROVIDER" >&2
     if [[ "$ACME_DNS_PROVIDER" == hetzner ]]; then
-        printf ' (HETZNER_API_KEY=<your key>)' >&2
+        # HETZNER_API_TOKEN selects the current Hetzner Cloud DNS API; the
+        # HETZNER_API_KEY variable selects the legacy API that Hetzner shut
+        # down in May 2026.
+        printf ' (HETZNER_API_TOKEN=<Cloud Console API token>)' >&2
     fi
     printf ', then finish with:\n' >&2
     printf '    cd %q && ./setup.sh && ./deploy.sh\n' "$INSTALL_DIR" >&2
