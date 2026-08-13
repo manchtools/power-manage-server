@@ -7,6 +7,8 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write
+  attestations: write
 
 jobs:
   test:
@@ -123,8 +125,24 @@ jobs:
           pattern: control-*
           path: release
           merge-multiple: true
+      - uses: anchore/sbom-action/download-syft@v0
+        id: syft
+      - name: SBOMs
+        run: |
+          shopt -s nullglob
+          bins=(release/control-linux-*)
+          [[ ${#bins[@]} -gt 0 ]] || { echo "no binaries to scan" >&2; exit 1; }
+          for bin in "${bins[@]}"; do
+            "${{ steps.syft.outputs.cmd }}" scan "file:$bin" -o "spdx-json=$bin.spdx.json"
+          done
       - name: Checksums
         run: cd release && sha256sum control-* > SHA256SUMS
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            release/control-linux-amd64
+            release/control-linux-arm64
       - uses: softprops/action-gh-release@v2
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
