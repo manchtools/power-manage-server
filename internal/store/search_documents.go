@@ -277,6 +277,15 @@ SELECT 'users', u.id, CASE WHEN u.display_name <> '' THEN u.display_name ELSE u.
          'role', COALESCE((SELECT group_concat(name, ', ') FROM (
            SELECT r.name AS name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.is_deleted = false
            UNION SELECT r.name FROM user_group_members gm JOIN user_groups g ON g.id = gm.group_id AND g.is_deleted = false JOIN user_group_roles gr ON gr.group_id = gm.group_id JOIN roles r ON r.id = gr.role_id WHERE gm.user_id = u.id AND r.is_deleted = false)), ''),
+         -- The users list renders direct grants and group-inherited roles as two
+         -- distinct chip clusters deduplicated by role id. The union above serves
+         -- the 'role' filter and cannot say which side a name came from, so both
+         -- sides ride separately, names and ids aligned by a shared aggregate
+         -- ORDER BY over the canonical read's ordering.
+         'role_names', COALESCE((SELECT group_concat(r.name, ', ' ORDER BY ur.grant_id) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.is_deleted = false), ''),
+         'role_ids', COALESCE((SELECT group_concat(r.id, ', ' ORDER BY ur.grant_id) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.is_deleted = false), ''),
+         'inherited_role_names', COALESCE((SELECT group_concat(r.name, ', ' ORDER BY r.id, g.id) FROM user_group_members gm JOIN user_groups g ON g.id = gm.group_id AND g.is_deleted = false JOIN user_group_roles gr ON gr.group_id = gm.group_id JOIN roles r ON r.id = gr.role_id WHERE gm.user_id = u.id AND r.is_deleted = false), ''),
+         'inherited_role_ids', COALESCE((SELECT group_concat(r.id, ', ' ORDER BY r.id, g.id) FROM user_group_members gm JOIN user_groups g ON g.id = gm.group_id AND g.is_deleted = false JOIN user_group_roles gr ON gr.group_id = gm.group_id JOIN roles r ON r.id = gr.role_id WHERE gm.user_id = u.id AND r.is_deleted = false), ''),
          'created_at', COALESCE(strftime('%s', u.created_at), '0'),
          'last_login_at', COALESCE(strftime('%s', u.last_login_at), '0'))
 FROM users u`,
@@ -290,6 +299,9 @@ SELECT 'user_groups', g.id, g.name, g.description, g.id, lower(g.name),
        (SELECT count(*) FROM user_group_members m WHERE m.group_id = g.id),
        json_object(
          'is_dynamic', CASE WHEN g.is_dynamic THEN 'true' ELSE 'false' END,
+         -- Mirrors the canonical group reads: a group is SCIM-managed exactly
+         -- when a scim_group_mapping row names it. The list renders this chip.
+         'is_scim_managed', CASE WHEN EXISTS (SELECT 1 FROM scim_group_mapping sgm WHERE sgm.user_group_id = g.id) THEN 'true' ELSE 'false' END,
          'member_count', CAST((SELECT count(*) FROM user_group_members m WHERE m.group_id = g.id) AS TEXT),
          'created_at', COALESCE(strftime('%s', g.created_at), '0'))
 FROM user_groups g`,

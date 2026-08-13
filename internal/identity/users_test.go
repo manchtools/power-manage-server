@@ -24,6 +24,20 @@ func TestEraseJITUser_ErasesSubjectAndCryptoShredsAuditDetail(t *testing.T) {
 	f.addUserToGroup(group, subject.ID)
 	f.insertIdentityLink(subject.ID, f.insertProvider("jit", nil), "jit-subject")
 
+	// The users search document carries the email, role names, and the
+	// last-login stamp; index the subject so the erasure below has a real
+	// document to remove.
+	f.rebuildSearch()
+	documentsFor := func(userID string) int {
+		var n int
+		require.NoError(t, f.raw.QueryRow(f.ctx(),
+			`SELECT count(*) FROM search_documents WHERE scope = 'users' AND entity_id = $1`,
+			userID).Scan(&n))
+		return n
+	}
+	require.Equal(t, 1, documentsFor(subject.ID),
+		"positive control: the subject is indexed before erasure")
+
 	const erasedAddress = "erased-jit-user@test.example"
 	_, err := f.client.UpdateUserEmail(f.ctx(), authed(&pmv1.UpdateUserEmailRequest{
 		Id: subject.ID, Email: erasedAddress,
@@ -56,6 +70,8 @@ func TestEraseJITUser_ErasesSubjectAndCryptoShredsAuditDetail(t *testing.T) {
 
 	_, err = f.store.GetUser(f.ctx(), subject.ID)
 	assert.True(t, store.IsNotFound(err), "the subject row must be gone")
+	assert.Zero(t, documentsFor(subject.ID),
+		"erasure must remove the subject's whole search document — it carries the email, role names, and last-login stamp")
 	_, err = f.store.GetUserEncryptionKey(f.ctx(), subject.ID)
 	assert.True(t, store.IsNotFound(err), "erasure must destroy the subject DEK")
 	_, err = f.openSealedDetail(subject.ID, sealed, "email")

@@ -125,6 +125,9 @@ func (h *Handler) provisionGroup(
 				BeforeRef:    &removed.UserGroupID,
 				AfterRef:     &s.provider.ID,
 			})
+			// The mapping row is what makes its group SCIM-managed in the
+			// group's search document.
+			rec.RefreshSearch("user_group", removed.UserGroupID)
 		}
 
 		if _, err := tx.InsertUserGroup(ctx, db.InsertUserGroupParams{
@@ -402,6 +405,10 @@ func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request, s *session
 			EvidenceKind:        "external_group_sha256",
 			EvidenceFingerprint: fingerprint(removed.ScimGroupID),
 		})
+		// The surviving group stops being SCIM-managed the moment its
+		// mapping goes, and the user-groups list renders that state from
+		// the group's search document.
+		rec.RefreshSearch("user_group", removed.UserGroupID)
 		return nil
 	})
 	if err != nil {

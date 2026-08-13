@@ -449,6 +449,116 @@ func TestSQLiteSearch_FuzzyCandidateCorpus(t *testing.T) {
 	}
 }
 
+// The user-groups LIST renders a SCIM-managed chip from search documents, and
+// the canonical group reads derive that flag from the existence of a
+// scim_group_mapping row. The document must mirror the same derivation, or the
+// list has no honest value to render.
+func TestSQLiteSearch_UserGroupDocumentCarriesScimManaged(t *testing.T) {
+	st, raw := setupSQLite(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	providerID, mappedID, unmappedID := newID(), newID(), newID()
+
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO user_groups (id, name, description, created_at, updated_at) VALUES
+			($1, 'Directory Engineering', 'mapped from a directory', $3, $3),
+			($2, 'Local Operators', 'created locally', $3, $3)`, []any{mappedID, unmappedID, now}},
+		{`INSERT INTO identity_providers (id, name, slug, client_id, issuer_url, created_at, updated_at)
+			VALUES ($1, 'Corp IdP', 'corp', 'client', 'https://idp.test.example', $2, $2)`, []any{providerID, now}},
+		{`INSERT INTO scim_group_mapping (id, provider_id, scim_group_id, scim_display_name, user_group_id, created_at)
+			VALUES ($1, $2, 'grp-eng', 'Directory Engineering', $3, $4)`, []any{newID(), providerID, mappedID, now}},
+	}
+	for _, statement := range statements {
+		_, err := raw.Exec(ctx, statement.query, statement.args...)
+		require.NoError(t, err)
+	}
+	rebuildSearchFixture(t, st)
+
+	search := func(query string) []store.SearchRow {
+		t.Helper()
+		rows, _, err := st.Search(ctx, store.SearchParams{Scope: "user_groups", Query: query, Limit: 50})
+		require.NoError(t, err)
+		return rows
+	}
+
+	mapped := requireOneSearchRow(t, search("Directory Engineering"))
+	assert.Equal(t, "true", mapped.Fields["is_scim_managed"],
+		"a group with a directory mapping is SCIM-managed")
+	unmapped := requireOneSearchRow(t, search("Local Operators"))
+	assert.Equal(t, "false", unmapped.Fields["is_scim_managed"],
+		"a group without a mapping is locally managed")
+}
+
+// The users LIST renders direct role-grant chips and group-inherited chips as
+// two distinct clusters, deduplicated by role id. The union `role` filter
+// field cannot say which side a name came from, so the document carries both
+// sides separately, names and ids aligned, mirroring the canonical
+// ListUserRoleGrants and ListInheritedRolesForUser reads — including their
+// exclusion of retired roles and retired groups.
+func TestSQLiteSearch_UserDocumentCarriesDirectAndInheritedRoleFields(t *testing.T) {
+	st, raw := setupSQLite(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	grantedID, bareID := newID(), newID()
+	directRole, inheritedRole, retiredRole, ghostRole := newID(), newID(), newID(), newID()
+	liveGroup, deadGroup := newID(), newID()
+
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO users (id, email, display_name, linux_username, linux_uid, created_at, updated_at) VALUES
+			($1, 'granted@example.test', 'Granted Person', 'granted', 210001, $3, $3),
+			($2, 'bare@example.test', 'Bare Person', 'bare', 210002, $3, $3)`, []any{grantedID, bareID, now}},
+		{`INSERT INTO roles (id, name, description, created_at, is_deleted) VALUES
+			($1, 'Direct Observer', '', $5, FALSE),
+			($2, 'Inherited Auditor', '', $5, FALSE),
+			($3, 'Retired Role', '', $5, TRUE),
+			($4, 'Ghost Group Role', '', $5, FALSE)`, []any{directRole, inheritedRole, retiredRole, ghostRole, now}},
+		{`INSERT INTO user_roles (grant_id, user_id, role_id, assigned_at) VALUES
+			($1, $3, $4, $6),
+			($2, $3, $5, $6)`, []any{newID(), newID(), grantedID, directRole, retiredRole, now}},
+		{`INSERT INTO user_groups (id, name, description, created_at, updated_at, is_deleted) VALUES
+			($1, 'Live Group', '', $3, $3, FALSE),
+			($2, 'Dead Group', '', $3, $3, TRUE)`, []any{liveGroup, deadGroup, now}},
+		{`INSERT INTO user_group_members (group_id, user_id, added_at) VALUES
+			($1, $3, $4), ($2, $3, $4)`, []any{liveGroup, deadGroup, grantedID, now}},
+		{`INSERT INTO user_group_roles (grant_id, group_id, role_id, assigned_at, assigned_by) VALUES
+			($1, $3, $5, $7, ''),
+			($2, $4, $6, $7, '')`, []any{newID(), newID(), liveGroup, deadGroup, inheritedRole, ghostRole, now}},
+	}
+	for _, statement := range statements {
+		_, err := raw.Exec(ctx, statement.query, statement.args...)
+		require.NoError(t, err)
+	}
+	rebuildSearchFixture(t, st)
+
+	search := func(query string) []store.SearchRow {
+		t.Helper()
+		rows, _, err := st.Search(ctx, store.SearchParams{Scope: "users", Query: query, Limit: 50})
+		require.NoError(t, err)
+		return rows
+	}
+
+	granted := requireOneSearchRow(t, search("granted@example"))
+	assert.Equal(t, "Direct Observer", granted.Fields["role_names"],
+		"direct grants list live role names only; a retired role is not authority")
+	assert.Equal(t, directRole, granted.Fields["role_ids"],
+		"role ids align with role_names so a UI can deduplicate by id")
+	assert.Equal(t, "Inherited Auditor", granted.Fields["inherited_role_names"],
+		"inherited roles come from live groups only; a retired group confers nothing")
+	assert.Equal(t, inheritedRole, granted.Fields["inherited_role_ids"])
+
+	bare := requireOneSearchRow(t, search("bare@example"))
+	assert.Equal(t, "", bare.Fields["role_names"])
+	assert.Equal(t, "", bare.Fields["role_ids"])
+	assert.Equal(t, "", bare.Fields["inherited_role_names"])
+	assert.Equal(t, "", bare.Fields["inherited_role_ids"])
+}
+
 func rebuildSearchFixture(t *testing.T, st *store.Store) {
 	t.Helper()
 	require.NoError(t, st.RebuildSearchIndexes(context.Background(), store.AuditOperation{

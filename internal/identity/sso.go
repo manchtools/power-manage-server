@@ -381,6 +381,10 @@ func (h *Handlers) completeLogin(ctx context.Context, req connect.AnyRequest, pr
 		if _, err := tx.TouchUserLastLogin(ctx, db.TouchUserLastLoginParams{ID: result.UserID, LastLoginAt: &at}); err != nil {
 			return err
 		}
+		// A repeat login changes nothing else about the subject, so no
+		// user-typed effect refreshes their search document — but the
+		// users list renders this stamp from that document.
+		rec.RefreshSearch("user", result.UserID)
 		state, err := tx.GetUserSessionState(ctx, result.UserID)
 		if err != nil {
 			return err

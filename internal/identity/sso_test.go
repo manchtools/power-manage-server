@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -498,6 +499,37 @@ func TestSSOCallback_RejectsAMissingCode(t *testing.T) {
 	}))
 	assert.Equal(t, connect.CodeInvalidArgument, connectCodeOf(t, err))
 	assert.Zero(t, f.countAuditOperations())
+}
+
+// A repeat login for an already-linked subject writes last_login_at on the
+// user row and nothing else about the subject. The users LIST renders that
+// stamp from the search document, so the login transaction must refresh the
+// subject's document even though no other user field changed.
+func TestSSOCallback_RefreshesTheSubjectDocumentLastLogin(t *testing.T) {
+	t.Parallel()
+	oidc := newOIDCDouble(t)
+	f := newFixture(t, withProviderFactory(loopbackProviderFactory))
+	subject := f.seedSubject()
+	providerID := f.insertProvider("corp", func(s *providerSeed) { s.IssuerURL = oidc.URL })
+	f.insertIdentityLink(subject.ID, providerID, "corp-subject")
+	oidc.subject, oidc.email, oidc.emailVerified = "corp-subject", subject.Email, true
+	f.rebuildSearch()
+	assert.Equal(t, "0", userSearchRow(t, f, subject.ID, subject.Email).Fields["last_login_at"],
+		"positive control: the subject has never signed in")
+
+	state := f.startLogin("corp")
+	oidc.nonce = f.nonceFor(state)
+	_, err := f.client.SSOCallback(f.ctx(), connect.NewRequest(&pmv1.SSOCallbackRequest{
+		Slug: "corp", Code: "auth-code", State: state,
+	}))
+	require.NoError(t, err)
+
+	row, err := f.store.GetUser(f.ctx(), subject.ID)
+	require.NoError(t, err)
+	require.NotNil(t, row.LastLoginAt, "positive control: the login stamped the user row")
+	assert.Equal(t, strconv.FormatInt(row.LastLoginAt.Unix(), 10),
+		userSearchRow(t, f, subject.ID, subject.Email).Fields["last_login_at"],
+		"the login transaction must refresh the stamp the users list renders")
 }
 
 // ---------------------------------------------------------------------------

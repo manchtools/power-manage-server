@@ -5,6 +5,7 @@ package scim_test
 // member-add sink, and the authority a membership actually confers.
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -385,6 +386,38 @@ func TestGroups_DeleteUnmapsAndKeepsTheLocalGroup(t *testing.T) {
 	group, err := f.store.GetUserGroup(f.ctx(), id)
 	require.NoError(t, err, "the local group must survive an unmap")
 	assert.Equal(t, "Temp", group.Name)
+}
+
+// searchDocumentFields reads one entity's search-document field map, which is
+// exactly what a list page receives for that row.
+func (f *fixture) searchDocumentFields(scope, entityID string) map[string]string {
+	f.t.Helper()
+	var raw []byte
+	require.NoError(f.t, f.raw.QueryRow(f.ctx(),
+		`SELECT fields FROM search_documents WHERE scope = $1 AND entity_id = $2`,
+		scope, entityID).Scan(&raw))
+	fields := map[string]string{}
+	require.NoError(f.t, json.Unmarshal(raw, &fields))
+	return fields
+}
+
+// Mapping and unmapping a directory group are the writes that change whether a
+// local group is SCIM-managed, and the user-groups LIST renders that state
+// from the search document — so both writes must refresh the group's document
+// in their own transaction.
+func TestGroups_MappingRefreshesTheScimManagedDocumentField(t *testing.T) {
+	f := newFixture(t)
+	p := f.seedProvider(nil)
+	id := f.createGroup(p, scimGroup("Engineering", "grp-eng"))
+
+	assert.Equal(t, "true", f.searchDocumentFields("user_groups", id)["is_scim_managed"],
+		"provisioning maps the group, so its document is SCIM-managed from birth")
+
+	require.Equal(t, http.StatusNoContent, f.do(http.MethodDelete, p.Slug, p.Token, "/Groups/"+id, nil).Code)
+	_, err := f.store.GetUserGroup(f.ctx(), id)
+	require.NoError(t, err, "positive control: the local group survives the unmap")
+	assert.Equal(t, "false", f.searchDocumentFields("user_groups", id)["is_scim_managed"],
+		"unmapping must refresh the surviving group's document in the same transaction")
 }
 
 // ---------------------------------------------------------------------------

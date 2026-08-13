@@ -429,6 +429,113 @@ func TestAssignRoleToUserGroup_GrantsAndRevokesByScope(t *testing.T) {
 	assert.Empty(t, grants)
 }
 
+// userSearchRow returns the single users-scope search row for a subject,
+// found by query, so an assertion reads exactly what the users list renders.
+func userSearchRow(t *testing.T, f *fixture, userID, query string) store.SearchRow {
+	t.Helper()
+	rows, _, err := f.store.Search(f.ctx(), store.SearchParams{
+		Scope: "users", Query: query, Limit: 50,
+	})
+	require.NoError(t, err)
+	for _, row := range rows {
+		if row.ID == userID {
+			return row
+		}
+	}
+	t.Fatalf("no users search document for %s under query %q", userID, query)
+	return store.SearchRow{}
+}
+
+// The users LIST renders direct role-grant chips from search documents, so
+// every grant mutation must land the role's name and id in the subject's
+// document in the same transaction — and a rename must not leave the old
+// name behind.
+func TestUserSearchDocument_TracksDirectRoleGrantLifecycle(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.seedActor(grant{Permissions: []string{
+		"AssignRoleToUser", "RevokeRoleFromUser", "UpdateRole",
+	}})
+	subject := f.seedSubject()
+	role := f.insertRole([]string{"ListUsers"})
+	roleRow, err := f.store.GetRole(f.ctx(), role)
+	require.NoError(t, err)
+	f.rebuildSearch()
+
+	doc := userSearchRow(t, f, subject.ID, subject.Email)
+	assert.Equal(t, "", doc.Fields["role_names"], "no grant, no chip")
+	assert.Equal(t, "", doc.Fields["role_ids"])
+
+	_, err = f.client.AssignRoleToUser(f.ctx(), authed(&pmv1.AssignRoleToUserRequest{
+		UserId: subject.ID, RoleId: role,
+	}, admin.Token))
+	require.NoError(t, err)
+	doc = userSearchRow(t, f, subject.ID, subject.Email)
+	assert.Equal(t, roleRow.Name, doc.Fields["role_names"],
+		"assigning a role must land its name in the subject's document in the same transaction")
+	assert.Equal(t, role, doc.Fields["role_ids"])
+
+	_, err = f.client.UpdateRole(f.ctx(), authed(&pmv1.UpdateRoleRequest{
+		RoleId: role, Name: "Renamed Platform Crew", Permissions: []string{"ListUsers"},
+	}, admin.Token))
+	require.NoError(t, err)
+	doc = userSearchRow(t, f, subject.ID, subject.Email)
+	assert.Equal(t, "Renamed Platform Crew", doc.Fields["role_names"],
+		"renaming a role must refresh every holder's document field, not only its free text")
+	assert.Equal(t, role, doc.Fields["role_ids"])
+
+	_, err = f.client.RevokeRoleFromUser(f.ctx(), authed(&pmv1.RevokeRoleFromUserRequest{
+		UserId: subject.ID, RoleId: role,
+	}, admin.Token))
+	require.NoError(t, err)
+	doc = userSearchRow(t, f, subject.ID, subject.Email)
+	assert.Equal(t, "", doc.Fields["role_names"],
+		"revoking the grant must remove the chip's source value in the same transaction")
+	assert.Equal(t, "", doc.Fields["role_ids"])
+}
+
+// Group-conferred roles render as their own chip cluster, so group grant
+// mutations must maintain the inherited fields — and never leak into the
+// direct-grant fields.
+func TestUserSearchDocument_TracksGroupInheritedRoleFields(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.seedActor(grant{Permissions: []string{
+		"AssignRoleToUserGroup", "RevokeRoleFromUserGroup",
+	}})
+	group := f.insertUserGroup()
+	member := f.seedSubject()
+	f.addUserToGroup(group, member.ID)
+	role := f.insertRole([]string{"UpdateUserProfile"})
+	roleRow, err := f.store.GetRole(f.ctx(), role)
+	require.NoError(t, err)
+	f.rebuildSearch()
+
+	doc := userSearchRow(t, f, member.ID, member.Email)
+	assert.Equal(t, "", doc.Fields["inherited_role_names"])
+	assert.Equal(t, "", doc.Fields["inherited_role_ids"])
+
+	_, err = f.client.AssignRoleToUserGroup(f.ctx(), authed(&pmv1.AssignRoleToUserGroupRequest{
+		GroupId: group, RoleId: role,
+	}, admin.Token))
+	require.NoError(t, err)
+	doc = userSearchRow(t, f, member.ID, member.Email)
+	assert.Equal(t, roleRow.Name, doc.Fields["inherited_role_names"],
+		"a group grant must land in every member's document in the same transaction")
+	assert.Equal(t, role, doc.Fields["inherited_role_ids"])
+	assert.Equal(t, "", doc.Fields["role_names"],
+		"a group-conferred role is not a direct grant and must not render as one")
+
+	_, err = f.client.RevokeRoleFromUserGroup(f.ctx(), authed(&pmv1.RevokeRoleFromUserGroupRequest{
+		GroupId: group, RoleId: role,
+	}, admin.Token))
+	require.NoError(t, err)
+	doc = userSearchRow(t, f, member.ID, member.Email)
+	assert.Equal(t, "", doc.Fields["inherited_role_names"],
+		"revoking the group grant must remove the inherited chip's source value")
+	assert.Equal(t, "", doc.Fields["inherited_role_ids"])
+}
+
 func TestRevokeRoleFromUser_AllowsRemovingFinalAdminGrant(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
