@@ -1,86 +1,125 @@
-# Power Manage server
+# Power Manage
 
-This repository contains the control implementation being consolidated to the
-workspace target in
-`../DESIGN_2026_07_31/00_TARGET_DESIGN.md`. That file is the sole system
-design authority.
+Self-hosted device management for Linux fleets — one binary, embedded SQLite,
+mTLS agents, and a transactional audit log.
 
-## Implementation state
+Power Manage is for teams running tens to thousands of Linux machines —
+workstations, servers, kiosks — who need enrollment, desired-state policy,
+one-shot dispatch, and audit evidence without operating a database cluster to
+get them.
 
-Control is one process that owns the public RPC API, direct agent mTLS
-listener, identity and authorization, CRUD state, durable dispatch, SQLite FTS5
-search, artifacts, and audit.
+## What it does
 
-Gateway, Valkey, Asynq, event-store, projector, external-indexer, CRL
-distribution, local-password/TOTP, and application-frame-signing code has been
-removed. Architecture guards fail if any of it returns.
-
-The datastore port has landed: control embeds SQLite in WAL mode with
-`synchronous=FULL`, and search runs on FTS5. That port deliberately came after
-the server was consolidated onto CRUD, a dedicated audit log, database-backed
-jobs, and full-text search, so the engine swap did not change RPC or observable
-search semantics. PostgreSQL is gone and must not return.
-
-## Product boundaries
-
-- The named protobuf RPCs remain the product contract except for the 14
-  Gateway-only removals listed in the target.
-- Agents initiate one direct outbound mTLS stream to control.
+- **Enrolls devices over their own outbound connection.** The agent generates
+  an Ed25519 key on the device, sends a CSR with a single-use token, pins the
+  control CA, and keeps one outbound mTLS stream open. No inbound ports on
+  endpoints, no SSH reachability requirement.
+- **Applies desired state on a schedule, online or offline.** Actions declare
+  `PRESENT`/`ABSENT` for packages (apt, dnf, pacman, zypper — plus flatpak,
+  deb, rpm, AppImage), services, files, users and groups, SSH and sshd policy,
+  disk encryption, Wi-Fi, and more. Agents store their manifests durably and
+  re-apply them on cron or drift intervals even without a server connection,
+  honoring per-device maintenance windows.
+- **Dispatches one-shot work exactly once.** Explicit dispatches commit
+  durably before send, execute once on durable receipt, and bypass maintenance
+  windows on purpose.
+- **Produces audit evidence by construction.** Every mutation commits in the
+  same transaction as its audit operation and effect rows; if audit
+  persistence fails, the state change rolls back. Sensitive reads are their
+  own audited operations, and secret values never enter logs or audit
+  payloads.
 <!-- docref: begin src=internal/scim/users_write.go#Handler.provisionSubject:3b57e30f,internal/idp/linker.go#Linker.createUser:7858b2ad,internal/identity/users.go#Handlers.EraseJITUser:6cc8f91a -->
-- Human identity uses SCIM lifecycle management or optional per-provider OIDC
-  JIT for homelabs. There is no manual user creation; JIT-created subjects have
-  an explicit, provenance-gated erasure RPC. Bootstrap-admin is a one-time host
-  authorization path.
+- **Uses enterprise identity from day one.** Human accounts come from SCIM
+  lifecycle management or per-provider OIDC just-in-time creation — there is
+  no manual user creation and no local passwords. JIT-created subjects have an
+  explicit, provenance-gated erasure RPC. First-admin bootstrap is a one-time,
+  host-authorized token.
 <!-- docref: end -->
-- Mutations and their audit operation/effect rows commit together.
-- Device work is a durable database delivery plus an in-process wakeup and
-  periodic database sweep.
-- Search is SQLite FTS5 with an application-owned bounded fuzzy matcher.
-- Classified agent/control fields use recipient-bound X25519 sealing.
 
-## Repository layout
+Compliance is detection-only by design: policies run detection scripts that
+yield a per-device status (compliant, non-compliant, in grace period) —
+evidence, not silent remediation.
 
-- `cmd/control/` — server executable
-- `internal/controlrpc/`, `internal/searchrpc/` — explicit RPC handlers
-- `internal/auth/` — authentication, authorization, and scope enforcement
-- `internal/ca/`, `internal/mtls/` — device PKI and direct mTLS
-- `internal/store/` — SQLite schema, queries, transactions, and the audited
-  write primitive
-- `internal/scim/`, `internal/idp/` — SCIM and OIDC
-- `internal/connection/` — active direct-agent connections
-- `internal/architecture/` — guards that fail if removed subsystems return
-- `deploy/` — reference deployment
+## Quickstart
 
-## Development
-
-Build and test:
+You need a Linux host with Docker Compose, two DNS names pointing at it (one
+for the browser/API, one for agent mTLS), an email for Let's Encrypt, and an
+OIDC provider for operator login. The installer is interactive and asks for
+everything it needs; it never prompts for secrets.
 
 ```bash
-go build ./cmd/control
-go test ./...
+curl -fsSL https://raw.githubusercontent.com/manchtools/power-manage-server/main/deploy/install.sh -o install.sh
+chmod +x install.sh && sudo ./install.sh
 ```
 
-Regenerate sqlc output only through the pinned command:
+The audit archive must live on a filesystem separate from the database —
+control refuses to start otherwise, because evidence that shares a disk with
+the records it attests to is not evidence. For a single-disk test box, answer
+`loopback` when asked (or set `ARCHIVE_LOOPBACK=1`).
+
+Then bootstrap your identity provider and enroll a device:
 
 ```bash
-make sqlc-generate
-make sqlc-check
+# on the control host: one-time admin token, piped into the CLI
+docker compose exec -T control control bootstrap-admin --output token \
+  | powermanage bootstrap oidc --file provider.json --token-stdin
+
+powermanage login --provider <slug>
+powermanage enrollment-token create --file token.json
+
+# on the device, with the installer from the agent release assets
+sudo bash install.sh -s https://agents.example.com -t <token> -p <ca-fingerprint>
 ```
 
-Do not edit generated files manually. Tests run against real SQLite database
-files, one isolated file per test.
+The operator CLI (`powermanage`) is MIT-licensed and ships from the
+[SDK repository](https://github.com/manchtools/power-manage-sdk); the device
+agent ships from the
+[agent repository](https://github.com/manchtools/power-manage-agent)
+with signed releases the installer verifies before anything lands on disk.
+Full walkthrough: [deploy/QUICKSTART.md](deploy/QUICKSTART.md).
 
-## Required verification
+## Architecture
 
-Changes at a trust boundary must cover malformed, unauthenticated,
-unauthorized, cross-owner, replay, cancellation, and persistence-failure
-paths. State changes must roll back when audit persistence fails. Secret values
-must not reach logs, errors, traces, audit payloads, or diagnostics.
+One control process owns the API, the dedicated agent mTLS listener, identity,
+authorization, dispatch, search, and audit, with all state in an embedded
+SQLite database (WAL mode, `synchronous=FULL`, FTS5 search). Agents connect
+outbound; control never dials a device. There is no external database, queue,
+or cache to operate.
 
-The final gate rejects runtime dependencies on Gateway, Valkey, Asynq,
-event-store/projector state, external indexing, payload signing, CRL
-distribution, and PostgreSQL.
+## Status and scope
+
+Pre-1.0 release candidates. The RPC contract, storage schema, and agent
+protocol may change between versions; pre-1.0 installations are reinstalled
+clean rather than upgraded in place.
+
+**CI-tested**, with real package managers and system services in the test
+matrix: Debian bookworm, Fedora, Arch, openSUSE (Leap and Tumbleweed), Ubuntu
+(apt path), AlmaLinux 9 (library level). Other systemd-based distributions
+generally work but are not exercised in CI; non-systemd systems are not
+supported.
+
+**Scale:** designed for up to 10,000 normally connected agents on a single
+instance. A checked-in scale gate exercises that state volume with hard
+latency assertions; it is operator-run rather than continuous CI.
+
+**Deliberately out of scope for version one:** high availability,
+multi-region, local passwords/TOTP/WebAuthn, and email notifications
+(alerting is a generic HTTPS webhook).
+
+## Where it fits
+
+Configuration management (Ansible, Puppet, Salt) pushes changes to reachable
+machines and records that a run happened. Power Manage enrolls devices that
+connect outward, keeps desired state applied while they are offline, and
+records every change as transactional audit evidence — which matters for
+remote fleets and for anyone who has to hand an auditor enrollment records
+and continuous policy state rather than playbook logs. Compared to existing
+MDM platforms, Linux is the first platform here, not the last checkbox.
 
 ## License
 
-AGPL-3.0. See [LICENSE](LICENSE).
+The server is [AGPL-3.0](LICENSE). The device agent is GPL-3.0, and the
+protobuf contract, SDK, and operator CLI are MIT — you can build your own
+client against the published contract.
+
+Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
