@@ -50,6 +50,11 @@ Prose about code is anchored with [docref](deploy/QUICKSTART.md) claims;
 typed by hand. Anchor new behavioral claims when you write them, not as a
 cleanup pass.
 
+## Licensing of contributions
+
+By contributing, you agree that your contributions are licensed under the
+repository's [AGPL-3.0](LICENSE) license.
+
 ## Repository layout
 
 - `cmd/control/` — server executable
