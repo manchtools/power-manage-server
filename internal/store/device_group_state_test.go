@@ -128,11 +128,15 @@ func TestDeviceGroupState_DynamicShapeAndBoundsFailClosed(t *testing.T) {
 	ctx := context.Background()
 	state := devicegroup.NewState(devicegroup.Config{Store: st})
 
+	// An absent query is the documented match-all rule (the parser reads ""
+	// as the always-true tree), not a shape error.
 	missingQueryOp := deviceGroupOperation()
-	_, err := state.Create(ctx, missingQueryOp, devicegroup.CreateParams{
-		Name: "broken", CreatedBy: missingQueryOp.ActorID, Dynamic: true,
+	matchAll, err := state.Create(ctx, missingQueryOp, devicegroup.CreateParams{
+		Name: "everything", CreatedBy: missingQueryOp.ActorID, Dynamic: true,
 	})
-	assert.ErrorIs(t, err, devicegroup.ErrInvalidQuery)
+	require.NoError(t, err, "the empty dynamic query is the match-all rule")
+	require.NotNil(t, matchAll.DynamicQuery)
+	assert.Empty(t, *matchAll.DynamicQuery)
 	invalidQueryOp := deviceGroupOperation()
 	_, err = state.Create(ctx, invalidQueryOp, devicegroup.CreateParams{
 		Name: "broken", CreatedBy: invalidQueryOp.ActorID, Dynamic: true, Query: "(",
@@ -203,11 +207,11 @@ func TestDeviceGroupState_ConvertingCuratedGroupToRuleClearsItsMembers(t *testin
 	require.NoError(t, err)
 	require.Equal(t, int64(2), added)
 
-	// A rejected query must not be a half-conversion: the mode, the query and the
-	// membership all still have to be the ones the operator started with.
+	// A rejected query must not be a half-conversion: the mode, the query and
+	// the membership all still have to be the ones the operator started with.
+	// (An EMPTY query is no longer a rejection — it is the match-all rule —
+	// so only a genuinely malformed query probes this.)
 	_, err = state.UpdateQuery(ctx, deviceGroupOperation(), group.ID, true, "(")
-	assert.ErrorIs(t, err, devicegroup.ErrInvalidQuery)
-	_, err = state.UpdateQuery(ctx, deviceGroupOperation(), group.ID, true, "")
 	assert.ErrorIs(t, err, devicegroup.ErrInvalidQuery)
 	unchanged, err := st.GetDeviceGroup(ctx, group.ID)
 	require.NoError(t, err)
