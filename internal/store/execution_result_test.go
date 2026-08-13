@@ -187,6 +187,39 @@ func TestExecutionOutputChunk_IsBoundedOwnedAndIdempotent(t *testing.T) {
 	assert.ErrorIs(t, f.service.AppendOutputChunk(context.Background(), f.deviceID, oversized), execution.ErrInvalidInput)
 }
 
+// TestExecutionOutputChunk_PerExecutionBudget pins the inbox trust-boundary
+// budget: the per-chunk 64 KiB bound alone lets a device grow the database
+// without limit by streaming ever-higher sequence numbers. The sequence cap
+// bounds one execution's stored output at MaxOutputChunks × 64 KiB, rejected
+// in validation before any read or write; the stream loop's log-and-continue
+// error handling keeps the agent connected through the rejection.
+func TestExecutionOutputChunk_PerExecutionBudget(t *testing.T) {
+	f := newExecutionResultFixture(t, delivery.StateAckedReceipt, "running")
+	inBudget := &pmv1.OutputChunk{
+		ExecutionId: f.execution, Stream: pmv1.OutputStreamType_OUTPUT_STREAM_TYPE_STDOUT,
+		Data: []byte("tail"), Sequence: execution.MaxOutputChunks - 1,
+	}
+	require.NoError(t, f.service.AppendOutputChunk(context.Background(), f.deviceID, inBudget),
+		"the last in-budget sequence must stay accepted")
+
+	over := proto.Clone(inBudget).(*pmv1.OutputChunk)
+	over.Data = []byte("over")
+	over.Sequence = execution.MaxOutputChunks
+	assert.ErrorIs(t, f.service.AppendOutputChunk(context.Background(), f.deviceID, over),
+		execution.ErrInvalidInput, "the first over-budget sequence must be rejected")
+
+	far := proto.Clone(inBudget).(*pmv1.OutputChunk)
+	far.Data = []byte("far")
+	far.Sequence = execution.MaxOutputChunks * 100
+	assert.ErrorIs(t, f.service.AppendOutputChunk(context.Background(), f.deviceID, far),
+		execution.ErrInvalidInput, "a runaway sequence must be rejected")
+
+	var count int
+	require.NoError(t, f.raw.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM execution_output_chunks WHERE execution_id = $1`, f.execution).Scan(&count))
+	assert.Equal(t, 1, count, "over-budget chunks must write nothing")
+}
+
 func TestExecutionResult_RejectsMalformedAndCancelledTransitions(t *testing.T) {
 	f := newExecutionResultFixture(t, delivery.StateAckedReceipt, "cancelled")
 	err := f.service.ApplyActionResult(context.Background(), f.deviceID,

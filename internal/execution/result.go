@@ -24,6 +24,13 @@ import (
 
 const maxOutputChunkBytes = 64 * 1024
 
+// MaxOutputChunks bounds one execution's stored output at the inbox trust
+// boundary: the per-chunk size bound alone lets a device grow the database
+// without limit by streaming ever-higher sequence numbers. 64 chunks caps an
+// execution at 4 MiB of stored output; the sequence check is O(1) and needs
+// no per-append accounting. Raise the constant if real workloads hit it.
+const MaxOutputChunks = 64
+
 var (
 	ErrInvalidInput      = errors.New("invalid execution result")
 	ErrWrongDevice       = errors.New("execution belongs to another device")
@@ -194,7 +201,8 @@ func (s *Service) ApplyActionResult(ctx context.Context, deviceID string, result
 // absorbed by the primary key and do not create duplicate audit evidence.
 func (s *Service) AppendOutputChunk(ctx context.Context, deviceID string, chunk *pmv1.OutputChunk) error {
 	if ctx == nil || !validID(deviceID) || chunk == nil || !validID(chunk.ExecutionId) ||
-		chunk.Sequence < 0 || len(chunk.Data) == 0 || len(chunk.Data) > maxOutputChunkBytes {
+		chunk.Sequence < 0 || chunk.Sequence >= MaxOutputChunks ||
+		len(chunk.Data) == 0 || len(chunk.Data) > maxOutputChunkBytes {
 		return ErrInvalidInput
 	}
 	stream := ""
